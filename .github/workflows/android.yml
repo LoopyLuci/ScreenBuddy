@@ -42,6 +42,25 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
 
+      # Instrumented tests need a device. GitHub provides one, and without these
+      # a composition-time crash like the Providers tab slot-table fault can ship
+      # green: JVM unit tests cannot observe it.
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: ./gradlew connectedDebugAndroidTest
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
