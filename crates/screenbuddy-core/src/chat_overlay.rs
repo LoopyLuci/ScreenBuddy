@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChatOverlayEvent {
@@ -72,9 +73,16 @@ impl ChatOverlay {
         let rx = self.event_rx.clone();
         thread::spawn(move || {
             loop {
+                // Poll with try_recv rather than holding the lock across a
+                // blocking recv(): the receiver is handed out by `receiver()`, so
+                // locking it for the whole wait would stall every other consumer
+                // and deadlock them against this thread.
                 let event = {
-                    let lock = rx.lock().unwrap();
-                    lock.recv()
+                    let lock = match rx.lock() {
+                        Ok(lock) => lock,
+                        Err(_) => break,
+                    };
+                    lock.try_recv()
                 };
                 match event {
                     Ok(ChatOverlayEvent::Shutdown) => break,
@@ -85,7 +93,10 @@ impl ChatOverlay {
                     Ok(ChatOverlayEvent::AiResponse(text)) => {
                         println!("[Chat] AI: {}", text);
                     }
-                    _ => {}
+                    // Toggle/MoveTo/Show and friends need no work here.
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(10)),
+                    Err(TryRecvError::Disconnected) => break,
                 }
             }
         });
@@ -180,6 +191,45 @@ mod tests {
         overlay.add_message(MessageRole::User, "test");
         overlay.clear();
         assert!(overlay.messages().is_empty());
+    }
+
+    /// The event loop must not hold the receiver lock while waiting.
+    ///
+    /// The receiver is also handed out by `receiver()`, so a blocking recv()
+    /// under the lock would starve every other consumer. The loop is given a
+    /// moment to reach its wait before contending, otherwise the assertion
+    /// could pass simply because the thread had not started yet.
+    #[test]
+    fn test_event_loop_does_not_hold_the_lock_while_waiting() {
+        let overlay = ChatOverlay::new();
+        overlay.start().expect("event loop starts");
+
+        // Let the loop thread reach its wait so the lock is genuinely contended.
+        std::thread::sleep(Duration::from_millis(150));
+
+        let rx = overlay.receiver();
+        // Under a blocking recv() under the lock this can never be acquired.
+        let acquired = rx.try_lock().is_ok();
+        assert!(
+            acquired,
+            "the event loop is holding the receiver lock while waiting"
+        );
+
+        overlay.send_event(ChatOverlayEvent::Shutdown);
+    }
+
+    #[test]
+    fn test_event_loop_delivers_events_and_stops_on_shutdown() {
+        let overlay = ChatOverlay::new();
+        overlay.start().expect("event loop starts");
+        overlay.send_event(ChatOverlayEvent::UserMessage("hello".into()));
+        overlay.send_event(ChatOverlayEvent::Shutdown);
+
+        // The loop drains what is queued and exits; give it a moment, then
+        // confirm the receiver is still usable and empty.
+        std::thread::sleep(Duration::from_millis(100));
+        let rx = overlay.receiver();
+        assert!(rx.lock().is_ok(), "shutdown must not poison the receiver");
     }
 
     #[test]
