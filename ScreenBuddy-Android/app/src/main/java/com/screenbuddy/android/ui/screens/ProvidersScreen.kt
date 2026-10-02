@@ -49,7 +49,7 @@ fun ProvidersScreen(viewModel: ProvidersViewModel = rememberProvidersViewModel()
 }
 
 @Composable
-private fun ProvidersContent(
+internal fun ProvidersContent(
     uiState: ProvidersUiState,
     modifier: Modifier = Modifier,
     onToggleModel: (String, Boolean) -> Unit,
@@ -64,13 +64,15 @@ private fun ProvidersContent(
             ErrorBanner(uiState.error, onDismiss = onErrorShown)
         }
 
+        // An early `return@Column` here swapped the whole subtree out from under
+        // the composer as isLoading flipped true->false, which corrupts the slot
+        // table (ArrayIndexOutOfBoundsException in SlotTableKt.key). Branching on
+        // isLoading instead keeps the group structure stable across recompositions.
         if (uiState.isLoading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
-            return@Column
-        }
-
+        } else {
         LazyColumn(contentPadding = PaddingValues(16.dp)) {
             item {
                 Text(
@@ -93,6 +95,7 @@ private fun ProvidersContent(
                 )
                 Spacer(Modifier.height(12.dp))
             }
+        }
         }
     }
 }
