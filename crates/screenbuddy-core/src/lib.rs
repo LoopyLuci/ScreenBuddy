@@ -17,6 +17,7 @@ pub mod rag;
 pub mod render;
 pub mod scheduler;
 pub mod screen_physics;
+pub mod session;
 pub mod settings_ui;
 pub mod state;
 pub mod system_integration;

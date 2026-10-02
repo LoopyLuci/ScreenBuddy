@@ -15,6 +15,8 @@ mod settings_window;
 use animation::SpriteAnimator;
 use chat_window::{ChatWindow, ChatWindowEvent};
 use composite_renderer::{CompositeRenderer, RenderableCreature};
+use screenbuddy_core::chat_overlay::MessageRole;
+use screenbuddy_core::session::{Role, SessionStore};
 use settings_window::SettingsWindow;
 
 const BIRD_IDLE: &[u8] = include_bytes!("../assets/generated/bird_idle.png");
@@ -425,12 +427,22 @@ fn main() {
     let mut auto_cycle = true;
     let mut tts: Option<screenbuddy_core::TtsSystem> = None;
 
+    // Wrapped in a shared handle so the IPC server and MCP tools operate on the
+    // same conversations the GUI shows. A window renders a view of a session; it
+    // does not own the conversation.
+    let shared_sessions = Arc::new(std::sync::Mutex::new(SessionStore::load(sessions_path())));
+    println!(
+        "[Session] {} session(s) loaded",
+        shared_sessions.lock().map(|s| s.list().len()).unwrap_or(0)
+    );
+
     if std::env::var("SCREENBUDDY_DISABLE_IPC").is_err() {
         // `main` is not inside a Tokio runtime, so the server gets its own and
         // runs on a dedicated OS thread. This mirrors AiChatBridge.
         // The server and this loop must share one snapshot handle; two copies
         // would make every query return defaults.
-        let ipc = screenbuddy_core::IpcServer::with_status(ipc_config.clone(), status.clone());
+        let ipc = screenbuddy_core::IpcServer::with_status(ipc_config.clone(), status.clone())
+            .with_sessions(shared_sessions.clone());
         // Subscribe before starting the thread so a request arriving
         // immediately after startup is not missed.
         control_rx = Some(ipc.subscribe_control());
@@ -504,7 +516,17 @@ fn main() {
     );
 
     // Chat Window
+    // Chat sessions persist across restarts; the window renders a view of the
+    // current session rather than owning the conversation.
     let mut chat_win = ChatWindow::new();
+    let initial_history: Vec<(String, String)> = shared_sessions
+        .lock()
+        .ok()
+        .and_then(|s| s.current().map(|c| c.transcript()))
+        .unwrap_or_default();
+    for (role, text) in initial_history {
+        chat_win.add_message(&role, &text);
+    }
     let chat_hwnd = chat_window::create_chat_window(&mut chat_win).unwrap_or(0);
     if chat_hwnd != 0 {
         println!("[Chat] Window created: 0x{:x}", chat_hwnd);
@@ -727,6 +749,9 @@ fn main() {
             match event {
                 ChatWindowEvent::Input(text) => {
                     println!("[Chat] You: {}", text);
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        store.push(Role::User, text.clone());
+                    }
                     bridge_for_input.send_message(&text);
                 }
                 ChatWindowEvent::Toggle => {
@@ -738,12 +763,41 @@ fn main() {
             }
         }
 
-        // Forward AI responses to chat window
-        {
-            let messages = chat_win.messages().to_vec();
-            if let Some((role, _text)) = messages.last() {
+        // Forward AI responses into the session and the chat window.
+        //
+        // The bridge writes replies to its ChatOverlay; this drains them. Without
+        // this, replies were only printed to stdout and never appeared in the UI.
+        let rendered = chat_win.messages().len();
+        let overlay_messages = bridge_for_input
+            .overlay()
+            .lock()
+            .map(|o| o.messages().len())
+            .unwrap_or(0);
+        if overlay_messages > rendered {
+            let fresh: Vec<(String, String)> = bridge_for_input
+                .overlay()
+                .lock()
+                .map(|o| {
+                    o.messages()
+                        .iter()
+                        .skip(rendered)
+                        .map(|m| {
+                            let role = match m.role {
+                                MessageRole::User => "user".to_string(),
+                                MessageRole::Assistant => "assistant".to_string(),
+                                MessageRole::System => "system".to_string(),
+                            };
+                            (role, m.content.clone())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            for (role, text) in fresh {
+                chat_win.add_message(&role, &text);
                 if role == "assistant" {
-                    // Already displayed
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        store.push(Role::Assistant, text);
+                    }
                 }
             }
         }
@@ -923,6 +977,18 @@ fn to_anim_state(state: screenbuddy_core::AnimStateCtl) -> AnimState {
         screenbuddy_core::AnimStateCtl::Sleep => AnimState::Sleep,
         screenbuddy_core::AnimStateCtl::Celebrate => AnimState::Celebrate,
     }
+}
+
+/// Where chat sessions are persisted.
+///
+/// Kept beside the other app data rather than in the current directory, so the
+/// transcript is not lost by running the binary from somewhere else.
+fn sessions_path() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("ScreenBuddy").join("sessions.json")
 }
 
 /// Map a JSON setting value onto the typed setting enum.

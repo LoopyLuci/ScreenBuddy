@@ -132,6 +132,30 @@ pub enum GodotCommand {
     GetAgentInfo,
     /// Results of the most recent `memory_search`.
     GetSearchResults,
+    /// Summaries of every stored chat session, newest first.
+    ListSessions,
+    /// The current session's full transcript.
+    GetCurrentSession,
+    /// Create a session and make it current.
+    NewSession {
+        #[serde(default)]
+        title: Option<String>,
+    },
+    /// Switch to an existing session.
+    SelectSession {
+        id: String,
+    },
+    /// Delete a session by id.
+    DeleteSession {
+        id: String,
+    },
+    /// Clear the current session's messages.
+    ClearSession,
+    /// Rename a session.
+    RenameSession {
+        id: String,
+        title: String,
+    },
     /// Ingest a document into the RAG memory and report the chunk count.
     MemoryIngest {
         source: String,
@@ -270,6 +294,14 @@ impl Default for IpcConfig {
     }
 }
 
+/// Handle to the chat session store, shared with the control server so the GUI
+/// and an agent operate on the same conversations.
+///
+/// Spelled with an explicit `std::sync::Mutex`: this module also has tokio's
+/// `Mutex` in scope, and locking this synchronously from the render loop must not
+/// depend on which one the name resolves to.
+pub type SharedSessions = Arc<std::sync::Mutex<crate::session::SessionStore>>;
+
 pub struct IpcServer {
     config: IpcConfig,
     shutdown: Arc<Notify>,
@@ -279,6 +311,10 @@ pub struct IpcServer {
     creatures: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     /// Live snapshot written by the render loop; read by query commands.
     status: Arc<std::sync::Mutex<RuntimeStatus>>,
+    /// Chat sessions, shared with the render loop so the GUI and an agent see
+    /// the same conversations. A std Mutex, not the tokio one: it is locked
+    /// briefly and synchronously from both the IPC task and the render loop.
+    sessions: SharedSessions,
 }
 
 impl IpcServer {
@@ -292,6 +328,9 @@ impl IpcServer {
             control,
             creatures: Arc::new(Mutex::new(HashMap::new())),
             status: Arc::new(std::sync::Mutex::new(RuntimeStatus::default())),
+            sessions: Arc::new(std::sync::Mutex::new(
+                crate::session::SessionStore::with_default_session(),
+            )),
         }
     }
 
@@ -311,6 +350,13 @@ impl IpcServer {
         server
     }
 
+    /// Share the app's session store, so the GUI and an agent operate on the same
+    /// conversations rather than on separate copies that drift apart.
+    pub fn with_sessions(mut self, sessions: SharedSessions) -> Self {
+        self.sessions = sessions;
+        self
+    }
+
     pub async fn run(&self) -> Result<(), String> {
         let listener = TcpListener::bind(&self.config.addr)
             .await
@@ -324,9 +370,11 @@ impl IpcServer {
                     let control = self.control.clone();
                     let creatures = self.creatures.clone();
                     let status = self.status.clone();
+                    let sessions = self.sessions.clone();
                     let shutdown = self.shutdown.clone();
                     tokio::spawn(async move {
-                        handle_client(stream, tx, control, creatures, status, shutdown).await;
+                        handle_client(stream, tx, control, creatures, status, sessions, shutdown)
+                            .await;
                     });
                 }
                 _ = self.shutdown.notified() => break,
@@ -389,6 +437,7 @@ async fn handle_client(
     control: broadcast::Sender<ControlRequest>,
     creatures: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     status: Arc<std::sync::Mutex<RuntimeStatus>>,
+    sessions: SharedSessions,
     shutdown: Arc<Notify>,
 ) {
     let mut buf = vec![0u8; 8192];
@@ -417,7 +466,7 @@ async fn handle_client(
 
         match serde_json::from_slice::<GodotCommand>(&payload) {
             Ok(cmd) => {
-                let resp = process_command(&cmd, &creatures, &control, &status).await;
+                let resp = process_command(&cmd, &creatures, &control, &status, &sessions).await;
                 let _ = write_frame(&mut stream, &resp).await;
                 // `send` fails only when there are no subscribers, which is fine:
                 // the app may not be draining this channel.
@@ -481,10 +530,104 @@ async fn process_command(
     creatures: &Arc<Mutex<HashMap<String, serde_json::Value>>>,
     control: &broadcast::Sender<ControlRequest>,
     status: &Arc<std::sync::Mutex<RuntimeStatus>>,
+    sessions: &SharedSessions,
 ) -> Response {
     // Query-style commands are answered from server-side state where possible.
     match cmd {
         GodotCommand::Ping => return Response::Pong,
+
+        GodotCommand::ListSessions => {
+            let store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            let list = store.list();
+            return Response::Success {
+                data: Some(serde_json::json!({
+                    "current_id": store.current_id(),
+                    "count": list.len(),
+                    "sessions": list,
+                })),
+            };
+        }
+
+        GodotCommand::GetCurrentSession => {
+            let store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            return match store.current() {
+                Some(s) => Response::Success {
+                    data: Some(serde_json::to_value(s).unwrap_or(serde_json::Value::Null)),
+                },
+                None => Response::err("no current session"),
+            };
+        }
+
+        GodotCommand::NewSession { title } => {
+            let title = title.clone().unwrap_or_else(|| "New chat".to_string());
+            let mut store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            let id = store.new_session(&title);
+            return Response::Success {
+                data: Some(serde_json::json!({ "id": id, "title": title })),
+            };
+        }
+
+        GodotCommand::SelectSession { id } => {
+            let id = id.clone();
+            let mut store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            return match store.select(&id) {
+                Ok(s) => Response::Success {
+                    data: Some(serde_json::json!({ "id": s.id, "title": s.title })),
+                },
+                Err(e) => Response::err(&e),
+            };
+        }
+
+        GodotCommand::DeleteSession { id } => {
+            let id = id.clone();
+            let mut store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            return match store.delete(&id) {
+                Ok(()) => Response::Success {
+                    data: Some(serde_json::json!({ "deleted": id })),
+                },
+                Err(e) => Response::err(&e),
+            };
+        }
+
+        GodotCommand::ClearSession => {
+            let mut store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            store.clear_current();
+            return Response::Success {
+                data: Some(serde_json::json!({ "cleared": store.current_id() })),
+            };
+        }
+
+        GodotCommand::RenameSession { id, title } => {
+            let (id, title) = (id.clone(), title.clone());
+            let mut store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            return match store.rename(&id, &title) {
+                Ok(()) => Response::Success {
+                    data: Some(serde_json::json!({ "id": id, "title": title })),
+                },
+                Err(e) => Response::err(&e),
+            };
+        }
 
         GodotCommand::ListCreatures => {
             let list: Vec<String> = creatures.lock().await.keys().cloned().collect();
@@ -696,6 +839,12 @@ pub async fn start_server() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Dispatch against the shared test server, whose session store the tests
+    /// inspect directly.
+    async fn dispatch(s: &IpcServer, cmd: &GodotCommand) -> Response {
+        process_command(cmd, &s.creatures, &s.control, &s.status, &s.sessions).await
+    }
+
     fn server() -> IpcServer {
         IpcServer::new(IpcConfig::default())
     }
@@ -703,7 +852,7 @@ mod tests {
     #[tokio::test]
     async fn ping_returns_pong() {
         let s = server();
-        let resp = process_command(&GodotCommand::Ping, &s.creatures, &s.control, &s.status).await;
+        let resp = dispatch(&s, &GodotCommand::Ping).await;
         assert!(matches!(resp, Response::Pong));
     }
 
@@ -711,25 +860,17 @@ mod tests {
     async fn set_then_get_creature_round_trips() {
         let s = server();
         let data = serde_json::json!({ "name": "Test", "personality": "curious" });
-        let set = process_command(
+        let set = dispatch(
+            &s,
             &GodotCommand::SetCreature {
                 id: "c1".into(),
                 data: data.clone(),
             },
-            &s.creatures,
-            &s.control,
-            &s.status,
         )
         .await;
         assert!(matches!(set, Response::Ack));
 
-        let got = process_command(
-            &GodotCommand::GetCreature { id: "c1".into() },
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let got = dispatch(&s, &GodotCommand::GetCreature { id: "c1".into() }).await;
         match got {
             Response::CreatureData { id, data: d } => {
                 assert_eq!(id, "c1");
@@ -742,13 +883,7 @@ mod tests {
     #[tokio::test]
     async fn missing_creature_reports_not_found() {
         let s = server();
-        let resp = process_command(
-            &GodotCommand::GetCreature { id: "nope".into() },
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let resp = dispatch(&s, &GodotCommand::GetCreature { id: "nope".into() }).await;
         match resp {
             Response::Error { code, .. } => assert_eq!(code, Some(404)),
             other => panic!("expected Error, got {other:?}"),
@@ -759,25 +894,16 @@ mod tests {
     async fn list_creatures_reflects_stored_creatures() {
         let s = server();
         for id in ["a", "b"] {
-            process_command(
+            dispatch(
+                &s,
                 &GodotCommand::SetCreature {
                     id: id.into(),
                     data: serde_json::json!({}),
                 },
-                &s.creatures,
-                &s.control,
-                &s.status,
             )
             .await;
         }
-        match process_command(
-            &GodotCommand::ListCreatures,
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await
-        {
+        match dispatch(&s, &GodotCommand::ListCreatures).await {
             Response::CreatureList { mut creatures } => {
                 creatures.sort();
                 assert_eq!(creatures, vec!["a".to_string(), "b".to_string()]);
@@ -789,13 +915,11 @@ mod tests {
     #[tokio::test]
     async fn export_creature_uses_payload_id() {
         let s = server();
-        let resp = process_command(
+        let resp = dispatch(
+            &s,
             &GodotCommand::ExportCreature {
                 data: serde_json::json!({ "id": "exported-1" }),
             },
-            &s.creatures,
-            &s.control,
-            &s.status,
         )
         .await;
         match resp {
@@ -804,13 +928,7 @@ mod tests {
             }
             other => panic!("expected Success, got {other:?}"),
         }
-        let list = process_command(
-            &GodotCommand::ListCreatures,
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let list = dispatch(&s, &GodotCommand::ListCreatures).await;
         assert!(
             matches!(list, Response::CreatureList { creatures } if creatures.contains(&"exported-1".to_string()))
         );
@@ -822,13 +940,11 @@ mod tests {
         // A receiver must exist, standing in for the main loop draining requests.
         let mut rx = s.subscribe_control();
 
-        let resp = process_command(
+        let resp = dispatch(
+            &s,
             &GodotCommand::SendChat {
                 message: "hello".into(),
             },
-            &s.creatures,
-            &s.control,
-            &s.status,
         )
         .await;
         assert!(!resp.is_error(), "expected acceptance, got {resp:?}");
@@ -843,13 +959,7 @@ mod tests {
     async fn control_commands_fail_loudly_when_nothing_is_draining() {
         let s = server();
         // No subscriber: accepting the request would silently drop it.
-        let resp = process_command(
-            &GodotCommand::Speak { text: "hi".into() },
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let resp = dispatch(&s, &GodotCommand::Speak { text: "hi".into() }).await;
         match resp {
             Response::Error { code, .. } => assert_eq!(code, Some(503)),
             other => panic!("expected Error, got {other:?}"),
@@ -1002,13 +1112,7 @@ mod tests {
                 .settings
                 .insert("volume_master".into(), serde_json::json!(0.5));
         }
-        let resp = process_command(
-            &GodotCommand::GetStatus,
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let resp = dispatch(&s, &GodotCommand::GetStatus).await;
         match resp {
             Response::Success { data: Some(d) } => {
                 assert_eq!(d["fps"], 42.5);
@@ -1017,19 +1121,173 @@ mod tests {
             other => panic!("expected Success, got {other:?}"),
         }
 
-        let resp = process_command(
+        let resp = dispatch(
+            &s,
             &GodotCommand::GetSetting {
                 key: Some("volume_master".into()),
             },
-            &s.creatures,
-            &s.control,
-            &s.status,
         )
         .await;
         match resp {
             Response::Success { data: Some(d) } => assert_eq!(d["value"], 0.5),
             other => panic!("expected Success, got {other:?}"),
         }
+    }
+
+    // ---- chat sessions ----
+
+    /// Pull the `data` payload out of a success response.
+    fn ok_data(resp: Response) -> serde_json::Value {
+        match resp {
+            Response::Success { data: Some(d) } => d,
+            other => panic!("expected Success, got {other:?}"),
+        }
+    }
+
+    fn err_message(resp: Response) -> String {
+        match resp {
+            Response::Error { message, .. } => message,
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_server_has_exactly_one_session() {
+        let s = server();
+        let d = ok_data(dispatch(&s, &GodotCommand::ListSessions).await);
+        assert_eq!(d["count"], 1, "a store must never start empty");
+        assert!(d["current_id"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn new_session_becomes_current_and_is_listed() {
+        let s = server();
+        let first = s.sessions.lock().unwrap().current_id().to_string();
+
+        let created = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::NewSession {
+                    title: Some("Second".into()),
+                },
+            )
+            .await,
+        );
+        let id = created["id"].as_str().expect("id").to_string();
+
+        let d = ok_data(dispatch(&s, &GodotCommand::ListSessions).await);
+        assert_eq!(d["count"], 2);
+        assert_eq!(d["current_id"], id.as_str());
+        assert!(
+            d["sessions"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .any(|x| x["title"] == "Second"),
+            "the new session should be listed"
+        );
+
+        // Selecting the original works again.
+        dispatch(&s, &GodotCommand::SelectSession { id: first.clone() }).await;
+        assert_eq!(s.sessions.lock().unwrap().current_id(), first);
+    }
+
+    #[tokio::test]
+    async fn session_title_defaults_when_none_is_given() {
+        let s = server();
+        let d = ok_data(dispatch(&s, &GodotCommand::NewSession { title: None }).await);
+        assert_eq!(d["title"], "New chat");
+    }
+
+    #[tokio::test]
+    async fn current_session_round_trips_through_the_wire() {
+        let s = server();
+        {
+            let mut store = s.sessions.lock().unwrap();
+            store.push(crate::session::Role::User, "what does the dragon do?");
+            store.push(crate::session::Role::Assistant, "it soars");
+        }
+        let d = ok_data(dispatch(&s, &GodotCommand::GetCurrentSession).await);
+        assert_eq!(d["messages"].as_array().expect("messages").len(), 2);
+        assert!(d["title"].as_str().expect("title").contains("dragon"));
+    }
+
+    #[tokio::test]
+    async fn renaming_and_clearing_a_session() {
+        let s = server();
+        let id = s.sessions.lock().unwrap().current_id().to_string();
+
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::RenameSession {
+                    id: id.clone(),
+                    title: "My chat".into(),
+                },
+            )
+            .await,
+        );
+        assert_eq!(d["title"], "My chat");
+
+        {
+            let mut store = s.sessions.lock().unwrap();
+            store.push(crate::session::Role::User, "something");
+        }
+        dispatch(&s, &GodotCommand::ClearSession).await;
+        let d = ok_data(dispatch(&s, &GodotCommand::GetCurrentSession).await);
+        assert_eq!(
+            d["messages"].as_array().expect("messages").len(),
+            0,
+            "cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_an_unknown_session_is_an_error() {
+        let s = server();
+        let msg =
+            err_message(dispatch(&s, &GodotCommand::SelectSession { id: "nope".into() }).await);
+        assert!(msg.contains("unknown session"), "got {msg}");
+        let msg =
+            err_message(dispatch(&s, &GodotCommand::DeleteSession { id: "nope".into() }).await);
+        assert!(msg.contains("unknown session"), "got {msg}");
+        let msg = err_message(
+            dispatch(
+                &s,
+                &GodotCommand::RenameSession {
+                    id: "nope".into(),
+                    title: "x".into(),
+                },
+            )
+            .await,
+        );
+        assert!(msg.contains("unknown session"), "got {msg}");
+    }
+
+    #[tokio::test]
+    async fn the_last_session_cannot_be_deleted() {
+        let s = server();
+        let id = s.sessions.lock().unwrap().current_id().to_string();
+        let msg = err_message(dispatch(&s, &GodotCommand::DeleteSession { id }).await);
+        assert!(msg.contains("only session"), "got {msg}");
+    }
+
+    #[tokio::test]
+    async fn session_commands_deserialise_from_json() {
+        // The wire format is what MCP and the probe actually send.
+        let cmd: GodotCommand =
+            serde_json::from_str(r#"{"cmd":"new_session","title":"Hi"}"#).unwrap();
+        assert!(matches!(cmd, GodotCommand::NewSession { title: Some(t) } if t == "Hi"));
+
+        let cmd: GodotCommand = serde_json::from_str(r#"{"cmd":"new_session"}"#).unwrap();
+        assert!(matches!(cmd, GodotCommand::NewSession { title: None }));
+
+        let cmd: GodotCommand =
+            serde_json::from_str(r#"{"cmd":"select_session","id":"s1"}"#).unwrap();
+        assert!(matches!(cmd, GodotCommand::SelectSession { ref id } if id == "s1"));
+
+        // A required field must be rejected rather than defaulted.
+        assert!(serde_json::from_str::<GodotCommand>(r#"{"cmd":"select_session"}"#).is_err());
     }
 
     #[tokio::test]
@@ -1041,13 +1299,7 @@ mod tests {
             snapshot.search_results =
                 serde_json::json!([{ "score": 0.9, "text": "dives fast", "source": "a://1" }]);
         }
-        let resp = process_command(
-            &GodotCommand::GetSearchResults,
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let resp = dispatch(&s, &GodotCommand::GetSearchResults).await;
         match resp {
             Response::Success { data: Some(d) } => {
                 assert_eq!(d["query"], "falcon");
@@ -1060,13 +1312,7 @@ mod tests {
     #[tokio::test]
     async fn search_results_are_empty_before_any_search() {
         let s = server();
-        let resp = process_command(
-            &GodotCommand::GetSearchResults,
-            &s.creatures,
-            &s.control,
-            &s.status,
-        )
-        .await;
+        let resp = dispatch(&s, &GodotCommand::GetSearchResults).await;
         match resp {
             Response::Success { data: Some(d) } => {
                 assert!(d["query"].is_null());
@@ -1079,13 +1325,11 @@ mod tests {
     #[tokio::test]
     async fn unknown_setting_reports_an_error() {
         let s = server();
-        let resp = process_command(
+        let resp = dispatch(
+            &s,
             &GodotCommand::GetSetting {
                 key: Some("nope".into()),
             },
-            &s.creatures,
-            &s.control,
-            &s.status,
         )
         .await;
         assert!(resp.is_error(), "expected error, got {resp:?}");
@@ -1135,7 +1379,13 @@ mod tests {
                     shutdown.clone(),
                 );
                 tokio::spawn(handle_client(
-                    stream, tx, control, creatures, status, shutdown,
+                    stream,
+                    tx,
+                    control,
+                    creatures,
+                    status,
+                    s.sessions.clone(),
+                    shutdown,
                 ));
             }
         });
@@ -1197,7 +1447,13 @@ mod tests {
                     shutdown.clone(),
                 );
                 tokio::spawn(handle_client(
-                    stream, tx, control, creatures, status, shutdown,
+                    stream,
+                    tx,
+                    control,
+                    creatures,
+                    status,
+                    s.sessions.clone(),
+                    shutdown,
                 ));
             }
         });
