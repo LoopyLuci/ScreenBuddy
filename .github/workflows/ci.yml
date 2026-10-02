@@ -35,29 +35,42 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --verbose
 
-  build:
-    name: Build Release
-    runs-on: ${{ matrix.os }}
+  # The desktop app is Win32/Direct2D and only builds on Windows. This job builds
+  # the portable core crate on Linux, which is what genuinely needs checking
+  # there: it catches platform-gating mistakes (a cfg(windows) leak, a stray
+  # Win32 type outside a gate) that a Windows-only build can never surface.
+  build-core-linux:
+    name: Check core on Linux
+    runs-on: ubuntu-latest
     needs: test
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux deps
-        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+          sudo apt-get install -y libasound2-dev
+      - name: Check core crate
+        run: cargo check --package screenbuddy-core --all-targets
+      - name: Test core crate
+        run: cargo test --package screenbuddy-core
+
+  build:
+    name: Build Release
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Build release
         run: cargo build --release --verbose
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: screenbuddy-${{ matrix.os }}
-          path: target/release/screenbuddy${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          name: screenbuddy-windows
+          path: target/release/screenbuddy.exe
 
   package:
     name: Package
