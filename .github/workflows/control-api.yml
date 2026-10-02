@@ -1,0 +1,105 @@
+name: ScreenBuddy Control API
+
+# Verifies the IPC control surface and the MCP server against a real running
+# app. Without this, the control layer can compile cleanly while being entirely
+# non-functional (it was: the server was never started).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'mcp/**'
+      - 'tools/ipc_probe.py'
+      - '.github/workflows/control-api.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'mcp/**'
+      - 'tools/ipc_probe.py'
+      - '.github/workflows/control-api.yml'
+
+jobs:
+  ipc-protocol:
+    name: IPC protocol
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --bin screenbuddy
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # A GUI app cannot run headless on a runner, so exercise the protocol
+      # against a real process but tolerate the window layer being unavailable.
+      - name: Probe the control port
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "target\release\screenbuddy.exe" -PassThru `
+               -RedirectStandardOutput out.log -RedirectStandardError err.log
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              python tools/ipc_probe.py 2>&1 | Tee-Object -Variable probe
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            }
+            if (-not $ok) {
+              Write-Host "---- app stdout ----"
+              Get-Content out.log -ErrorAction SilentlyContinue | Select-Object -First 40
+              Write-Host "---- app stderr ----"
+              Get-Content err.log -ErrorAction SilentlyContinue | Select-Object -First 40
+              exit 1
+            }
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+  mcp-server:
+    name: MCP server
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --bin screenbuddy
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MCP SDK
+        run: python -m pip install --quiet mcp
+
+      - name: Byte-compile the server
+        # Catches syntax errors without needing the app to run.
+        run: python -m py_compile mcp/server.py mcp/test_mcp.py
+
+      - name: Verify the server exposes its tools
+        shell: pwsh
+        run: |
+          # Start the app so tool calls have something to talk to.
+          $p = Start-Process -FilePath "target\release\screenbuddy.exe" -PassThru `
+               -RedirectStandardOutput out.log -RedirectStandardError err.log
+          try {
+            Start-Sleep -Seconds 10
+            python mcp/test_mcp.py
+            if ($LASTEXITCODE -ne 0) {
+              Get-Content err.log -ErrorAction SilentlyContinue | Select-Object -First 40
+              exit 1
+            }
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
