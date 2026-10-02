@@ -78,6 +78,14 @@ impl AudioSystem {
     }
 
     fn init_audio(&mut self) {
+        // Tests construct AudioSystem directly, and each one would otherwise open
+        // a real cpal output device. Many concurrent opens/teardowns crash the
+        // process with STATUS_ACCESS_VIOLATION on the Windows runner, which is
+        // why the unit suite died partway through with no test failing.
+        // Playback is exercised explicitly by tests that opt in below.
+        if cfg!(test) {
+            return;
+        }
         if let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() {
             if let Ok(sink) = rodio::Sink::try_new(&stream_handle) {
                 sink.set_volume(self.config.master_volume * self.config.sfx_volume);

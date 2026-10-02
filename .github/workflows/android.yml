@@ -59,7 +59,7 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          script: ./gradlew connectedDebugAndroidTest
+          script: cd ScreenBuddy-Android && ./gradlew connectedDebugAndroidTest
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

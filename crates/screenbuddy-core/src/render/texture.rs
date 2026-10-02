@@ -67,11 +67,11 @@ impl Texture {
             ..Default::default()
         });
 
-        static mut NEXT_ID: u64 = 0;
-        let id = unsafe {
-            NEXT_ID += 1;
-            NEXT_ID
-        };
+        // An atomic, not `static mut`: textures can be created from several
+        // threads and a non-atomic read-modify-write on shared mutable state is
+        // a data race.
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         Ok(Self {
             id,
