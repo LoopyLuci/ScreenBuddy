@@ -44,5 +44,5 @@ pub use screen_physics::{CreaturePersonality, CreaturePhysics, Monitor, ScreenMa
 pub use settings_ui::{SettingValue, SettingsCategory, SettingsUI};
 pub use state::{AppConfig, AppState, CreatureStateMachine, State};
 pub use system_integration::{SystemEvent, SystemEventType, SystemIntegration, SystemMonitor};
-pub use system_tray::{SystemTray, TrayEvent};
+pub use system_tray::{SystemTray, TrayEvent, TrayHwnd};
 pub use tts::{TtsConfig, TtsEngine, TtsSystem};
