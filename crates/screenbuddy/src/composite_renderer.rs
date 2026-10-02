@@ -159,10 +159,10 @@ impl CompositeRenderer {
             );
             let old = winapi::um::wingdi::SelectObject(self.h_dc, self.h_bitmap as *mut _);
             let mut blend = BLENDFUNCTION {
-                BlendOp: winapi::um::wingdi::AC_SRC_OVER as u8,
+                BlendOp: winapi::um::wingdi::AC_SRC_OVER,
                 BlendFlags: 0,
                 SourceConstantAlpha: 255,
-                AlphaFormat: winapi::um::wingdi::AC_SRC_ALPHA as u8,
+                AlphaFormat: winapi::um::wingdi::AC_SRC_ALPHA,
             };
             let mut rect: RECT = mem::zeroed();
             winapi::um::winuser::GetWindowRect(self.window_hwnd as *mut _, &mut rect);

@@ -1,14 +1,18 @@
 //! Configuration Management for ScreenBuddy
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
-use parking_lot::RwLock;
 use crate::ai::AiConfig;
 use crate::audio::AudioConfig;
 use crate::providers::ProviderRegistry;
 use crate::state::AppConfig;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Theme { Light, Dark, Auto }
+pub enum Theme {
+    Light,
+    Dark,
+    Auto,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScreenBuddyConfig {
@@ -58,7 +62,10 @@ impl ConfigManager {
         } else {
             ScreenBuddyConfig::default()
         };
-        Self { config: RwLock::new(config), path }
+        Self {
+            config: RwLock::new(config),
+            path,
+        }
     }
 
     fn get_config_path() -> PathBuf {
@@ -69,7 +76,9 @@ impl ConfigManager {
             p.push("screenbuddy.toml");
             p
         } else {
-            std::env::current_dir().unwrap_or_default().join("screenbuddy.toml")
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join("screenbuddy.toml")
         }
     }
 
@@ -86,13 +95,25 @@ impl ConfigManager {
         std::fs::write(&self.path, content).map_err(|e| e.to_string())
     }
 
-    pub fn get(&self) -> ScreenBuddyConfig { self.config.read().clone() }
-    pub fn set_creature(&self, id: String) { self.config.write().active_creature = id; }
-    pub fn set_position(&self, x: i32, y: i32) { self.config.write().window_position = Some((x, y)); }
-    pub fn path(&self) -> &PathBuf { &self.path }
+    pub fn get(&self) -> ScreenBuddyConfig {
+        self.config.read().clone()
+    }
+    pub fn set_creature(&self, id: String) {
+        self.config.write().active_creature = id;
+    }
+    pub fn set_position(&self, x: i32, y: i32) {
+        self.config.write().window_position = Some((x, y));
+    }
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
-impl Default for ConfigManager { fn default() -> Self { Self::new() } }
+impl Default for ConfigManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {

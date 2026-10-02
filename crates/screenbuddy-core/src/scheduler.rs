@@ -5,7 +5,12 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskPriority { Realtime, High, Normal, Low }
+pub enum TaskPriority {
+    Realtime,
+    High,
+    Normal,
+    Low,
+}
 
 #[derive(Debug, Default)]
 pub struct PoolMetrics {
@@ -14,8 +19,12 @@ pub struct PoolMetrics {
 }
 
 impl PoolMetrics {
-    pub fn completed(&self) -> u64 { self.tasks_completed.load(Ordering::Relaxed) }
-    pub fn queued(&self) -> u64 { self.tasks_queued.load(Ordering::Relaxed) }
+    pub fn completed(&self) -> u64 {
+        self.tasks_completed.load(Ordering::Relaxed)
+    }
+    pub fn queued(&self) -> u64 {
+        self.tasks_queued.load(Ordering::Relaxed)
+    }
 }
 
 pub struct ThreadPool {
@@ -25,9 +34,17 @@ pub struct ThreadPool {
     running: Arc<AtomicBool>,
 }
 
+impl Default for ThreadPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThreadPool {
     pub fn new() -> Self {
-        let n = std::thread::available_parallelism().map(|p| p.get()).unwrap_or(4);
+        let n = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(4);
         let (sender, receiver) = crossbeam_channel::unbounded::<Box<dyn FnOnce() + Send>>();
         let metrics = Arc::new(PoolMetrics::default());
         let running = Arc::new(AtomicBool::new(true));
@@ -54,20 +71,31 @@ impl ThreadPool {
                     .unwrap(),
             );
         }
-        Self { sender, handles, metrics, running }
+        Self {
+            sender,
+            handles,
+            metrics,
+            running,
+        }
     }
 
     pub fn spawn<F>(&self, _priority: TaskPriority, f: F)
-    where F: FnOnce() + Send + 'static {
+    where
+        F: FnOnce() + Send + 'static,
+    {
         self.metrics.tasks_queued.fetch_add(1, Ordering::Relaxed);
         let _ = self.sender.send(Box::new(f));
     }
 
-    pub fn metrics(&self) -> &PoolMetrics { &self.metrics }
+    pub fn metrics(&self) -> &PoolMetrics {
+        &self.metrics
+    }
 
     pub fn shutdown(self) {
         self.running.store(false, Ordering::SeqCst);
-        for h in self.handles { let _ = h.join(); }
+        for h in self.handles {
+            let _ = h.join();
+        }
     }
 }
 
@@ -85,7 +113,9 @@ mod tests {
     fn test_pool() {
         let pool = ThreadPool::new();
         let (tx, rx) = crossbeam_channel::bounded::<()>(1);
-        pool.spawn(TaskPriority::High, move || { tx.send(()).ok(); });
+        pool.spawn(TaskPriority::High, move || {
+            tx.send(()).ok();
+        });
         std::thread::sleep(Duration::from_millis(50));
         assert!(rx.try_recv().is_ok());
     }

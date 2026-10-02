@@ -4,10 +4,9 @@
 
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
-use crate::chat_overlay::{ChatOverlay, ChatOverlayEvent, MessageRole};
 use crate::ai::{AiEngine, AiRequest};
+use crate::chat_overlay::{ChatOverlay, MessageRole};
 
 /// AI Chat Bridge - connects AiEngine to ChatOverlay
 pub struct AiChatBridge {
@@ -74,14 +73,15 @@ impl AiChatBridge {
             };
 
             // Call AI using tokio runtime
-            let result = runtime.block_on(async {
-                ai.generate(request).await
-            });
+            let result = runtime.block_on(async { ai.generate(request).await });
 
             // Process response
             let response_text = match result {
                 Ok(resp) => {
-                    println!("[AI] Response ({} tokens, tier: {:?}): {}", resp.tokens_used, resp.model_tier, resp.text);
+                    println!(
+                        "[AI] Response ({} tokens, tier: {:?}): {}",
+                        resp.tokens_used, resp.model_tier, resp.text
+                    );
                     resp.text
                 }
                 Err(e) => {

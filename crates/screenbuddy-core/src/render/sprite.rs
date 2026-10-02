@@ -47,6 +47,9 @@ impl Sprite {
 }
 
 /// Batches multiple sprites for efficient rendering
+///
+/// The wgpu handles are held for the submit path, which is not implemented yet.
+#[allow(dead_code)]
 pub struct SpriteBatch {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,

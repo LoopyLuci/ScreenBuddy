@@ -1,8 +1,8 @@
 //! Agentic Runtime for ScreenBuddy
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::ai::{AiEngine, AiRequest, Message, MessageRole, ToolSpec};
@@ -11,14 +11,26 @@ use crate::error::Result;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     Thinking(String),
-    ToolUse { name: String, input: serde_json::Value },
-    ToolResult { name: String, output: String },
+    ToolUse {
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        name: String,
+        output: String,
+    },
     Message(String),
     Done,
     Error(String),
 }
 
-pub type ToolHandler = Arc<dyn Fn(serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> + Send + Sync>;
+pub type ToolHandler = Arc<
+    dyn Fn(
+            serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 pub struct Tool {
     pub name: String,
@@ -36,7 +48,11 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        Self { max_iterations: 10, timeout_secs: 120, system_prompt: "You are ScreenBuddy, a helpful desktop AI companion.".to_string() }
+        Self {
+            max_iterations: 10,
+            timeout_secs: 120,
+            system_prompt: "You are ScreenBuddy, a helpful desktop AI companion.".to_string(),
+        }
     }
 }
 
@@ -50,10 +66,18 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn new(ai: Arc<AiEngine>) -> Self {
         let (tx, _) = broadcast::channel(256);
-        Self { ai, tools: Arc::new(Mutex::new(HashMap::new())), config: AgentConfig::default(), tx }
+        Self {
+            ai,
+            tools: Arc::new(Mutex::new(HashMap::new())),
+            config: AgentConfig::default(),
+            tx,
+        }
     }
 
-    pub fn with_config(mut self, config: AgentConfig) -> Self { self.config = config; self }
+    pub fn with_config(mut self, config: AgentConfig) -> Self {
+        self.config = config;
+        self
+    }
 
     pub fn register_tool(&self, name: &str, tool: Tool) {
         // std::sync::Mutex: the guard is only ever held for a map insert, never
@@ -62,10 +86,14 @@ impl AgentRuntime {
         tools.insert(name.to_string(), tool);
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> { self.tx.subscribe() }
+    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
+        self.tx.subscribe()
+    }
 
     pub async fn run(&self, user_input: String) -> Result<String> {
-        let _ = self.tx.send(AgentEvent::Thinking("Starting...".to_string()));
+        let _ = self
+            .tx
+            .send(AgentEvent::Thinking("Starting...".to_string()));
         let mut response = String::new();
         // Conversation transcript, built up across tool-use iterations. Empty
         // until the first tool call, which is what selects the first-turn shape
@@ -85,9 +113,11 @@ impl AgentRuntime {
         let max_iterations = self.config.max_iterations.max(1);
 
         for iteration in 0..max_iterations {
-            let _ = self.tx.send(AgentEvent::Thinking(
-                if iteration == 0 { "Thinking...".to_string() } else { format!("Thinking... (step {}/{max_iterations})", iteration + 1) },
-            ));
+            let _ = self.tx.send(AgentEvent::Thinking(if iteration == 0 {
+                "Thinking...".to_string()
+            } else {
+                format!("Thinking... (step {}/{max_iterations})", iteration + 1)
+            }));
 
             // Subsequent turns are continuations after tool results, so the
             // conversation history carries the exchange and the prompt is a
@@ -164,7 +194,10 @@ impl AgentRuntime {
                 });
             }
             if !ai_resp.text.is_empty() {
-                history.push(Message { role: MessageRole::Assistant, content: ai_resp.text });
+                history.push(Message {
+                    role: MessageRole::Assistant,
+                    content: ai_resp.text,
+                });
             }
             response = assistant_content;
         }
@@ -200,17 +233,21 @@ pub fn default_tools() -> Vec<Tool> {
             name: "echo".to_string(),
             description: "Echo back the input".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {"text": {"type": "string"}}}),
-            handler: Arc::new(|input| Box::pin(async move {
-                Ok(input.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string())
-            })),
+            handler: Arc::new(|input| {
+                Box::pin(async move {
+                    Ok(input
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string())
+                })
+            }),
         },
         Tool {
             name: "time".to_string(),
             description: "Get current time".to_string(),
             input_schema: serde_json::json!({"type": "object"}),
-            handler: Arc::new(|_| Box::pin(async move {
-                Ok(chrono::Local::now().to_rfc3339())
-            })),
+            handler: Arc::new(|_| Box::pin(async move { Ok(chrono::Local::now().to_rfc3339()) })),
         },
     ]
 }
@@ -251,7 +288,9 @@ mod tests {
             agent.register_tool(&tool.name.clone(), tool);
         }
         // echo returns its input text.
-        let out = agent.dispatch("echo", serde_json::json!({"text":"hi"})).await;
+        let out = agent
+            .dispatch("echo", serde_json::json!({"text":"hi"}))
+            .await;
         assert_eq!(out, "hi");
     }
 
@@ -267,14 +306,22 @@ mod tests {
     async fn test_run_emits_done_on_failure_without_panicking() {
         // No local server is running, so generate() fails; the loop must surface
         // an Error event and still terminate rather than spinning.
-        let mut config = AiConfig::default();
-        config.ollama_endpoint = Some("http://127.0.0.1:1".into());
-        config.llamacpp_endpoint = Some("http://127.0.0.1:1".into());
-        let agent = AgentRuntime::new(Arc::new(AiEngine::new(config)))
-            .with_config(AgentConfig { max_iterations: 3, timeout_secs: 2, ..Default::default() });
+        let config = AiConfig {
+            ollama_endpoint: Some("http://127.0.0.1:1".into()),
+            llamacpp_endpoint: Some("http://127.0.0.1:1".into()),
+            ..AiConfig::default()
+        };
+        let agent = AgentRuntime::new(Arc::new(AiEngine::new(config))).with_config(AgentConfig {
+            max_iterations: 3,
+            timeout_secs: 2,
+            ..Default::default()
+        });
         let mut events = agent.subscribe();
         let out = agent.run("hello".into()).await.unwrap();
-        assert!(out.is_empty(), "no response expected on failure, got: {out}");
+        assert!(
+            out.is_empty(),
+            "no response expected on failure, got: {out}"
+        );
         let mut saw_error = false;
         while let Ok(ev) = events.try_recv() {
             if matches!(ev, AgentEvent::Error(_)) {

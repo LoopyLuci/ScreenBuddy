@@ -4,11 +4,8 @@
 //! This is the true desktop pet behavior.
 
 use std::collections::HashMap;
-use std::mem;
-use std::ptr;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 /// Unique ID for each pet window
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,6 +65,12 @@ pub struct PerPetWindowManager {
     next_id: u64,
 }
 
+impl Default for PerPetWindowManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerPetWindowManager {
     pub fn new() -> Self {
         let (tx, rx) = channel();
@@ -84,7 +87,10 @@ impl PerPetWindowManager {
         self.next_id += 1;
         let config = PetWindowConfig::new(id.0, creature_name, x, y);
         self.windows.insert(id, config);
-        println!("[PerPet] Created window for {} at ({}, {})", creature_name, x, y);
+        println!(
+            "[PerPet] Created window for {} at ({}, {})",
+            creature_name, x, y
+        );
         id
     }
 
@@ -120,22 +126,38 @@ impl PerPetWindowManager {
         while let Some(event) = self.poll_event() {
             match event {
                 PetWindowEvent::Show(id) => {
-                    if let Some(w) = self.windows.get_mut(&id) { w.visible = true; }
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.visible = true;
+                    }
                 }
                 PetWindowEvent::Hide(id) => {
-                    if let Some(w) = self.windows.get_mut(&id) { w.visible = false; }
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.visible = false;
+                    }
                 }
                 PetWindowEvent::Move(id, x, y) => {
-                    if let Some(w) = self.windows.get_mut(&id) { w.x = x; w.y = y; }
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.x = x;
+                        w.y = y;
+                    }
                 }
                 PetWindowEvent::Resize(id, width, height) => {
-                    if let Some(w) = self.windows.get_mut(&id) { w.width = width; w.height = height; }
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.width = width;
+                        w.height = height;
+                    }
                 }
                 PetWindowEvent::SetOpacity(id, opacity) => {
-                    if let Some(w) = self.windows.get_mut(&id) { w.opacity = opacity.clamp(0.0, 1.0); }
+                    if let Some(w) = self.windows.get_mut(&id) {
+                        w.opacity = opacity.clamp(0.0, 1.0);
+                    }
                 }
-                PetWindowEvent::Close(id) => { self.close_window(id); }
-                PetWindowEvent::CloseAll => { self.close_all(); }
+                PetWindowEvent::Close(id) => {
+                    self.close_window(id);
+                }
+                PetWindowEvent::CloseAll => {
+                    self.close_all();
+                }
                 PetWindowEvent::BringToFront(id) => {
                     if let Some(_w) = self.windows.get(&id) {
                         println!("[PerPet] Bring {} to front", id.0);
@@ -264,7 +286,9 @@ mod tests {
     #[test]
     fn test_multiple_windows() {
         let mut mgr = PerPetWindowManager::new();
-        let ids: Vec<_> = (0..5).map(|i| mgr.create_window(&format!("C{}", i), i * 100, 0)).collect();
+        let ids: Vec<_> = (0..5)
+            .map(|i| mgr.create_window(&format!("C{}", i), i * 100, 0))
+            .collect();
         assert_eq!(mgr.window_count(), 5);
         for id in ids {
             assert!(mgr.get_window(id).is_some());
@@ -284,8 +308,8 @@ pub mod windows {
     use std::sync::Arc;
     use winapi::shared::windef::{HBITMAP, HDC, HWND, POINT, RECT, SIZE};
     use winapi::um::wingdi::{
-        BLENDFUNCTION, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC,
-        CreateDIBSection, DeleteDC, DeleteObject, DIB_RGB_COLORS, BI_RGB, SelectObject,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, AC_SRC_ALPHA,
+        AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
     };
     use winapi::um::winuser::*;
 
@@ -311,6 +335,10 @@ pub mod windows {
     }
 
     /// A transparent window for a single creature
+    ///
+    /// `hdc_screen` is acquired for the blit target; the layered-window draw path
+    /// that consumes it is not implemented yet.
+    #[allow(dead_code)]
     pub struct PetWindowHandle {
         pub id: PetWindowId,
         hwnd: HWND,
@@ -399,7 +427,10 @@ pub mod windows {
                 class_name_wide.as_ptr(),
                 window_title_wide.as_ptr(),
                 WS_POPUP | WS_VISIBLE,
-                x, y, width as i32, height as i32,
+                x,
+                y,
+                width as i32,
+                height as i32,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 h_instance,
@@ -450,7 +481,7 @@ pub mod windows {
 
             // Initial transparency setup
             let mut blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
+                BlendOp: AC_SRC_OVER,
                 BlendFlags: 0,
                 SourceConstantAlpha: 255,
                 AlphaFormat: 1, // AC_SRC_ALPHA
@@ -490,7 +521,11 @@ pub mod windows {
             };
 
             // Store handle pointer in window for message procedure
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, &handle as *const PetWindowHandle as isize);
+            SetWindowLongPtrW(
+                hwnd,
+                GWLP_USERDATA,
+                &handle as *const PetWindowHandle as isize,
+            );
 
             Ok(handle)
         }
@@ -505,17 +540,24 @@ pub mod windows {
             }
 
             // Copy pixels to DIBSection
-            ptr::copy_nonoverlapping(pixels.as_ptr(), handle.pixel_data_ptr as *mut u8, pixel_count);
+            ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                handle.pixel_data_ptr as *mut u8,
+                pixel_count,
+            );
 
             // Update layered window
             let mut blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
+                BlendOp: AC_SRC_OVER,
                 BlendFlags: 0,
                 SourceConstantAlpha: 255,
                 AlphaFormat: 1,
             };
 
-            let mut size = SIZE { cx: handle.width as i32, cy: handle.height as i32 };
+            let mut size = SIZE {
+                cx: handle.width as i32,
+                cy: handle.height as i32,
+            };
             let mut pt_src = POINT { x: 0, y: 0 };
 
             UpdateLayeredWindow(
@@ -574,33 +616,45 @@ pub mod windows {
 
             for dy in 0..scaled_h {
                 let target_y = offset_y + dy;
-                if target_y >= win_h { continue; }
+                if target_y >= win_h {
+                    continue;
+                }
 
                 for dx in 0..scaled_w {
                     let target_x = offset_x + dx;
-                    if target_x >= win_w { continue; }
+                    if target_x >= win_w {
+                        continue;
+                    }
 
                     // Sample from sprite sheet
                     let src_x = ((dx as f32 / scale) as usize).min(fw - 1);
                     let src_y = ((dy as f32 / scale) as usize).min(fh - 1);
-                    let src_idx = ((ox + src_x) * 4 + src_y * sheet.width as usize * 4) as usize;
+                    let src_idx = (ox + src_x) * 4 + src_y * sheet.width as usize * 4;
 
-                    if src_idx + 3 >= pixels.len() { continue; }
+                    if src_idx + 3 >= pixels.len() {
+                        continue;
+                    }
 
                     let a = pixels[src_idx + 3] as u32;
-                    if a == 0 { continue; }
+                    if a == 0 {
+                        continue;
+                    }
 
                     let r = pixels[src_idx] as u32;
                     let g = pixels[src_idx + 1] as u32;
                     let b = pixels[src_idx + 2] as u32;
 
                     let dst_idx = (target_y * win_w + target_x) * 4;
-                    if dst_idx + 3 >= buf_size { continue; }
+                    if dst_idx + 3 >= buf_size {
+                        continue;
+                    }
 
                     // Alpha blending (over existing pixel)
                     let dst_a = *src.add(dst_idx + 3) as u32;
                     let out_a = a + (dst_a * (255 - a)) / 255;
-                    if out_a == 0 { continue; }
+                    if out_a == 0 {
+                        continue;
+                    }
 
                     let dst_r = *src.add(dst_idx) as u32;
                     let dst_g = *src.add(dst_idx + 1) as u32;
@@ -619,16 +673,22 @@ pub mod windows {
 
             // Composite to screen
             let mut blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
+                BlendOp: AC_SRC_OVER,
                 BlendFlags: 0,
                 SourceConstantAlpha: 255,
-                AlphaFormat: AC_SRC_ALPHA as u8,
+                AlphaFormat: AC_SRC_ALPHA,
             };
-            let mut size = SIZE { cx: handle.width as i32, cy: handle.height as i32 };
+            let mut size = SIZE {
+                cx: handle.width as i32,
+                cy: handle.height as i32,
+            };
             let mut pt_src = POINT { x: 0, y: 0 };
             let mut rect: RECT = mem::zeroed();
             GetWindowRect(handle.hwnd, &mut rect);
-            let mut dest_pt = POINT { x: rect.left, y: rect.top };
+            let mut dest_pt = POINT {
+                x: rect.left,
+                y: rect.top,
+            };
 
             UpdateLayeredWindow(
                 handle.hwnd,
@@ -650,8 +710,10 @@ pub mod windows {
             SetWindowPos(
                 handle.hwnd,
                 ptr::null_mut(),
-                x, y,
-                0, 0,
+                x,
+                y,
+                0,
+                0,
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             );
             Ok(())
@@ -663,13 +725,16 @@ pub mod windows {
         unsafe {
             let alpha = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
             let mut blend = BLENDFUNCTION {
-                BlendOp: AC_SRC_OVER as u8,
+                BlendOp: AC_SRC_OVER,
                 BlendFlags: 0,
                 SourceConstantAlpha: alpha,
                 AlphaFormat: 1,
             };
 
-            let mut size = SIZE { cx: handle.width as i32, cy: handle.height as i32 };
+            let mut size = SIZE {
+                cx: handle.width as i32,
+                cy: handle.height as i32,
+            };
             let mut pt_src = POINT { x: 0, y: 0 };
 
             UpdateLayeredWindow(
@@ -733,9 +798,7 @@ pub mod windows {
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
                 0
             }
-            WM_RBUTTONDOWN => {
-                0
-            }
+            WM_RBUTTONDOWN => 0,
             WM_TIMER => {
                 // Animation timer - force repaint
                 let handle_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const PetWindowHandle;

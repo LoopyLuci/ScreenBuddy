@@ -1,8 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use serde::{Serialize, Deserialize};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,12 +15,23 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        Self { enabled: true, master_volume: 0.7, music_volume: 0.4, sfx_volume: 0.8, muted: false }
+        Self {
+            enabled: true,
+            master_volume: 0.7,
+            music_volume: 0.4,
+            sfx_volume: 0.8,
+            muted: false,
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum SoundCategory { CreatureSound, Notification, Music, Ui }
+pub enum SoundCategory {
+    CreatureSound,
+    Notification,
+    Music,
+    Ui,
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioFile {
@@ -48,6 +58,12 @@ pub struct AudioSystem {
     last_play: HashMap<String, Instant>,
 }
 
+impl Default for AudioSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AudioSystem {
     pub fn new() -> Self {
         let mut sys = Self {
@@ -62,41 +78,72 @@ impl AudioSystem {
     }
 
     fn init_audio(&mut self) {
-        match rodio::OutputStream::try_default() {
-            Ok((stream, stream_handle)) => {
-                match rodio::Sink::try_new(&stream_handle) {
-                    Ok(sink) => {
-                        sink.set_volume(self.config.master_volume * self.config.sfx_volume);
-                        self.sink = Some(sink);
-                        self.stream = Some(stream);
-                    }
-                    Err(_) => {}
-                }
+        if let Ok((stream, stream_handle)) = rodio::OutputStream::try_default() {
+            if let Ok(sink) = rodio::Sink::try_new(&stream_handle) {
+                sink.set_volume(self.config.master_volume * self.config.sfx_volume);
+                self.sink = Some(sink);
+                self.stream = Some(stream);
             }
-            Err(_) => {}
         }
     }
 
     pub fn register_sound(&mut self, name: &str, path: &str, category: SoundCategory, volume: f32) {
-        self.sounds.insert(name.into(), AudioFile { name: name.into(), path: path.into(), category, volume });
+        self.sounds.insert(
+            name.into(),
+            AudioFile {
+                name: name.into(),
+                path: path.into(),
+                category,
+                volume,
+            },
+        );
     }
 
     pub fn load_default_sounds(&mut self) {
-        self.register_sound("idle_hum", "assets/audio/idle_hum.wav", SoundCategory::CreatureSound, 0.3);
-        self.register_sound("walk_step", "assets/audio/step.wav", SoundCategory::CreatureSound, 0.4);
-        self.register_sound("notification", "assets/audio/notify.wav", SoundCategory::Notification, 0.6);
+        self.register_sound(
+            "idle_hum",
+            "assets/audio/idle_hum.wav",
+            SoundCategory::CreatureSound,
+            0.3,
+        );
+        self.register_sound(
+            "walk_step",
+            "assets/audio/step.wav",
+            SoundCategory::CreatureSound,
+            0.4,
+        );
+        self.register_sound(
+            "notification",
+            "assets/audio/notify.wav",
+            SoundCategory::Notification,
+            0.6,
+        );
         self.register_sound("click", "assets/audio/click.wav", SoundCategory::Ui, 0.5);
-        self.register_sound("celebration", "assets/audio/celebrate.wav", SoundCategory::CreatureSound, 0.7);
-        self.register_sound("sleep_snore", "assets/audio/snore.wav", SoundCategory::CreatureSound, 0.2);
+        self.register_sound(
+            "celebration",
+            "assets/audio/celebrate.wav",
+            SoundCategory::CreatureSound,
+            0.7,
+        );
+        self.register_sound(
+            "sleep_snore",
+            "assets/audio/snore.wav",
+            SoundCategory::CreatureSound,
+            0.2,
+        );
     }
 
     pub fn play(&mut self, name: &str) -> Result<(), String> {
-        if !self.config.enabled || self.config.muted { return Ok(()); }
-        
+        if !self.config.enabled || self.config.muted {
+            return Ok(());
+        }
+
         // Rate limiting: don't play same sound more than once per 50ms
         let now = Instant::now();
         if let Some(last) = self.last_play.get(name) {
-            if now.duration_since(*last).as_millis() < 50 { return Ok(()); }
+            if now.duration_since(*last).as_millis() < 50 {
+                return Ok(());
+            }
         }
         self.last_play.insert(name.to_string(), now);
 
@@ -146,9 +193,15 @@ impl AudioSystem {
         self.config.master_volume
     }
 
-    pub fn set_muted(&mut self, muted: bool) { self.config.muted = muted; }
-    pub fn config(&self) -> &AudioConfig { &self.config }
-    pub fn set_config(&mut self, config: AudioConfig) { self.config = config; }
+    pub fn set_muted(&mut self, muted: bool) {
+        self.config.muted = muted;
+    }
+    pub fn config(&self) -> &AudioConfig {
+        &self.config
+    }
+    pub fn set_config(&mut self, config: AudioConfig) {
+        self.config = config;
+    }
 }
 
 #[cfg(test)]

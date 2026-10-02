@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use wgpu::util::DeviceExt;
-
 use crate::error::Result;
 
 /// GPU texture resource
@@ -22,7 +19,7 @@ impl Texture {
     ) -> Result<Self> {
         let image = image::load_from_memory(bytes)
             .map_err(|e| crate::error::Error::Render(format!("Failed to load image: {}", e)))?;
-        
+
         let rgba = image.to_rgba8();
         let dimensions = image::GenericImageView::dimensions(&image);
 

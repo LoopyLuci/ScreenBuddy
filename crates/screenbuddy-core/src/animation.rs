@@ -3,9 +3,9 @@
 //! Manages sprite sheets and frame-based animations for creature states.
 //! Supports: idle, walk, fly, sleep, celebrate, and custom animations.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Animation state types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,15 +67,17 @@ impl Animation {
 
     /// Update the animation
     pub fn update(&mut self, delta_time: f64) {
-        if self.frames.is_empty() { return; }
-        
+        if self.frames.is_empty() {
+            return;
+        }
+
         self.time_accumulator += delta_time;
         let frame_duration = 1.0 / self.fps;
-        
+
         while self.time_accumulator >= frame_duration {
             self.time_accumulator -= frame_duration;
             self.current_frame += 1;
-            
+
             if self.current_frame >= self.frames.len() {
                 if self.looping {
                     self.current_frame = 0;
@@ -103,7 +105,9 @@ impl Animation {
 
     /// Check if the animation has finished (non-looping only)
     pub fn is_finished(&self) -> bool {
-        if self.looping { return false; }
+        if self.looping {
+            return false;
+        }
         self.current_frame >= self.frames.len().saturating_sub(1)
     }
 
@@ -171,6 +175,23 @@ impl AnimationController {
         self.current_state
     }
 
+    /// The state this controller was constructed with.
+    pub fn default_state(&self) -> AnimationState {
+        self.default_state
+    }
+
+    /// Return to the default state, restarting its animation.
+    ///
+    /// Unlike `set_state`, this does not require the default animation to be
+    /// registered: the controller falls back to an empty frame list rather than
+    /// refusing the transition.
+    pub fn reset(&mut self) {
+        self.current_state = self.default_state;
+        if let Some(anim) = self.animations.get_mut(&self.default_state) {
+            anim.reset();
+        }
+    }
+
     /// Update the current animation
     pub fn update(&mut self, delta_time: f64) {
         if let Some(anim) = self.animations.get_mut(&self.current_state) {
@@ -180,20 +201,23 @@ impl AnimationController {
 
     /// Get the current frame path
     pub fn current_frame_path(&self) -> Option<&PathBuf> {
-        self.animations.get(&self.current_state)
+        self.animations
+            .get(&self.current_state)
             .and_then(|anim| anim.current_frame_path())
     }
 
     /// Get the current frame index
     pub fn current_frame_index(&self) -> usize {
-        self.animations.get(&self.current_state)
+        self.animations
+            .get(&self.current_state)
             .map(|anim| anim.frame_index())
             .unwrap_or(0)
     }
 
     /// Check if the current animation is finished
     pub fn is_current_finished(&self) -> bool {
-        self.animations.get(&self.current_state)
+        self.animations
+            .get(&self.current_state)
             .map(|anim| anim.is_finished())
             .unwrap_or(true)
     }
@@ -235,7 +259,7 @@ impl SpriteSheetLoader {
         looping: bool,
     ) -> Result<Animation, String> {
         let mut animation = Animation::new(state, fps, looping);
-        
+
         if dir.exists() {
             let prefix = format!("{}_", state);
             let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -246,21 +270,21 @@ impl SpriteSheetLoader {
                     name.starts_with(&prefix) && name.ends_with(".png")
                 })
                 .collect();
-            
+
             entries.sort_by_key(|e| e.file_name());
-            
+
             for entry in entries {
                 animation.add_frame(entry.path());
             }
         }
-        
+
         Ok(animation)
     }
 
     /// Load all animations from a directory structure
-    pub fn load_all_from_directory(base_dir: &PathBuf) -> Result<Vec<Animation>, String> {
+    pub fn load_all_from_directory(base_dir: &Path) -> Result<Vec<Animation>, String> {
         let mut animations = Vec::new();
-        
+
         let states = vec![
             (AnimationState::Idle, "idle"),
             (AnimationState::Walk, "walk"),
@@ -268,7 +292,7 @@ impl SpriteSheetLoader {
             (AnimationState::Sleep, "sleep"),
             (AnimationState::Celebrate, "celebrate"),
         ];
-        
+
         for (state, name) in states {
             let dir = base_dir.join(name);
             if dir.exists() {
@@ -278,7 +302,7 @@ impl SpriteSheetLoader {
                 }
             }
         }
-        
+
         Ok(animations)
     }
 }
@@ -312,14 +336,57 @@ mod tests {
     }
 
     #[test]
+    fn test_controller_default_state_is_observable() {
+        let c = AnimationController::new(AnimationState::Walk);
+        assert_eq!(c.current_state(), AnimationState::Walk);
+        assert_eq!(c.default_state(), AnimationState::Walk);
+    }
+
+    #[test]
+    fn test_controller_reset_returns_to_default() {
+        let mut c = AnimationController::new(AnimationState::Idle);
+        c.add_animation(Animation::new(AnimationState::Idle, 1.0, true));
+        c.add_animation(Animation::new(AnimationState::Walk, 1.0, true));
+        assert!(c.set_state(AnimationState::Walk));
+        assert_eq!(c.current_state(), AnimationState::Walk);
+
+        c.reset();
+        assert_eq!(c.current_state(), AnimationState::Idle);
+    }
+
+    #[test]
+    fn test_controller_reset_restarts_the_animation() {
+        let mut c = AnimationController::new(AnimationState::Idle);
+        let mut idle = Animation::new(AnimationState::Idle, 1.0, true);
+        idle.add_frame(PathBuf::from("f0.png"));
+        idle.add_frame(PathBuf::from("f1.png"));
+        c.add_animation(idle);
+
+        // Advance off the first frame, then reset and confirm it rewinds.
+        c.update(1.5);
+        assert_eq!(c.get(AnimationState::Idle).unwrap().frame_index(), 1);
+        c.reset();
+        assert_eq!(c.get(AnimationState::Idle).unwrap().frame_index(), 0);
+    }
+
+    #[test]
+    fn test_controller_reset_works_without_default_registered() {
+        // set_state refuses unregistered states; reset must not.
+        let mut c = AnimationController::new(AnimationState::Fly);
+        assert!(!c.set_state(AnimationState::Walk));
+        c.reset();
+        assert_eq!(c.current_state(), AnimationState::Fly);
+    }
+
+    #[test]
     fn test_animation_update() {
         let mut anim = Animation::new(AnimationState::Idle, 1.0, true); // 1 FPS
         anim.add_frame(PathBuf::from("frame_0.png"));
         anim.add_frame(PathBuf::from("frame_1.png"));
-        
+
         anim.update(0.5);
         assert_eq!(anim.frame_index(), 0);
-        
+
         anim.update(0.6); // Total 1.1s, should advance
         assert_eq!(anim.frame_index(), 1);
     }
@@ -329,7 +396,7 @@ mod tests {
         let mut anim = Animation::new(AnimationState::Idle, 1.0, true);
         anim.add_frame(PathBuf::from("frame_0.png"));
         anim.add_frame(PathBuf::from("frame_1.png"));
-        
+
         anim.update(3.0); // 3 seconds at 1 FPS = 3 frames, should loop
         assert_eq!(anim.frame_index(), 1); // 3 % 2 = 1
     }
@@ -339,7 +406,7 @@ mod tests {
         let mut anim = Animation::new(AnimationState::Celebrate, 1.0, false);
         anim.add_frame(PathBuf::from("frame_0.png"));
         anim.add_frame(PathBuf::from("frame_1.png"));
-        
+
         anim.update(5.0); // Way past end
         assert_eq!(anim.frame_index(), 1); // Stays at last frame
         assert!(anim.is_finished());
@@ -350,10 +417,10 @@ mod tests {
         let mut anim = Animation::new(AnimationState::Idle, 1.0, true);
         anim.add_frame(PathBuf::from("frame_0.png"));
         anim.add_frame(PathBuf::from("frame_1.png"));
-        
+
         anim.update(1.5);
         assert_eq!(anim.frame_index(), 1);
-        
+
         anim.reset();
         assert_eq!(anim.frame_index(), 0);
     }
@@ -361,19 +428,19 @@ mod tests {
     #[test]
     fn test_animation_controller() {
         let mut controller = AnimationController::new(AnimationState::Idle);
-        
+
         let mut idle_anim = Animation::new(AnimationState::Idle, 12.0, true);
         idle_anim.add_frame(PathBuf::from("idle_0.png"));
         controller.add_animation(idle_anim);
-        
+
         let mut walk_anim = Animation::new(AnimationState::Walk, 12.0, true);
         walk_anim.add_frame(PathBuf::from("walk_0.png"));
         controller.add_animation(walk_anim);
-        
+
         assert!(controller.has_state(AnimationState::Idle));
         assert!(controller.has_state(AnimationState::Walk));
         assert!(!controller.has_state(AnimationState::Fly));
-        
+
         assert!(controller.set_state(AnimationState::Walk));
         assert_eq!(controller.current_state(), AnimationState::Walk);
     }
@@ -381,12 +448,12 @@ mod tests {
     #[test]
     fn test_animation_controller_update() {
         let mut controller = AnimationController::new(AnimationState::Idle);
-        
+
         let mut anim = Animation::new(AnimationState::Idle, 1.0, true);
         anim.add_frame(PathBuf::from("frame_0.png"));
         anim.add_frame(PathBuf::from("frame_1.png"));
         controller.add_animation(anim);
-        
+
         controller.update(1.5);
         assert_eq!(controller.current_frame_index(), 1);
     }
@@ -394,10 +461,10 @@ mod tests {
     #[test]
     fn test_animation_controller_states() {
         let mut controller = AnimationController::new(AnimationState::Idle);
-        
+
         let idle = Animation::new(AnimationState::Idle, 12.0, true);
         controller.add_animation(idle);
-        
+
         let states = controller.available_states();
         assert_eq!(states.len(), 1);
         assert_eq!(states[0], AnimationState::Idle);

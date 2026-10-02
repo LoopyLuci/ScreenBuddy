@@ -59,7 +59,13 @@ fn draw_bird_celebrate(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phase:
     draw_bird_body(img, ox, -jump, 0, wing_flap);
 }
 
-fn draw_bird_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32, leg_offset: i32, wing_flap: i32) {
+fn draw_bird_body(
+    img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    ox: i32,
+    bob: f32,
+    leg_offset: i32,
+    wing_flap: i32,
+) {
     let bob_y = bob as i32;
 
     for y in 20..44_i32 {
@@ -68,7 +74,11 @@ fn draw_bird_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32, l
             let dy = y as f32 - 32.0 + bob;
             let d = (dx * dx) / 144.0 + (dy * dy) / 64.0;
             if d < 1.0 {
-                let c = if d > 0.85 { [0x2D, 0x1B, 0x00, 255] } else { [0xFF, 0x6B, 0x35, 255] };
+                let c = if d > 0.85 {
+                    [0x2D, 0x1B, 0x00, 255]
+                } else {
+                    [0xFF, 0x6B, 0x35, 255]
+                };
                 px(img, x + ox, y + bob_y, c);
             }
         }
@@ -109,10 +119,30 @@ fn draw_bird_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32, l
     px(img, 36 + ox, 19 + bob_y, [0xFF, 0xC0, 0x4D, 255]);
     px(img, 37 + ox, 19 + bob_y, [0xFF, 0xC0, 0x4D, 255]);
     px(img, 36 + ox, 20 + bob_y, [0xFF, 0xC0, 0x4D, 255]);
-    px(img, 24 + ox, 43 + bob_y + leg_offset, [0xFF, 0xC0, 0x4D, 255]);
-    px(img, 25 + ox, 43 + bob_y + leg_offset, [0xFF, 0xC0, 0x4D, 255]);
-    px(img, 34 + ox, 43 + bob_y - leg_offset, [0xFF, 0xC0, 0x4D, 255]);
-    px(img, 35 + ox, 43 + bob_y - leg_offset, [0xFF, 0xC0, 0x4D, 255]);
+    px(
+        img,
+        24 + ox,
+        43 + bob_y + leg_offset,
+        [0xFF, 0xC0, 0x4D, 255],
+    );
+    px(
+        img,
+        25 + ox,
+        43 + bob_y + leg_offset,
+        [0xFF, 0xC0, 0x4D, 255],
+    );
+    px(
+        img,
+        34 + ox,
+        43 + bob_y - leg_offset,
+        [0xFF, 0xC0, 0x4D, 255],
+    );
+    px(
+        img,
+        35 + ox,
+        43 + bob_y - leg_offset,
+        [0xFF, 0xC0, 0x4D, 255],
+    );
 }
 
 // ============================================================================
@@ -161,7 +191,12 @@ fn draw_dragon_celebrate(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phas
     draw_dragon_body(img, ox, -jump, 0);
     // Fire breath
     for i in 0..5_i32 {
-        px(img, 58 + ox + i * 2, 20 - i * 3, [0xFF, 0x88, 0x00, (255 - i * 40) as u8]);
+        px(
+            img,
+            58 + ox + i * 2,
+            20 - i * 3,
+            [0xFF, 0x88, 0x00, (255 - i * 40) as u8],
+        );
     }
 }
 
@@ -175,7 +210,11 @@ fn draw_dragon_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32,
             let dy = y as f32 - 32.0 + bob;
             let d = (dx * dx) / 256.0 + (dy * dy) / 100.0;
             if d < 1.0 {
-                let c = if d > 0.85 { [0x22, 0x88, 0x22, 255] } else { [0x33, 0xCC, 0x33, 255] };
+                let c = if d > 0.85 {
+                    [0x22, 0x88, 0x22, 255]
+                } else {
+                    [0x33, 0xCC, 0x33, 255]
+                };
                 px(img, x + ox, y + bob_y, c);
             }
         }
@@ -257,11 +296,21 @@ fn draw_robo_cat_celebrate(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, ph
     let jump = (phase * PI * 8.0).abs().sin() * 5.0;
     draw_robo_cat_body(img, ox, -jump, 0);
     for i in 0..4 {
-        px(img, ox + 10 + i * 12, 10 + (i % 2) * 10, [0xFF, 0xFF, 0x00, 255]);
+        px(
+            img,
+            ox + 10 + i * 12,
+            10 + (i % 2) * 10,
+            [0xFF, 0xFF, 0x00, 255],
+        );
     }
 }
 
-fn draw_robo_cat_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32, leg_offset: i32) {
+fn draw_robo_cat_body(
+    img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    ox: i32,
+    bob: f32,
+    leg_offset: i32,
+) {
     let bob_y = bob as i32;
 
     for y in 20..44_i32 {
@@ -270,7 +319,11 @@ fn draw_robo_cat_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f3
             let dy = y as f32 - 32.0 + bob;
             let d = (dx * dx) / 144.0 + (dy * dy) / 64.0;
             if d < 1.0 {
-                let c = if d > 0.85 { [0x33, 0x33, 0x33, 255] } else { [0x66, 0x66, 0x66, 255] };
+                let c = if d > 0.85 {
+                    [0x33, 0x33, 0x33, 255]
+                } else {
+                    [0x66, 0x66, 0x66, 255]
+                };
                 px(img, x + ox, y + bob_y, c);
             }
         }
@@ -352,7 +405,11 @@ fn draw_slime_king_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, wobbl
             let dy = y as f32 - 36.0 + wobble;
             let d = (dx * dx) / 256.0 + (dy * dy) / 144.0;
             if d < 1.0 {
-                let c = if d > 0.85 { [0x22, 0xCC, 0x22, 255] } else { [0x44, 0xFF, 0x44, 255] };
+                let c = if d > 0.85 {
+                    [0x22, 0xCC, 0x22, 255]
+                } else {
+                    [0x44, 0xFF, 0x44, 255]
+                };
                 px(img, x + ox, y + wob_y, c);
             }
         }
@@ -399,7 +456,12 @@ fn draw_pixel_wizard_fly(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phas
     for i in 0..8 {
         let angle = i as f32 * PI / 4.0;
         let dist = 35.0 + (phase * PI * 4.0).sin() * 5.0;
-        px(img, 30 + (angle.cos() * dist) as i32 + ox, 30 + (angle.sin() * dist) as i32, [0xFF, 0x00, 0xFF, 150]);
+        px(
+            img,
+            30 + (angle.cos() * dist) as i32 + ox,
+            30 + (angle.sin() * dist) as i32,
+            [0xFF, 0x00, 0xFF, 150],
+        );
     }
 }
 
@@ -413,11 +475,21 @@ fn draw_pixel_wizard_celebrate(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32
     let jump = (phase * PI * 8.0).abs().sin() * 5.0;
     draw_pixel_wizard_body(img, ox, -jump, 0);
     for i in 0..6 {
-        px(img, ox + 10 + i * 10, 10 + (i % 3) * 8, [0xFF, 0xFF, 0x00, 255]);
+        px(
+            img,
+            ox + 10 + i * 10,
+            10 + (i % 3) * 8,
+            [0xFF, 0xFF, 0x00, 255],
+        );
     }
 }
 
-fn draw_pixel_wizard_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob: f32, staff_bounce: i32) {
+fn draw_pixel_wizard_body(
+    img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    ox: i32,
+    bob: f32,
+    staff_bounce: i32,
+) {
     let bob_y = bob as i32;
 
     for y in 24..52_i32 {
@@ -471,7 +543,12 @@ fn draw_pixel_wizard_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob
 
     for y in 20..52_i32 {
         for x in 46..52_i32 {
-            px(img, x + ox, y + bob_y + staff_bounce, [0x8B, 0x45, 0x13, 255]);
+            px(
+                img,
+                x + ox,
+                y + bob_y + staff_bounce,
+                [0x8B, 0x45, 0x13, 255],
+            );
         }
     }
     for y in 12..20_i32 {
@@ -480,14 +557,18 @@ fn draw_pixel_wizard_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, bob
             let dy = y as f32 - 16.0;
             let d = (dx * dx) / 9.0 + (dy * dy) / 9.0;
             if d < 1.0 {
-                px(img, x + ox, y + bob_y + staff_bounce, [0xFF, 0xFF, 0x00, 255]);
+                px(
+                    img,
+                    x + ox,
+                    y + bob_y + staff_bounce,
+                    [0xFF, 0xFF, 0x00, 255],
+                );
             }
         }
     }
 }
 
 // ============================================================================
-
 
 // Ghost
 fn draw_ghost_idle(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phase: f32) {
@@ -505,7 +586,7 @@ fn draw_ghost_idle(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phase: f32
                     img.put_pixel(px as u32, py as u32, Rgba([220, 220, 255, alpha]));
                 }
                 // Eyes
-                if (dy >= 20 && dy <= 28) && ((dx >= 18 && dx <= 26) || (dx >= 38 && dx <= 46)) {
+                if (20..=28).contains(&dy) && ((18..=26).contains(&dx) || (38..=46).contains(&dx)) {
                     img.put_pixel(px as u32, py as u32, Rgba([0, 0, 0, 255]));
                 }
             }
@@ -531,7 +612,11 @@ fn draw_ghost_fly(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phase: f32)
             let px = ox + dx;
             let py = 64 + i * 8 + (dx as f32 * 0.3).sin() as i32;
             if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                img.put_pixel(px as u32, py as u32, Rgba([200, 200, 240, (100 - i * 15) as u8]));
+                img.put_pixel(
+                    px as u32,
+                    py as u32,
+                    Rgba([200, 200, 240, (100 - i * 15) as u8]),
+                );
             }
         }
     }
@@ -544,7 +629,11 @@ fn draw_ghost_sleep(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, phase: f3
         let z_x = ox + 40 + i * 12;
         let z_y = 10 - i * 8 + (phase * PI * 2.0).sin() as i32;
         for dx in 0i32..8i32 {
-            if z_x + dx >= 0 && z_x + dx < img.width() as i32 && z_y >= 0 && z_y < img.height() as i32 {
+            if z_x + dx >= 0
+                && z_x + dx < img.width() as i32
+                && z_y >= 0
+                && z_y < img.height() as i32
+            {
                 img.put_pixel((z_x + dx) as u32, z_y as u32, Rgba([255, 255, 255, 200]));
             }
         }
@@ -583,7 +672,12 @@ fn draw_cosmic_jellyfish_fly(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32, 
     let pulse = (phase * PI * 6.0).sin() * 4.0;
     draw_cosmic_jellyfish_body(img, ox, pulse);
     for i in 0..5_i32 {
-        px(img, ox + 10 + i * 8, 50 + i * 3, [0xFF, 0xFF, 0xFF, (200 - i * 30) as u8]);
+        px(
+            img,
+            ox + 10 + i * 8,
+            50 + i * 3,
+            [0xFF, 0xFF, 0xFF, (200 - i * 30) as u8],
+        );
     }
 }
 
@@ -600,7 +694,12 @@ fn draw_cosmic_jellyfish_celebrate(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox:
     for i in 0..12_i32 {
         let angle = i as f32 * PI / 6.0;
         let dist = 25.0 + (phase * PI * 4.0).sin() * 10.0;
-        px(img, 30 + (angle.cos() * dist) as i32 + ox, 30 + (angle.sin() * dist) as i32, [0xFF, 0xFF, 0x00, 200]);
+        px(
+            img,
+            30 + (angle.cos() * dist) as i32 + ox,
+            30 + (angle.sin() * dist) as i32,
+            [0xFF, 0xFF, 0x00, 200],
+        );
     }
 }
 
@@ -613,7 +712,11 @@ fn draw_cosmic_jellyfish_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32,
             let dy = y as f32 - 26.0 + pulse;
             let d = (dx * dx) / 225.0 + (dy * dy) / 100.0;
             if d < 1.0 {
-                let c = if d > 0.85 { [0x88, 0x44, 0xFF, 255] } else { [0xFF, 0x44, 0xFF, 200] };
+                let c = if d > 0.85 {
+                    [0x88, 0x44, 0xFF, 255]
+                } else {
+                    [0xFF, 0x44, 0xFF, 200]
+                };
                 px(img, x + ox, y + pul_y, c);
             }
         }
@@ -637,7 +740,12 @@ fn draw_cosmic_jellyfish_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32,
     px(img, 33 + ox, 22 + pul_y, [0x00, 0x00, 0x00, 255]);
 
     for i in 0..5_i32 {
-        px(img, ox + 10 + i * 8, 8 + (i % 3) * 6, [0xFF, 0xFF, 0xFF, 255]);
+        px(
+            img,
+            ox + 10 + i * 8,
+            8 + (i % 3) * 6,
+            [0xFF, 0xFF, 0xFF, 255],
+        );
     }
 }
 
@@ -645,11 +753,13 @@ fn draw_cosmic_jellyfish_body(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, ox: i32,
 // MAIN
 // ============================================================================
 
-fn generate_sprite_sheet(
-    name: &str,
-    draw_fn: fn(&mut ImageBuffer<Rgba<u8>, Vec<u8>>, i32, f32),
-    output_path: &str,
-) {
+/// A single sprite frame buffer, ready to draw.
+type FrameCanvas = ImageBuffer<Rgba<u8>, Vec<u8>>;
+
+/// Draws one frame at index `i` into a `SZ * SC` square canvas.
+type FrameDrawFn = fn(&mut FrameCanvas, i32, f32);
+
+fn generate_sprite_sheet(_name: &str, draw_fn: FrameDrawFn, output_path: &str) {
     let frames = 4;
     let w = (SZ * SC * frames) as i32;
     let h = (SZ * SC) as i32;
@@ -667,47 +777,183 @@ fn generate_sprite_sheet(
 fn main() {
     std::fs::create_dir_all("assets/generated").unwrap();
 
-    generate_sprite_sheet("bird_idle", draw_bird_idle, "assets/generated/bird_idle.png");
-    generate_sprite_sheet("bird_walk", draw_bird_walk, "assets/generated/bird_walk.png");
+    generate_sprite_sheet(
+        "bird_idle",
+        draw_bird_idle,
+        "assets/generated/bird_idle.png",
+    );
+    generate_sprite_sheet(
+        "bird_walk",
+        draw_bird_walk,
+        "assets/generated/bird_walk.png",
+    );
     generate_sprite_sheet("bird_fly", draw_bird_fly, "assets/generated/bird_fly.png");
-    generate_sprite_sheet("bird_sleep", draw_bird_sleep, "assets/generated/bird_sleep.png");
-    generate_sprite_sheet("bird_celebrate", draw_bird_celebrate, "assets/generated/bird_celebrate.png");
+    generate_sprite_sheet(
+        "bird_sleep",
+        draw_bird_sleep,
+        "assets/generated/bird_sleep.png",
+    );
+    generate_sprite_sheet(
+        "bird_celebrate",
+        draw_bird_celebrate,
+        "assets/generated/bird_celebrate.png",
+    );
 
-    generate_sprite_sheet("robo_cat_idle", draw_robo_cat_idle, "assets/generated/robo_cat_idle.png");
-    generate_sprite_sheet("robo_cat_walk", draw_robo_cat_walk, "assets/generated/robo_cat_walk.png");
-    generate_sprite_sheet("robo_cat_fly", draw_robo_cat_fly, "assets/generated/robo_cat_fly.png");
-    generate_sprite_sheet("robo_cat_sleep", draw_robo_cat_sleep, "assets/generated/robo_cat_sleep.png");
-    generate_sprite_sheet("robo_cat_celebrate", draw_robo_cat_celebrate, "assets/generated/robo_cat_celebrate.png");
+    generate_sprite_sheet(
+        "robo_cat_idle",
+        draw_robo_cat_idle,
+        "assets/generated/robo_cat_idle.png",
+    );
+    generate_sprite_sheet(
+        "robo_cat_walk",
+        draw_robo_cat_walk,
+        "assets/generated/robo_cat_walk.png",
+    );
+    generate_sprite_sheet(
+        "robo_cat_fly",
+        draw_robo_cat_fly,
+        "assets/generated/robo_cat_fly.png",
+    );
+    generate_sprite_sheet(
+        "robo_cat_sleep",
+        draw_robo_cat_sleep,
+        "assets/generated/robo_cat_sleep.png",
+    );
+    generate_sprite_sheet(
+        "robo_cat_celebrate",
+        draw_robo_cat_celebrate,
+        "assets/generated/robo_cat_celebrate.png",
+    );
 
-    generate_sprite_sheet("slime_king_idle", draw_slime_king_idle, "assets/generated/slime_king_idle.png");
-    generate_sprite_sheet("slime_king_walk", draw_slime_king_walk, "assets/generated/slime_king_walk.png");
-    generate_sprite_sheet("slime_king_fly", draw_slime_king_fly, "assets/generated/slime_king_fly.png");
-    generate_sprite_sheet("slime_king_sleep", draw_slime_king_sleep, "assets/generated/slime_king_sleep.png");
-    generate_sprite_sheet("slime_king_celebrate", draw_slime_king_celebrate, "assets/generated/slime_king_celebrate.png");
+    generate_sprite_sheet(
+        "slime_king_idle",
+        draw_slime_king_idle,
+        "assets/generated/slime_king_idle.png",
+    );
+    generate_sprite_sheet(
+        "slime_king_walk",
+        draw_slime_king_walk,
+        "assets/generated/slime_king_walk.png",
+    );
+    generate_sprite_sheet(
+        "slime_king_fly",
+        draw_slime_king_fly,
+        "assets/generated/slime_king_fly.png",
+    );
+    generate_sprite_sheet(
+        "slime_king_sleep",
+        draw_slime_king_sleep,
+        "assets/generated/slime_king_sleep.png",
+    );
+    generate_sprite_sheet(
+        "slime_king_celebrate",
+        draw_slime_king_celebrate,
+        "assets/generated/slime_king_celebrate.png",
+    );
 
-    generate_sprite_sheet("pixel_wizard_idle", draw_pixel_wizard_idle, "assets/generated/pixel_wizard_idle.png");
-    generate_sprite_sheet("pixel_wizard_walk", draw_pixel_wizard_walk, "assets/generated/pixel_wizard_walk.png");
-    generate_sprite_sheet("pixel_wizard_fly", draw_pixel_wizard_fly, "assets/generated/pixel_wizard_fly.png");
-    generate_sprite_sheet("pixel_wizard_sleep", draw_pixel_wizard_sleep, "assets/generated/pixel_wizard_sleep.png");
-    generate_sprite_sheet("pixel_wizard_celebrate", draw_pixel_wizard_celebrate, "assets/generated/pixel_wizard_celebrate.png");
+    generate_sprite_sheet(
+        "pixel_wizard_idle",
+        draw_pixel_wizard_idle,
+        "assets/generated/pixel_wizard_idle.png",
+    );
+    generate_sprite_sheet(
+        "pixel_wizard_walk",
+        draw_pixel_wizard_walk,
+        "assets/generated/pixel_wizard_walk.png",
+    );
+    generate_sprite_sheet(
+        "pixel_wizard_fly",
+        draw_pixel_wizard_fly,
+        "assets/generated/pixel_wizard_fly.png",
+    );
+    generate_sprite_sheet(
+        "pixel_wizard_sleep",
+        draw_pixel_wizard_sleep,
+        "assets/generated/pixel_wizard_sleep.png",
+    );
+    generate_sprite_sheet(
+        "pixel_wizard_celebrate",
+        draw_pixel_wizard_celebrate,
+        "assets/generated/pixel_wizard_celebrate.png",
+    );
 
-    generate_sprite_sheet("ghost_idle", draw_ghost_idle, "assets/generated/ghost_idle.png");
-    generate_sprite_sheet("ghost_walk", draw_ghost_walk, "assets/generated/ghost_walk.png");
-    generate_sprite_sheet("ghost_fly", draw_ghost_fly, "assets/generated/ghost_fly.png");
-    generate_sprite_sheet("ghost_sleep", draw_ghost_sleep, "assets/generated/ghost_sleep.png");
-    generate_sprite_sheet("ghost_celebrate", draw_ghost_celebrate, "assets/generated/ghost_celebrate.png");
-    generate_sprite_sheet("cosmic_jellyfish_idle", draw_cosmic_jellyfish_idle, "assets/generated/cosmic_jellyfish_idle.png");
-    generate_sprite_sheet("cosmic_jellyfish_walk", draw_cosmic_jellyfish_walk, "assets/generated/cosmic_jellyfish_walk.png");
-    generate_sprite_sheet("cosmic_jellyfish_fly", draw_cosmic_jellyfish_fly, "assets/generated/cosmic_jellyfish_fly.png");
-    generate_sprite_sheet("cosmic_jellyfish_sleep", draw_cosmic_jellyfish_sleep, "assets/generated/cosmic_jellyfish_sleep.png");
-    generate_sprite_sheet("cosmic_jellyfish_celebrate", draw_cosmic_jellyfish_celebrate, "assets/generated/cosmic_jellyfish_celebrate.png");
+    generate_sprite_sheet(
+        "ghost_idle",
+        draw_ghost_idle,
+        "assets/generated/ghost_idle.png",
+    );
+    generate_sprite_sheet(
+        "ghost_walk",
+        draw_ghost_walk,
+        "assets/generated/ghost_walk.png",
+    );
+    generate_sprite_sheet(
+        "ghost_fly",
+        draw_ghost_fly,
+        "assets/generated/ghost_fly.png",
+    );
+    generate_sprite_sheet(
+        "ghost_sleep",
+        draw_ghost_sleep,
+        "assets/generated/ghost_sleep.png",
+    );
+    generate_sprite_sheet(
+        "ghost_celebrate",
+        draw_ghost_celebrate,
+        "assets/generated/ghost_celebrate.png",
+    );
+    generate_sprite_sheet(
+        "cosmic_jellyfish_idle",
+        draw_cosmic_jellyfish_idle,
+        "assets/generated/cosmic_jellyfish_idle.png",
+    );
+    generate_sprite_sheet(
+        "cosmic_jellyfish_walk",
+        draw_cosmic_jellyfish_walk,
+        "assets/generated/cosmic_jellyfish_walk.png",
+    );
+    generate_sprite_sheet(
+        "cosmic_jellyfish_fly",
+        draw_cosmic_jellyfish_fly,
+        "assets/generated/cosmic_jellyfish_fly.png",
+    );
+    generate_sprite_sheet(
+        "cosmic_jellyfish_sleep",
+        draw_cosmic_jellyfish_sleep,
+        "assets/generated/cosmic_jellyfish_sleep.png",
+    );
+    generate_sprite_sheet(
+        "cosmic_jellyfish_celebrate",
+        draw_cosmic_jellyfish_celebrate,
+        "assets/generated/cosmic_jellyfish_celebrate.png",
+    );
 
     // Dragon animations
-    generate_sprite_sheet("dragon_idle", draw_dragon_idle, "assets/generated/dragon_idle.png");
-    generate_sprite_sheet("dragon_walk", draw_dragon_walk, "assets/generated/dragon_walk.png");
-    generate_sprite_sheet("dragon_fly", draw_dragon_fly, "assets/generated/dragon_fly.png");
-    generate_sprite_sheet("dragon_sleep", draw_dragon_sleep, "assets/generated/dragon_sleep.png");
-    generate_sprite_sheet("dragon_celebrate", draw_dragon_celebrate, "assets/generated/dragon_celebrate.png");
+    generate_sprite_sheet(
+        "dragon_idle",
+        draw_dragon_idle,
+        "assets/generated/dragon_idle.png",
+    );
+    generate_sprite_sheet(
+        "dragon_walk",
+        draw_dragon_walk,
+        "assets/generated/dragon_walk.png",
+    );
+    generate_sprite_sheet(
+        "dragon_fly",
+        draw_dragon_fly,
+        "assets/generated/dragon_fly.png",
+    );
+    generate_sprite_sheet(
+        "dragon_sleep",
+        draw_dragon_sleep,
+        "assets/generated/dragon_sleep.png",
+    );
+    generate_sprite_sheet(
+        "dragon_celebrate",
+        draw_dragon_celebrate,
+        "assets/generated/dragon_celebrate.png",
+    );
 
     println!("\nAll sprite sheets generated! (30 total)");
 }

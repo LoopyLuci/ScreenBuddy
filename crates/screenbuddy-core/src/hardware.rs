@@ -1,6 +1,5 @@
 //! Hardware Detection and Capability Reporting
-use std::collections::HashMap;
-use sysinfo::{System, CpuRefreshKind, MemoryRefreshKind, RefreshKind};
+use sysinfo::{RefreshKind, System};
 
 #[derive(Debug, Clone)]
 pub struct CpuInfo {
@@ -26,18 +25,36 @@ pub struct GpuInfo {
     pub vram_mb: u64,
     pub driver_version: String,
     pub api_support: Vec<GraphicsApi>, // Vulkan, DirectX, Metal, OpenGL
-    pub compute_score: u32, // relative compute capability
+    pub compute_score: u32,            // relative compute capability
     pub is_primary: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GpuVendor { Nvidia, Amd, Intel, Apple, Unknown }
+pub enum GpuVendor {
+    Nvidia,
+    Amd,
+    Intel,
+    Apple,
+    Unknown,
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GpuDeviceType { Discrete, Integrated, Virtual, CpuSoftware }
+pub enum GpuDeviceType {
+    Discrete,
+    Integrated,
+    Virtual,
+    CpuSoftware,
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GraphicsApi { Vulkan, DirectX11, DirectX12, Metal, OpenGl, WebGpu }
+pub enum GraphicsApi {
+    Vulkan,
+    DirectX11,
+    DirectX12,
+    Metal,
+    OpenGl,
+    WebGpu,
+}
 
 #[derive(Debug, Clone)]
 pub struct MemoryInfo {
@@ -70,14 +87,24 @@ impl HardwareProfile {
         let numa_nodes = Self::detect_numa();
         let (os_name, os_version) = Self::detect_os();
 
-        Self { cpu, gpus, memory, numa_nodes, os_name, os_version }
+        Self {
+            cpu,
+            gpus,
+            memory,
+            numa_nodes,
+            os_name,
+            os_version,
+        }
     }
 
     fn detect_cpu(sys: &System) -> CpuInfo {
         let cpus = sys.cpus();
         let physical_cores = sys.physical_core_count().unwrap_or(1);
         let logical_cores = cpus.len();
-        let name = cpus.first().map(|c| c.brand().to_string()).unwrap_or_default();
+        let name = cpus
+            .first()
+            .map(|c| c.brand().to_string())
+            .unwrap_or_default();
         let arch = std::env::consts::OS.to_string();
 
         CpuInfo {
@@ -90,7 +117,7 @@ impl HardwareProfile {
             supports_avx2: is_x86_feature_detected!("avx2"),
             supports_avx512: is_x86_feature_detected!("avx512f"),
             supports_neon: cfg!(target_arch = "aarch64"),
-            l1_cache_kb: 32,  // TODO: read from CPUID
+            l1_cache_kb: 32, // TODO: read from CPUID
             l2_cache_kb: 256,
             l3_cache_kb: 8192,
         }
@@ -166,7 +193,10 @@ impl HardwareProfile {
     }
 
     fn detect_os() -> (String, String) {
-        (System::name().unwrap_or_default(), System::os_version().unwrap_or_default())
+        (
+            System::name().unwrap_or_default(),
+            System::os_version().unwrap_or_default(),
+        )
     }
 
     /// Recommend thread pool size based on hardware
@@ -177,12 +207,15 @@ impl HardwareProfile {
 
     /// Check if system has a discrete GPU suitable for compute
     pub fn has_discrete_gpu(&self) -> bool {
-        self.gpus.iter().any(|g| g.device_type == GpuDeviceType::Discrete)
+        self.gpus
+            .iter()
+            .any(|g| g.device_type == GpuDeviceType::Discrete)
     }
 
     /// Get the best GPU for compute work
     pub fn best_compute_gpu(&self) -> Option<&GpuInfo> {
-        self.gpus.iter()
+        self.gpus
+            .iter()
             .filter(|g| g.device_type == GpuDeviceType::Discrete)
             .max_by_key(|g| g.compute_score)
             .or_else(|| self.gpus.first())
@@ -191,14 +224,20 @@ impl HardwareProfile {
     /// Print a summary of detected hardware
     pub fn summary(&self) -> String {
         let mut s = String::new();
-        s.push_str(&format!("CPU: {} ({} physical cores, {} logical)\n",
-            self.cpu.name, self.cpu.physical_cores, self.cpu.logical_cores));
+        s.push_str(&format!(
+            "CPU: {} ({} physical cores, {} logical)\n",
+            self.cpu.name, self.cpu.physical_cores, self.cpu.logical_cores
+        ));
         for (i, gpu) in self.gpus.iter().enumerate() {
-            s.push_str(&format!("GPU {}: {} ({:?}, {:?})\n",
-                i, gpu.name, gpu.vendor, gpu.device_type));
+            s.push_str(&format!(
+                "GPU {}: {} ({:?}, {:?})\n",
+                i, gpu.name, gpu.vendor, gpu.device_type
+            ));
         }
-        s.push_str(&format!("RAM: {} MB total, {} MB available\n",
-            self.memory.total_ram_mb, self.memory.available_ram_mb));
+        s.push_str(&format!(
+            "RAM: {} MB total, {} MB available\n",
+            self.memory.total_ram_mb, self.memory.available_ram_mb
+        ));
         s.push_str(&format!("NUMA nodes: {}", self.numa_nodes));
         s
     }

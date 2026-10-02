@@ -1,14 +1,27 @@
+use crate::error::Result;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
-use serde::{Deserialize, Serialize};
-use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-pub enum ModelTier { LocalTiny, LocalMedium, LocalLarge, CloudBudget, CloudPremium, CloudMax }
+pub enum ModelTier {
+    LocalTiny,
+    LocalMedium,
+    LocalLarge,
+    CloudBudget,
+    CloudPremium,
+    CloudMax,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-pub enum Backend { Ollama, LlamaCpp, OpenAi, Anthropic, Custom }
+pub enum Backend {
+    Ollama,
+    LlamaCpp,
+    OpenAi,
+    Anthropic,
+    Custom,
+}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiRequest {
     pub prompt: String,
     pub system_prompt: Option<String>,
@@ -20,21 +33,6 @@ pub struct AiRequest {
     /// Tool schemas advertised to the model for this request.
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
-}
-
-impl Default for AiRequest {
-    fn default() -> Self {
-        Self {
-            prompt: String::new(),
-            system_prompt: None,
-            max_tokens: None,
-            temperature: None,
-            stream: false,
-            force_tier: None,
-            history: None,
-            tools: Vec::new(),
-        }
-    }
 }
 
 /// A tool the model is allowed to call, described in JSON Schema form.
@@ -54,21 +52,35 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message { pub role: MessageRole, pub content: String }
+pub struct Message {
+    pub role: MessageRole,
+    pub content: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageRole { System, User, Assistant }
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiResponse {
-    pub text: String, pub model_tier: ModelTier, pub backend: Backend,
-    pub tokens_used: u32, pub finish_reason: FinishReason,
+    pub text: String,
+    pub model_tier: ModelTier,
+    pub backend: Backend,
+    pub tokens_used: u32,
+    pub finish_reason: FinishReason,
     /// Tool invocations the model requested, if any.
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FinishReason { Stop, Length, Error(String) }
+pub enum FinishReason {
+    Stop,
+    Length,
+    Error(String),
+}
 
 impl AiResponse {
     /// Convenience constructor for backend responses that carry no tool calls.
@@ -79,7 +91,14 @@ impl AiResponse {
         tokens_used: u32,
         finish_reason: FinishReason,
     ) -> Self {
-        Self { text, model_tier, backend, tokens_used, finish_reason, tool_calls: Vec::new() }
+        Self {
+            text,
+            model_tier,
+            backend,
+            tokens_used,
+            finish_reason,
+            tool_calls: Vec::new(),
+        }
     }
 }
 
@@ -100,7 +119,10 @@ pub struct AiConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LocalModelType { Ollama, LlamaCpp }
+pub enum LocalModelType {
+    Ollama,
+    LlamaCpp,
+}
 
 impl Default for AiConfig {
     fn default() -> Self {
@@ -109,31 +131,52 @@ impl Default for AiConfig {
             anthropic_api_key: std::env::var("ANTHROPIC_API_KEY").ok(),
             ollama_endpoint: Some("http://localhost:11434".into()),
             llamacpp_endpoint: Some("http://localhost:8080".into()),
-            custom_endpoint: None, custom_api_key: None,
-            local_model_path: None, local_model_type: LocalModelType::Ollama,
-            default_tier: ModelTier::LocalTiny, max_tokens_default: 2048,
-            offline_only: true, cloud_fallback: false,
+            custom_endpoint: None,
+            custom_api_key: None,
+            local_model_path: None,
+            local_model_type: LocalModelType::Ollama,
+            default_tier: ModelTier::LocalTiny,
+            max_tokens_default: 2048,
+            offline_only: true,
+            cloud_fallback: false,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ModelInfo { pub tier: ModelTier, pub backend: Backend, pub name: String, pub max_context: u32, pub cost: f64 }
+pub struct ModelInfo {
+    pub tier: ModelTier,
+    pub backend: Backend,
+    pub name: String,
+    pub max_context: u32,
+    pub cost: f64,
+}
 
 #[derive(Clone)]
 pub struct AiEngine {
-    config: AiConfig, models: Vec<ModelInfo>, client: reqwest::Client,
+    config: AiConfig,
+    models: Vec<ModelInfo>,
+    client: reqwest::Client,
 }
 
 impl AiEngine {
     pub fn new(config: AiConfig) -> Self {
         let models = Self::build_model_list(&config);
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(120)).build().expect("HTTP client");
-        Self { config, models, client }
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("HTTP client");
+        Self {
+            config,
+            models,
+            client,
+        }
     }
 
     pub async fn generate(&self, req: AiRequest) -> Result<AiResponse> {
-        let tier = req.force_tier.unwrap_or_else(|| self.auto_select_tier(&req));
+        let tier = req
+            .force_tier
+            .unwrap_or_else(|| self.auto_select_tier(&req));
         let model = self.select_model(tier)?;
         match model.backend {
             Backend::Ollama => self.gen_ollama(&req, model).await,
@@ -147,25 +190,49 @@ impl AiEngine {
     fn auto_select_tier(&self, req: &AiRequest) -> ModelTier {
         let c = self.estimate_complexity(&req.prompt);
         if self.config.offline_only {
-            if c < 0.3 { ModelTier::LocalTiny } else if c < 0.7 { ModelTier::LocalMedium } else { ModelTier::LocalLarge }
+            if c < 0.3 {
+                ModelTier::LocalTiny
+            } else if c < 0.7 {
+                ModelTier::LocalMedium
+            } else {
+                ModelTier::LocalLarge
+            }
         } else {
-            if c < 0.2 && self.has_local() { ModelTier::LocalTiny }
-            else if c < 0.5 && self.has_local() { ModelTier::LocalMedium }
-            else if c < 0.8 { ModelTier::CloudBudget } else { ModelTier::CloudPremium }
+            if c < 0.2 && self.has_local() {
+                ModelTier::LocalTiny
+            } else if c < 0.5 && self.has_local() {
+                ModelTier::LocalMedium
+            } else if c < 0.8 {
+                ModelTier::CloudBudget
+            } else {
+                ModelTier::CloudPremium
+            }
         }
     }
 
     fn estimate_complexity(&self, p: &str) -> f64 {
         let base = (p.len() as f64 / 1000.0).min(1.0);
-        if ["function","class","implement","debug","code"].iter().any(|k| p.to_lowercase().contains(k)) {
+        if ["function", "class", "implement", "debug", "code"]
+            .iter()
+            .any(|k| p.to_lowercase().contains(k))
+        {
             (base + 0.3).min(1.0)
-        } else { base }
+        } else {
+            base
+        }
     }
 
-    fn has_local(&self) -> bool { self.models.iter().any(|m| matches!(m.backend, Backend::Ollama | Backend::LlamaCpp)) }
+    fn has_local(&self) -> bool {
+        self.models
+            .iter()
+            .any(|m| matches!(m.backend, Backend::Ollama | Backend::LlamaCpp))
+    }
 
     fn select_model(&self, tier: ModelTier) -> Result<&ModelInfo> {
-        self.models.iter().find(|m| m.tier == tier).or_else(|| self.models.first())
+        self.models
+            .iter()
+            .find(|m| m.tier == tier)
+            .or_else(|| self.models.first())
             .ok_or_else(|| crate::error::Error::InvalidConfig("No models".into()))
     }
 
@@ -173,22 +240,70 @@ impl AiEngine {
         let mut m = Vec::new();
         // Ollama — always available if endpoint configured
         if config.ollama_endpoint.is_some() {
-            m.push(ModelInfo { tier: ModelTier::LocalTiny, backend: Backend::Ollama, name: "llama3.2:1b".into(), max_context: 8192, cost: 0.0 });
-            m.push(ModelInfo { tier: ModelTier::LocalMedium, backend: Backend::Ollama, name: "llama3.2".into(), max_context: 8192, cost: 0.0 });
-            m.push(ModelInfo { tier: ModelTier::LocalLarge, backend: Backend::Ollama, name: "llama3.1:70b".into(), max_context: 128000, cost: 0.0 });
+            m.push(ModelInfo {
+                tier: ModelTier::LocalTiny,
+                backend: Backend::Ollama,
+                name: "llama3.2:1b".into(),
+                max_context: 8192,
+                cost: 0.0,
+            });
+            m.push(ModelInfo {
+                tier: ModelTier::LocalMedium,
+                backend: Backend::Ollama,
+                name: "llama3.2".into(),
+                max_context: 8192,
+                cost: 0.0,
+            });
+            m.push(ModelInfo {
+                tier: ModelTier::LocalLarge,
+                backend: Backend::Ollama,
+                name: "llama3.1:70b".into(),
+                max_context: 128000,
+                cost: 0.0,
+            });
         }
         // llama.cpp server
         if config.llamacpp_endpoint.is_some() {
-            m.push(ModelInfo { tier: ModelTier::LocalMedium, backend: Backend::LlamaCpp, name: "local-llama".into(), max_context: 4096, cost: 0.0 });
+            m.push(ModelInfo {
+                tier: ModelTier::LocalMedium,
+                backend: Backend::LlamaCpp,
+                name: "local-llama".into(),
+                max_context: 4096,
+                cost: 0.0,
+            });
         }
         if !config.offline_only {
             if config.openai_api_key.is_some() {
-                m.push(ModelInfo { tier: ModelTier::CloudBudget, backend: Backend::OpenAi, name: "gpt-4o-mini".into(), max_context: 128000, cost: 0.00015 });
-                m.push(ModelInfo { tier: ModelTier::CloudPremium, backend: Backend::OpenAi, name: "gpt-4o".into(), max_context: 128000, cost: 0.005 });
+                m.push(ModelInfo {
+                    tier: ModelTier::CloudBudget,
+                    backend: Backend::OpenAi,
+                    name: "gpt-4o-mini".into(),
+                    max_context: 128000,
+                    cost: 0.00015,
+                });
+                m.push(ModelInfo {
+                    tier: ModelTier::CloudPremium,
+                    backend: Backend::OpenAi,
+                    name: "gpt-4o".into(),
+                    max_context: 128000,
+                    cost: 0.005,
+                });
             }
             if config.anthropic_api_key.is_some() {
-                m.push(ModelInfo { tier: ModelTier::CloudBudget, backend: Backend::Anthropic, name: "claude-3-5-haiku-20241022".into(), max_context: 200000, cost: 0.001 });
-                m.push(ModelInfo { tier: ModelTier::CloudPremium, backend: Backend::Anthropic, name: "claude-3-5-sonnet-20241022".into(), max_context: 200000, cost: 0.015 });
+                m.push(ModelInfo {
+                    tier: ModelTier::CloudBudget,
+                    backend: Backend::Anthropic,
+                    name: "claude-3-5-haiku-20241022".into(),
+                    max_context: 200000,
+                    cost: 0.001,
+                });
+                m.push(ModelInfo {
+                    tier: ModelTier::CloudPremium,
+                    backend: Backend::Anthropic,
+                    name: "claude-3-5-sonnet-20241022".into(),
+                    max_context: 200000,
+                    cost: 0.015,
+                });
             }
         }
         m
@@ -256,7 +371,11 @@ impl AiEngine {
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| format!("call_{i}"));
-                ToolCall { id, name, arguments }
+                ToolCall {
+                    id,
+                    name,
+                    arguments,
+                }
             })
             .filter(|c| !c.name.is_empty())
             .collect()
@@ -287,10 +406,16 @@ impl AiEngine {
 
     fn build_messages(&self, req: &AiRequest) -> Vec<serde_json::Value> {
         let mut msgs = Vec::new();
-        if let Some(sys) = &req.system_prompt { msgs.push(serde_json::json!({"role":"system","content":sys})); }
+        if let Some(sys) = &req.system_prompt {
+            msgs.push(serde_json::json!({"role":"system","content":sys}));
+        }
         if let Some(hist) = &req.history {
             for msg in hist.iter().take(20) {
-                let role = match msg.role { MessageRole::System => "system", MessageRole::User => "user", MessageRole::Assistant => "assistant" };
+                let role = match msg.role {
+                    MessageRole::System => "system",
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                };
                 msgs.push(serde_json::json!({"role":role,"content":&msg.content}));
             }
         }
@@ -314,12 +439,23 @@ impl AiEngine {
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(Self::openai_tools(&req.tools));
         }
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(crate::error::Error::Network(format!("Ollama error: {}", resp.status())));
+            return Err(crate::error::Error::Network(format!(
+                "Ollama error: {}",
+                resp.status()
+            )));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         Ok(AiResponse {
             tool_calls: Self::parse_openai_tool_calls(&json),
             ..AiResponse::plain(
@@ -327,7 +463,11 @@ impl AiEngine {
                 model.tier,
                 model.backend,
                 json["eval_count"].as_u64().unwrap_or(0) as u32,
-                if json["done"].as_bool().unwrap_or(false) { FinishReason::Stop } else { FinishReason::Length },
+                if json["done"].as_bool().unwrap_or(false) {
+                    FinishReason::Stop
+                } else {
+                    FinishReason::Length
+                },
             )
         })
     }
@@ -337,22 +477,38 @@ impl AiEngine {
         let ep = self.config.llamacpp_endpoint.as_ref().unwrap();
         let url = format!("{}/completion", ep);
         let prompt = if let Some(sys) = &req.system_prompt {
-            format!("{}
+            format!(
+                "{}
 
-{}", sys, req.prompt)
-        } else { req.prompt.clone() };
+{}",
+                sys, req.prompt
+            )
+        } else {
+            req.prompt.clone()
+        };
         let body = serde_json::json!({
             "prompt": prompt,
             "n_predict": req.max_tokens.unwrap_or(self.config.max_tokens_default),
             "temperature": req.temperature.unwrap_or(0.7),
             "stop": ["</s>", "user:", "assistant:"],
         });
-        let resp = self.client.post(&url).json(&body).send().await
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(crate::error::Error::Network(format!("llama.cpp error: {}", resp.status())));
+            return Err(crate::error::Error::Network(format!(
+                "llama.cpp error: {}",
+                resp.status()
+            )));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         // The /completion endpoint has no native function-calling field; tool use
         // there is driven by GBNF grammar constraints, so the raw text is the answer.
         Ok(AiResponse::plain(
@@ -366,7 +522,11 @@ impl AiEngine {
 
     // ============ OPENAI ============
     async fn gen_openai(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
-        let key = self.config.openai_api_key.as_ref().ok_or_else(|| crate::error::Error::InvalidConfig("No OpenAI key".into()))?;
+        let key = self
+            .config
+            .openai_api_key
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::InvalidConfig("No OpenAI key".into()))?;
         let mut body = serde_json::json!({
             "model": model.name,
             "messages": self.build_messages(req),
@@ -376,19 +536,32 @@ impl AiEngine {
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(Self::openai_tools(&req.tools));
         }
-        let resp = self.client.post("https://api.openai.com/v1/chat/completions")
+        let resp = self
+            .client
+            .post("https://api.openai.com/v1/chat/completions")
             .header("Authorization", format!("Bearer {}", key))
-            .json(&body).send().await
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
             let err_text = resp.text().await.unwrap_or_default();
-            return Err(crate::error::Error::Network(format!("OpenAI error: {}", err_text)));
+            return Err(crate::error::Error::Network(format!(
+                "OpenAI error: {}",
+                err_text
+            )));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         Ok(AiResponse {
             tool_calls: Self::parse_openai_tool_calls(&json),
             ..AiResponse::plain(
-                json["choices"][0]["message"]["content"].as_str().unwrap_or("").into(),
+                json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .into(),
                 model.tier,
                 model.backend,
                 json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32,
@@ -399,11 +572,19 @@ impl AiEngine {
 
     // ============ ANTHROPIC ============
     async fn gen_anthropic(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
-        let key = self.config.anthropic_api_key.as_ref().ok_or_else(|| crate::error::Error::InvalidConfig("No Anthropic key".into()))?;
+        let key = self
+            .config
+            .anthropic_api_key
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::InvalidConfig("No Anthropic key".into()))?;
         let mut messages = Vec::new();
         if let Some(hist) = &req.history {
             for msg in hist.iter().take(20) {
-                let role = match msg.role { MessageRole::User => "user", MessageRole::Assistant => "assistant", MessageRole::System => continue };
+                let role = match msg.role {
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                    MessageRole::System => continue,
+                };
                 messages.push(serde_json::json!({"role": role, "content": &msg.content}));
             }
         }
@@ -417,17 +598,27 @@ impl AiEngine {
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(Self::anthropic_tools(&req.tools));
         }
-        let resp = self.client.post("https://api.anthropic.com/v1/messages")
+        let resp = self
+            .client
+            .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
-            .json(&body).send().await
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
             let err_text = resp.text().await.unwrap_or_default();
-            return Err(crate::error::Error::Network(format!("Anthropic error: {}", err_text)));
+            return Err(crate::error::Error::Network(format!(
+                "Anthropic error: {}",
+                err_text
+            )));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         Ok(AiResponse {
             tool_calls: Self::parse_anthropic_tool_calls(&json),
             ..AiResponse::plain(
@@ -448,7 +639,11 @@ impl AiEngine {
 
     // ============ CUSTOM / OpenRouter / Together / etc ============
     async fn gen_custom(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
-        let ep = self.config.custom_endpoint.as_ref().ok_or_else(|| crate::error::Error::InvalidConfig("No endpoint".into()))?;
+        let ep = self
+            .config
+            .custom_endpoint
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::InvalidConfig("No endpoint".into()))?;
         let mut body = serde_json::json!({
             "model": model.name,
             "messages": self.build_messages(req),
@@ -458,19 +653,37 @@ impl AiEngine {
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(Self::openai_tools(&req.tools));
         }
-        let mut r = self.client.post(ep).header("content-type", "application/json").json(&body);
-        if let Some(key) = &self.config.custom_api_key { r = r.header("Authorization", format!("Bearer {}", key)); }
-        let resp = r.send().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let mut r = self
+            .client
+            .post(ep)
+            .header("content-type", "application/json")
+            .json(&body);
+        if let Some(key) = &self.config.custom_api_key {
+            r = r.header("Authorization", format!("Bearer {}", key));
+        }
+        let resp = r
+            .send()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         if !resp.status().is_success() {
             let err_text = resp.text().await.unwrap_or_default();
-            return Err(crate::error::Error::Network(format!("Custom API error: {}", err_text)));
+            return Err(crate::error::Error::Network(format!(
+                "Custom API error: {}",
+                err_text
+            )));
         }
-        let json: serde_json::Value = resp.json().await.map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
         // OpenAI-compatible response format
         Ok(AiResponse {
             tool_calls: Self::parse_openai_tool_calls(&json),
             ..AiResponse::plain(
-                json["choices"][0]["message"]["content"].as_str().unwrap_or("").into(),
+                json["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .into(),
                 model.tier,
                 model.backend,
                 json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32,
@@ -481,15 +694,28 @@ impl AiEngine {
 
     pub fn simple(&self, prompt: &str) -> String {
         let p = prompt.to_lowercase();
-        if p.contains("hello") || p.contains("hi ") { "Hello! I'm your ScreenBuddy companion. How can I help?".into() }
-        else if p.contains("help") { "I can: chat, answer questions, control your buddy, and more! Try clicking the tray icon.".into() }
-        else if p.contains("joke") { "Why do programmers prefer dark mode? Because light attracts bugs! 🐛".into() }
-        else if p.contains("name") { "I'm ScreenBuddy, your AI desktop companion! 🐦".into() }
-        else { format!("I heard: '{}'. Connect a real AI model (Ollama, OpenAI, etc.) for full responses!", prompt) }
+        if p.contains("hello") || p.contains("hi ") {
+            "Hello! I'm your ScreenBuddy companion. How can I help?".into()
+        } else if p.contains("help") {
+            "I can: chat, answer questions, control your buddy, and more! Try clicking the tray icon.".into()
+        } else if p.contains("joke") {
+            "Why do programmers prefer dark mode? Because light attracts bugs! 🐛".into()
+        } else if p.contains("name") {
+            "I'm ScreenBuddy, your AI desktop companion! 🐦".into()
+        } else {
+            format!(
+                "I heard: '{}'. Connect a real AI model (Ollama, OpenAI, etc.) for full responses!",
+                prompt
+            )
+        }
     }
 
-    pub fn config(&self) -> &AiConfig { &self.config }
-    pub fn available_models(&self) -> &[ModelInfo] { &self.models }
+    pub fn config(&self) -> &AiConfig {
+        &self.config
+    }
+    pub fn available_models(&self) -> &[ModelInfo] {
+        &self.models
+    }
 }
 
 #[cfg(test)]
@@ -582,7 +808,10 @@ mod tests {
         let out = AiEngine::openai_tools(&specs);
         assert_eq!(out[0]["type"].as_str(), Some("function"));
         assert_eq!(out[0]["function"]["name"].as_str(), Some("echo"));
-        assert_eq!(out[0]["function"]["parameters"]["type"].as_str(), Some("object"));
+        assert_eq!(
+            out[0]["function"]["parameters"]["type"].as_str(),
+            Some("object")
+        );
     }
 
     #[test]
@@ -603,4 +832,3 @@ mod tests {
         assert!(!engine.available_models().is_empty());
     }
 }
-

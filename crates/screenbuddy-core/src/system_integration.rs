@@ -46,13 +46,22 @@ impl SystemEvent {
     }
 }
 
+/// Callback invoked when a system event fires.
+pub type SystemEventListener = Arc<dyn Fn(SystemEvent) + Send + Sync>;
+
 /// System integration manager
 pub struct SystemIntegration {
     enabled: bool,
     idle_threshold: Duration,
     last_activity: Instant,
     is_idle: bool,
-    event_listeners: Arc<RwLock<Vec<Arc<dyn Fn(SystemEvent) + Send + Sync>>>>,
+    event_listeners: Arc<RwLock<Vec<SystemEventListener>>>,
+}
+
+impl Default for SystemIntegration {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SystemIntegration {
@@ -90,7 +99,10 @@ impl SystemIntegration {
     where
         F: Fn(SystemEvent) + Send + Sync + 'static,
     {
-        self.event_listeners.write().unwrap().push(Arc::new(listener));
+        self.event_listeners
+            .write()
+            .unwrap()
+            .push(Arc::new(listener));
     }
 
     pub fn clear_listeners(&mut self) {
@@ -153,6 +165,7 @@ impl SystemIntegration {
 }
 
 /// Monitor system for events (runs in separate thread)
+#[allow(dead_code)] // `integration` is the state the monitor thread polls
 pub struct SystemMonitor {
     integration: Arc<Mutex<SystemIntegration>>,
     running: Arc<std::sync::atomic::AtomicBool>,
@@ -167,11 +180,13 @@ impl SystemMonitor {
     }
 
     pub fn start(&self) {
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn stop(&self) {
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn running(&self) -> bool {

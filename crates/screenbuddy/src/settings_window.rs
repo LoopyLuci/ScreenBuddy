@@ -8,6 +8,7 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 
 /// Settings window state
+#[allow(dead_code)] // Win32 HWND handle; wired up when the window is shown
 pub struct SettingsWindow {
     hwnd: Option<isize>,
     visible: bool,
@@ -15,6 +16,7 @@ pub struct SettingsWindow {
 }
 
 /// A setting value
+#[allow(dead_code)] // variants are populated by the settings UI when built out
 #[derive(Debug, Clone)]
 pub enum SettingValue {
     Bool(bool),
@@ -24,6 +26,7 @@ pub enum SettingValue {
 }
 
 /// Setting change event
+#[allow(dead_code)] // emitted once the settings UI dispatches changes
 #[derive(Debug, Clone)]
 pub enum SettingsEvent {
     Changed(String, SettingValue),
@@ -41,22 +44,27 @@ impl SettingsWindow {
         }
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn set(&self, key: &str, value: SettingValue) {
         self.settings.lock().unwrap().insert(key.to_string(), value);
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn get(&self, key: &str) -> Option<SettingValue> {
         self.settings.lock().unwrap().get(key).cloned()
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn is_visible(&self) -> bool {
         self.visible
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn show(&mut self) {
         self.visible = true;
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn hide(&mut self) {
         self.visible = false;
     }
@@ -65,6 +73,7 @@ impl SettingsWindow {
         self.visible = !self.visible;
     }
 
+    #[allow(dead_code)] // public settings API, consumed by the settings UI
     pub fn settings(&self) -> Arc<Mutex<HashMap<String, SettingValue>>> {
         self.settings.clone()
     }
@@ -83,19 +92,27 @@ pub fn create_settings_window() -> Result<isize, String> {
             style: winapi::um::winuser::CS_HREDRAW | winapi::um::winuser::CS_VREDRAW,
             lpfnWndProc: Some(settings_window_proc),
             hInstance: h_instance,
-            hCursor: winapi::um::winuser::LoadCursorW(ptr::null_mut(), winapi::um::winuser::IDC_ARROW),
+            hCursor: winapi::um::winuser::LoadCursorW(
+                ptr::null_mut(),
+                winapi::um::winuser::IDC_ARROW,
+            ),
             lpszClassName: class_name.as_ptr(),
             ..mem::zeroed()
         };
         winapi::um::winuser::RegisterClassExW(&wc);
 
-        let ex_style = winapi::um::winuser::WS_EX_LAYERED | winapi::um::winuser::WS_EX_TOPMOST | winapi::um::winuser::WS_EX_TOOLWINDOW;
+        let ex_style = winapi::um::winuser::WS_EX_LAYERED
+            | winapi::um::winuser::WS_EX_TOPMOST
+            | winapi::um::winuser::WS_EX_TOOLWINDOW;
         let hwnd = winapi::um::winuser::CreateWindowExW(
             ex_style,
             class_name.as_ptr(),
             window_title.as_ptr(),
             winapi::um::winuser::WS_POPUP | winapi::um::winuser::WS_VISIBLE,
-            600, 150, 350, 500,
+            600,
+            150,
+            350,
+            500,
             ptr::null_mut(),
             ptr::null_mut(),
             h_instance,

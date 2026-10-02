@@ -49,6 +49,12 @@ pub struct TtsSystem {
     is_speaking: Arc<Mutex<bool>>,
 }
 
+impl Default for TtsSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TtsSystem {
     pub fn new() -> Self {
         Self {
@@ -67,10 +73,7 @@ impl TtsSystem {
     }
 
     pub fn is_available(&self) -> bool {
-        match self.config.engine {
-            TtsEngine::None => false,
-            _ => true,
-        }
+        !matches!(self.config.engine, TtsEngine::None)
     }
 
     pub fn is_speaking(&self) -> bool {
@@ -90,7 +93,7 @@ impl TtsSystem {
         let text = text.to_string();
         let engine = self.config.engine.clone();
         let volume = self.config.volume;
-        let rate = self.config.rate;
+        let _rate = self.config.rate;
         let is_speaking = self.is_speaking.clone();
 
         // Mark as speaking
@@ -103,7 +106,7 @@ impl TtsSystem {
                 TtsEngine::Sap => {
                     // Use PowerShell TTS (works on Windows without extra deps)
                     let _ = std::process::Command::new("powershell")
-                        .args(&[
+                        .args([
                             "-Command",
                             &format!(
                                 "Add-Type -AssemblyName System.Speech; $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; $synth.Speak('{}');",
@@ -114,13 +117,11 @@ impl TtsSystem {
                 }
                 TtsEngine::Espeak => {
                     let _ = std::process::Command::new("espeak")
-                        .args(&[&format!("--volume={}", (volume * 200.0) as u32), &text])
+                        .args([&format!("--volume={}", (volume * 200.0) as u32), &text])
                         .output();
                 }
                 TtsEngine::Command(cmd) => {
-                    let _ = std::process::Command::new(&cmd)
-                        .arg(&text)
-                        .output();
+                    let _ = std::process::Command::new(&cmd).arg(&text).output();
                 }
             }
             *is_speaking.lock().unwrap() = false;

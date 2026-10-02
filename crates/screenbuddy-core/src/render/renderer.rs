@@ -4,12 +4,22 @@ use std::sync::Arc;
 use crate::error::Result;
 
 /// Trait combining window handle access
-pub trait WindowHandle: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Send + Sync {}
-impl<T: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Send + Sync> WindowHandle for T {}
+pub trait WindowHandle:
+    raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Send + Sync
+{
+}
+impl<T: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Send + Sync>
+    WindowHandle for T
+{
+}
 
 /// GPU device priority
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum GpuPriority { Other = 0, Integrated = 1, Discrete = 2 }
+pub enum GpuPriority {
+    Other = 0,
+    Integrated = 1,
+    Discrete = 2,
+}
 
 impl From<wgpu::DeviceType> for GpuPriority {
     fn from(dt: wgpu::DeviceType) -> Self {
@@ -36,10 +46,24 @@ pub trait GpuScheduler: Send + Sync {
 }
 
 /// Round-robin scheduler
-pub struct RoundRobinScheduler { current: usize }
-impl RoundRobinScheduler { pub fn new() -> Self { Self { current: 0 } } }
+pub struct RoundRobinScheduler {
+    current: usize,
+}
+impl Default for RoundRobinScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RoundRobinScheduler {
+    pub fn new() -> Self {
+        Self { current: 0 }
+    }
+}
 impl GpuScheduler for RoundRobinScheduler {
-    fn name(&self) -> &str { "RoundRobin" }
+    fn name(&self) -> &str {
+        "RoundRobin"
+    }
     fn select_gpu(&mut self, num_gpus: usize) -> usize {
         let idx = self.current;
         self.current = (self.current + 1) % num_gpus.max(1);
@@ -50,15 +74,23 @@ impl GpuScheduler for RoundRobinScheduler {
 /// Load-balanced scheduler
 pub struct LoadBalancedScheduler;
 impl GpuScheduler for LoadBalancedScheduler {
-    fn name(&self) -> &str { "LoadBalanced" }
-    fn select_gpu(&mut self, _num_gpus: usize) -> usize { 0 }
+    fn name(&self) -> &str {
+        "LoadBalanced"
+    }
+    fn select_gpu(&mut self, _num_gpus: usize) -> usize {
+        0
+    }
 }
 
 /// Single-GPU scheduler
 pub struct SingleGpuScheduler;
 impl GpuScheduler for SingleGpuScheduler {
-    fn name(&self) -> &str { "SingleGPU" }
-    fn select_gpu(&mut self, _num_gpus: usize) -> usize { 0 }
+    fn name(&self) -> &str {
+        "SingleGPU"
+    }
+    fn select_gpu(&mut self, _num_gpus: usize) -> usize {
+        0
+    }
 }
 
 /// Multi-GPU renderer - detects and manages all available GPUs
@@ -74,10 +106,12 @@ impl MultiGpuRenderer {
             ..Default::default()
         });
 
-        let _surface = instance.create_surface(window.clone())
+        let _surface = instance
+            .create_surface(window.clone())
             .map_err(|e| crate::error::Error::Render(e.to_string()))?;
 
-        let mut gpus: Vec<GpuInfo> = instance.enumerate_adapters(wgpu::Backends::all())
+        let mut gpus: Vec<GpuInfo> = instance
+            .enumerate_adapters(wgpu::Backends::all())
             .into_iter()
             .map(|adapter| {
                 let info = adapter.get_info();
@@ -89,16 +123,27 @@ impl MultiGpuRenderer {
             })
             .collect();
 
-        gpus.sort_by(|a, b| b.priority.cmp(&a.priority));
+        gpus.sort_by_key(|g| std::cmp::Reverse(g.priority));
 
-        Ok(Self { gpus, scheduler: Box::new(RoundRobinScheduler::new()) })
+        Ok(Self {
+            gpus,
+            scheduler: Box::new(RoundRobinScheduler::new()),
+        })
     }
 
-    pub fn gpu_count(&self) -> usize { self.gpus.len() }
-    pub fn gpu_info(&self) -> &[GpuInfo] { &self.gpus }
+    pub fn gpu_count(&self) -> usize {
+        self.gpus.len()
+    }
+    pub fn gpu_info(&self) -> &[GpuInfo] {
+        &self.gpus
+    }
     pub fn poll_devices(&self, _wait: bool) {}
-    pub fn set_scheduler(&mut self, scheduler: Box<dyn GpuScheduler>) { self.scheduler = scheduler; }
-    pub fn force_single_gpu(&mut self) { self.scheduler = Box::new(SingleGpuScheduler); }
+    pub fn set_scheduler(&mut self, scheduler: Box<dyn GpuScheduler>) {
+        self.scheduler = scheduler;
+    }
+    pub fn force_single_gpu(&mut self) {
+        self.scheduler = Box::new(SingleGpuScheduler);
+    }
 }
 
 pub type Renderer = MultiGpuRenderer;

@@ -12,7 +12,7 @@ impl Platform for WindowsPlatform {
         Ok(())
     }
 
-    fn create_window(config: &WindowConfig) -> Result<WindowHandle> {
+    fn create_window(_config: &WindowConfig) -> Result<WindowHandle> {
         let id = NEXT_WINDOW_ID.fetch_add(1, Ordering::SeqCst);
         Ok(WindowHandle::new(std::ptr::null_mut(), id))
     }

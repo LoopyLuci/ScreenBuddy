@@ -1,6 +1,3 @@
-use image::DynamicImage;
-use std::path::Path;
-
 pub struct SpriteAnimator {
     frames: usize,
     fps: f64,

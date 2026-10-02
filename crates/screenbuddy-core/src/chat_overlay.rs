@@ -1,7 +1,7 @@
-use std::sync::mpsc::{channel, Sender, Receiver};
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ChatOverlayEvent {
@@ -32,7 +32,11 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum MessageRole { User, Assistant, System }
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+}
 
 impl std::fmt::Display for MessageRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,6 +45,12 @@ impl std::fmt::Display for MessageRole {
             MessageRole::Assistant => write!(f, "assistant"),
             MessageRole::System => write!(f, "system"),
         }
+    }
+}
+
+impl Default for ChatOverlay {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -94,12 +104,24 @@ impl ChatOverlay {
         self.event_rx.clone()
     }
 
-    pub fn set_position(&mut self, x: i32, y: i32) { self.position = (x, y); }
-    pub fn set_size(&mut self, w: i32, h: i32) { self.size = (w, h); }
-    pub fn toggle(&mut self) { self.is_visible = !self.is_visible; }
-    pub fn is_visible(&self) -> bool { self.is_visible }
-    pub fn size(&self) -> (i32, i32) { self.size }
-    pub fn position(&self) -> (i32, i32) { self.position }
+    pub fn set_position(&mut self, x: i32, y: i32) {
+        self.position = (x, y);
+    }
+    pub fn set_size(&mut self, w: i32, h: i32) {
+        self.size = (w, h);
+    }
+    pub fn toggle(&mut self) {
+        self.is_visible = !self.is_visible;
+    }
+    pub fn is_visible(&self) -> bool {
+        self.is_visible
+    }
+    pub fn size(&self) -> (i32, i32) {
+        self.size
+    }
+    pub fn position(&self) -> (i32, i32) {
+        self.position
+    }
 
     pub fn add_message(&mut self, role: MessageRole, content: &str) {
         self.messages.push(ChatMessage {
@@ -109,10 +131,18 @@ impl ChatOverlay {
         });
     }
 
-    pub fn messages(&self) -> &[ChatMessage] { &self.messages }
-    pub fn clear(&mut self) { self.messages.clear(); }
-    pub fn set_ai_enabled(&mut self, enabled: bool) { self.ai_enabled = enabled; }
-    pub fn is_ai_enabled(&self) -> bool { self.ai_enabled }
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+    pub fn set_ai_enabled(&mut self, enabled: bool) {
+        self.ai_enabled = enabled;
+    }
+    pub fn is_ai_enabled(&self) -> bool {
+        self.ai_enabled
+    }
 }
 
 #[cfg(test)]

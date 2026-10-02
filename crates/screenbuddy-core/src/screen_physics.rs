@@ -12,13 +12,24 @@ pub struct Monitor {
 
 impl Monitor {
     pub fn bounds(&self) -> (i32, i32, i32, i32) {
-        (self.x, self.y, self.x + self.width as i32, self.y + self.height as i32)
+        (
+            self.x,
+            self.y,
+            self.x + self.width as i32,
+            self.y + self.height as i32,
+        )
     }
     pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x && x < self.x + self.width as i32 && y >= self.y && y < self.y + self.height as i32
+        x >= self.x
+            && x < self.x + self.width as i32
+            && y >= self.y
+            && y < self.y + self.height as i32
     }
     pub fn center(&self) -> (i32, i32) {
-        (self.x + self.width as i32 / 2, self.y + self.height as i32 / 2)
+        (
+            self.x + self.width as i32 / 2,
+            self.y + self.height as i32 / 2,
+        )
     }
     pub fn clamp_position(&self, x: i32, y: i32, creature_size: u32) -> (i32, i32) {
         let max_x = self.x + self.width as i32 - creature_size as i32;
@@ -32,33 +43,64 @@ pub struct ScreenManager {
     monitors: Vec<Monitor>,
 }
 
+impl Default for ScreenManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScreenManager {
     pub fn new() -> Self {
-        Self { monitors: vec![Monitor { x: 0, y: 0, width: 1920, height: 1080 }] }
+        Self {
+            monitors: vec![Monitor {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            }],
+        }
     }
     pub fn refresh(&mut self) {}
-    pub fn monitors(&self) -> &[Monitor] { &self.monitors }
-    pub fn primary(&self) -> Option<&Monitor> { self.monitors.first() }
+    pub fn monitors(&self) -> &[Monitor] {
+        &self.monitors
+    }
+    pub fn primary(&self) -> Option<&Monitor> {
+        self.monitors.first()
+    }
     pub fn virtual_screen_bounds(&self) -> (i32, i32, i32, i32) {
         self.monitors.iter().fold((0, 0, 0, 0), |acc, m| {
-            (acc.0.min(m.x), acc.1.min(m.y), acc.2.max(m.x + m.width as i32), acc.3.max(m.y + m.height as i32))
+            (
+                acc.0.min(m.x),
+                acc.1.min(m.y),
+                acc.2.max(m.x + m.width as i32),
+                acc.3.max(m.y + m.height as i32),
+            )
         })
     }
     pub fn monitor_at(&self, x: i32, y: i32) -> Option<&Monitor> {
         self.monitors.iter().find(|m| m.contains(x, y))
     }
     pub fn clamp_to_screen(&self, x: i32, y: i32, creature_size: u32) -> (i32, i32) {
-        self.monitors.first().map(|m| m.clamp_position(x, y, creature_size)).unwrap_or((x, y))
+        self.monitors
+            .first()
+            .map(|m| m.clamp_position(x, y, creature_size))
+            .unwrap_or((x, y))
     }
     pub fn random_position(&self, creature_size: u32) -> Option<(i32, i32)> {
         self.monitors.first().map(|m| {
             let mut rng = rand::thread_rng();
-            (rng.gen_range(m.x..m.x + m.width as i32 - creature_size as i32),
-             rng.gen_range(m.y..m.y + m.height as i32 - creature_size as i32))
+            (
+                rng.gen_range(m.x..m.x + m.width as i32 - creature_size as i32),
+                rng.gen_range(m.y..m.y + m.height as i32 - creature_size as i32),
+            )
         })
     }
-    pub fn width(&self) -> u32 { self.monitors.first().map(|m| m.width).unwrap_or(1920) }
-    pub fn height(&self) -> u32 { self.monitors.first().map(|m| m.height).unwrap_or(1080) }
+    pub fn width(&self) -> u32 {
+        self.monitors.first().map(|m| m.width).unwrap_or(1920)
+    }
+    pub fn height(&self) -> u32 {
+        self.monitors.first().map(|m| m.height).unwrap_or(1080)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,11 +119,11 @@ pub struct CreaturePhysics {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CreaturePersonality {
-    Curious,    // Follows cursor
-    Shy,        // Flees from cursor
-    Lazy,       // Moves slowly
-    Energetic,  // Moves quickly
-    Neutral,    // Default wander
+    Curious,   // Follows cursor
+    Shy,       // Flees from cursor
+    Lazy,      // Moves slowly
+    Energetic, // Moves quickly
+    Neutral,   // Default wander
 }
 
 impl CreaturePhysics {
@@ -105,7 +147,13 @@ impl CreaturePhysics {
         self
     }
 
-    pub fn update(&mut self, dt: f32, screen: &ScreenManager, cursor_pos: Option<Vec2>, all_creatures: &[Vec2]) {
+    pub fn update(
+        &mut self,
+        dt: f32,
+        screen: &ScreenManager,
+        cursor_pos: Option<Vec2>,
+        all_creatures: &[Vec2],
+    ) {
         // If dragged, follow cursor
         if self.is_dragged {
             if let Some(cursor) = cursor_pos {
@@ -160,7 +208,9 @@ impl CreaturePhysics {
 
         // Collision avoidance with other creatures
         for other_pos in all_creatures {
-            if *other_pos == self.position { continue; }
+            if *other_pos == self.position {
+                continue;
+            }
             let diff = self.position - *other_pos;
             let dist = diff.length();
             let min_dist = self.size as f32 * 1.5;
@@ -299,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_creature_physics_drag() {
-        let screen = ScreenManager::new();
+        let _screen = ScreenManager::new();
         let mut p = CreaturePhysics::new(100.0, 100.0, 64);
         p.start_drag(Vec2::new(150.0, 150.0));
         assert!(p.is_dragged);
@@ -326,13 +376,23 @@ mod tests {
 
     #[test]
     fn test_monitor_bounds() {
-        let m = Monitor { x: 0, y: 0, width: 1920, height: 1080 };
+        let m = Monitor {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         assert_eq!(m.bounds(), (0, 0, 1920, 1080));
     }
 
     #[test]
     fn test_monitor_center() {
-        let m = Monitor { x: 0, y: 0, width: 1920, height: 1080 };
+        let m = Monitor {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         assert_eq!(m.center(), (960, 540));
     }
 
@@ -350,13 +410,23 @@ mod tests {
 
     #[test]
     fn test_monitor_clamp() {
-        let m = Monitor { x: 0, y: 0, width: 1920, height: 1080 };
+        let m = Monitor {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         assert_eq!(m.clamp_position(-10, -10, 64), (0, 0));
     }
 
     #[test]
     fn test_monitor_contains() {
-        let m = Monitor { x: 0, y: 0, width: 1920, height: 1080 };
+        let m = Monitor {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         assert!(m.contains(100, 100));
         assert!(!m.contains(2000, 2000));
     }

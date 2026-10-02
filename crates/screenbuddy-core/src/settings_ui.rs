@@ -46,6 +46,12 @@ pub struct SettingsUI {
     changed: bool,
 }
 
+impl Default for SettingsUI {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SettingsUI {
     pub fn new() -> Self {
         let mut s = Self {
@@ -129,7 +135,11 @@ impl SettingsUI {
                 category: SettingsCategory::AI,
                 default: SettingValue::Enum(
                     "ollama".to_string(),
-                    vec!["ollama".to_string(), "openai".to_string(), "anthropic".to_string()],
+                    vec![
+                        "ollama".to_string(),
+                        "openai".to_string(),
+                        "anthropic".to_string(),
+                    ],
                 ),
                 min: None,
                 max: None,
@@ -200,15 +210,21 @@ impl SettingsUI {
         if let Some(def) = self.definitions.iter().find(|d| d.name == name) {
             // Validate range
             match (&value, &def.min, &def.max) {
-                (SettingValue::Float(v), Some(SettingValue::Float(min)), Some(SettingValue::Float(max))) => {
+                (
+                    SettingValue::Float(v),
+                    Some(SettingValue::Float(min)),
+                    Some(SettingValue::Float(max)),
+                ) => {
                     if *v < *min || *v > *max {
                         return Err(format!("Value {} not in range [{}, {}]", v, min, max));
                     }
                 }
-                (SettingValue::Int(v), Some(SettingValue::Int(min)), Some(SettingValue::Int(max))) => {
-                    if *v < *min || *v > *max {
-                        return Err(format!("Value {} not in range [{}, {}]", v, min, max));
-                    }
+                (
+                    SettingValue::Int(v),
+                    Some(SettingValue::Int(min)),
+                    Some(SettingValue::Int(max)),
+                ) if (*v < *min || *v > *max) => {
+                    return Err(format!("Value {} not in range [{}, {}]", v, min, max));
                 }
                 _ => {}
             }

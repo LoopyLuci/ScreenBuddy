@@ -6,7 +6,7 @@
 
 use std::mem;
 use std::ptr;
-use std::sync::mpsc::{channel, Sender, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 /// Chat window state
@@ -20,6 +20,9 @@ pub struct ChatWindow {
 }
 
 /// Events from the chat window
+// Close/Toggle are dispatched by the Win32 wndproc but not yet consumed by the
+// main loop, which currently polls the window state directly.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ChatWindowEvent {
     Input(String),
@@ -40,6 +43,7 @@ impl ChatWindow {
         }
     }
 
+    #[allow(dead_code)] // part of the public chat API; main loop polls instead
     pub fn event_sender(&self) -> Sender<ChatWindowEvent> {
         self.event_sender.clone()
     }
@@ -61,6 +65,7 @@ impl ChatWindow {
         &self.messages
     }
 
+    #[allow(dead_code)] // public chat API
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -84,13 +89,18 @@ impl ChatWindow {
     }
 
     pub fn toggle(&mut self) {
-        if self.visible { self.hide(); } else { self.show(); }
+        if self.visible {
+            self.hide();
+        } else {
+            self.show();
+        }
     }
 
     pub fn set_hwnd(&mut self, hwnd: isize) {
         self.hwnd = Some(hwnd);
     }
 
+    #[allow(dead_code)] // part of the public chat API
     pub fn hwnd(&self) -> Option<isize> {
         self.hwnd
     }
@@ -130,10 +140,10 @@ impl ChatWindow {
 pub mod platform {
     use super::*;
     use std::ffi::c_void;
-    use winapi::shared::windef::{HDC, HWND, RECT, POINT, SIZE};
-    use winapi::shared::minwindef::{BYTE, UINT, WPARAM, LPARAM, LRESULT};
-    use winapi::um::winuser::*;
+    use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
+    use winapi::shared::windef::{HWND, POINT, RECT, SIZE};
     use winapi::um::wingdi::*;
+    use winapi::um::winuser::*;
 
     const CHAT_WIDTH: i32 = 400;
     const CHAT_HEIGHT: i32 = 600;
@@ -165,7 +175,10 @@ pub mod platform {
                 class_name.as_ptr(),
                 window_title.as_ptr(),
                 WS_POPUP,
-                500, 100, CHAT_WIDTH, CHAT_HEIGHT,
+                500,
+                100,
+                CHAT_WIDTH,
+                CHAT_HEIGHT,
                 ptr::null_mut(),
                 ptr::null_mut(),
                 h_instance,
@@ -208,7 +221,9 @@ pub mod platform {
             }
             WM_CHAR => {
                 let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
-                if chat.is_null() { return 0; }
+                if chat.is_null() {
+                    return 0;
+                }
                 let ch = std::char::from_u32(wparam as u32).unwrap_or('\0');
                 if ch >= ' ' && ch != '\x7f' {
                     (*chat).append_input(ch);
@@ -217,7 +232,9 @@ pub mod platform {
             }
             WM_KEYDOWN => {
                 let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
-                if chat.is_null() { return 0; }
+                if chat.is_null() {
+                    return 0;
+                }
                 match wparam as i32 {
                     VK_RETURN => {
                         let text = (*chat).input_buffer.clone();
@@ -290,14 +307,19 @@ pub mod platform {
         // Create font for text
         let font_name: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
         let hfont = CreateFontW(
-            16, 0, 0, 0,
-            FW_NORMAL as i32,
-            0, 0, 0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            CLEARTYPE_QUALITY as u32,
-            VARIABLE_PITCH as u32,
+            16,
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            VARIABLE_PITCH,
             font_name.as_ptr(),
         );
 
@@ -309,11 +331,17 @@ pub mod platform {
         let mut y = msg_area_bottom;
 
         for (role, text) in chat.messages.iter().rev() {
-            if y < PADDING { break; }
+            if y < PADDING {
+                break;
+            }
 
-            let label = if role == "user" { "You" }
-                else if role == "assistant" { "AI" }
-                else { role };
+            let label = if role == "user" {
+                "You"
+            } else if role == "assistant" {
+                "AI"
+            } else {
+                role
+            };
             let full_text = format!("{}: {}", label, text);
 
             // Color per role
@@ -344,7 +372,9 @@ pub mod platform {
             );
 
             let text_height = measure_rect.bottom - measure_rect.top;
-            if text_height <= 0 { continue; }
+            if text_height <= 0 {
+                continue;
+            }
 
             y -= text_height;
 
@@ -403,7 +433,9 @@ pub mod platform {
         };
 
         if !chat.input_buffer().is_empty() {
-            let wide: Vec<u16> = chat.input_buffer().encode_utf16()
+            let wide: Vec<u16> = chat
+                .input_buffer()
+                .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
             DrawTextW(
@@ -442,16 +474,22 @@ pub mod platform {
 
         // --- Composite to layered window ---
         let mut blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
+            BlendOp: AC_SRC_OVER,
             BlendFlags: 0,
             SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
+            AlphaFormat: AC_SRC_ALPHA,
         };
-        let mut size = SIZE { cx: CHAT_WIDTH, cy: CHAT_HEIGHT };
+        let mut size = SIZE {
+            cx: CHAT_WIDTH,
+            cy: CHAT_HEIGHT,
+        };
         let mut src_pt = POINT { x: 0, y: 0 };
         let mut dest_rect: RECT = mem::zeroed();
         GetWindowRect(hwnd, &mut dest_rect);
-        let mut dest_pt = POINT { x: dest_rect.left, y: dest_rect.top };
+        let mut dest_pt = POINT {
+            x: dest_rect.left,
+            y: dest_rect.top,
+        };
 
         UpdateLayeredWindow(
             hwnd,
@@ -476,7 +514,11 @@ pub mod platform {
 pub use platform::create_chat_window;
 
 /// Run chat window message loop
+///
+/// The main loop drives its own message pump, so this standalone entry point is
+/// retained for embedding ScreenBuddy's chat window in another host.
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn run_chat_message_loop() {
     unsafe {
         let mut msg: winapi::um::winuser::MSG = mem::zeroed();

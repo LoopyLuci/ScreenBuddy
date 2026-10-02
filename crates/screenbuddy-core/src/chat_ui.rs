@@ -9,7 +9,11 @@ pub struct ChatMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageRole { User, Assistant, System }
+pub enum MessageRole {
+    User,
+    Assistant,
+    System,
+}
 
 pub struct ChatHistory {
     messages: Vec<ChatMessage>,
@@ -18,7 +22,10 @@ pub struct ChatHistory {
 
 impl ChatHistory {
     pub fn new(max_messages: usize) -> Self {
-        Self { messages: Vec::new(), max_messages }
+        Self {
+            messages: Vec::new(),
+            max_messages,
+        }
     }
 
     pub fn add(&mut self, role: MessageRole, content: String) {
@@ -32,14 +39,24 @@ impl ChatHistory {
         }
     }
 
-    pub fn messages(&self) -> &[ChatMessage] { &self.messages }
-    pub fn clear(&mut self) { self.messages.clear(); }
-    pub fn len(&self) -> usize { self.messages.len() }
-    pub fn is_empty(&self) -> bool { self.messages.is_empty() }
+    pub fn messages(&self) -> &[ChatMessage] {
+        &self.messages
+    }
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
 }
 
 impl Default for ChatHistory {
-    fn default() -> Self { Self::new(100) }
+    fn default() -> Self {
+        Self::new(100)
+    }
 }
 
 pub struct ChatUIState {
@@ -51,7 +68,12 @@ pub struct ChatUIState {
 
 impl ChatUIState {
     pub fn new() -> Self {
-        Self { history: ChatHistory::default(), input_text: String::new(), is_open: false, is_dirty: true }
+        Self {
+            history: ChatHistory::default(),
+            input_text: String::new(),
+            is_open: false,
+            is_dirty: true,
+        }
     }
 
     pub fn add_message(&mut self, role: MessageRole, content: String) {
@@ -75,7 +97,9 @@ impl ChatUIState {
     }
 
     pub fn send(&mut self) -> Option<String> {
-        if self.input_text.trim().is_empty() { return None; }
+        if self.input_text.trim().is_empty() {
+            return None;
+        }
         let text = self.input_text.clone();
         self.add_message(MessageRole::User, text.clone());
         self.clear_input();
@@ -89,7 +113,9 @@ impl ChatUIState {
 }
 
 impl Default for ChatUIState {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
