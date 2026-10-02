@@ -1,123 +1,188 @@
 package com.screenbuddy.android.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.screenbuddy.android.viewmodel.ChatUiState
+import com.screenbuddy.android.ScreenBuddyApp
+import com.screenbuddy.android.data.model.ChatMessage
 import com.screenbuddy.android.viewmodel.ChatViewModel
-import kotlinx.coroutines.launch
 
 @Composable
 private fun rememberChatViewModel(): ChatViewModel {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val app = context.applicationContext as com.screenbuddy.android.ScreenBuddyApp
+    val context = LocalContext.current
+    val app = context.applicationContext as ScreenBuddyApp
     return remember {
         ChatViewModel(
-            aiService = com.screenbuddy.android.service.AiService(),
-            apiKeyDao = app.database.apiKeyDao()
+            aiService = app.aiService,
+            apiKeyDao = app.database.apiKeyDao(),
+            modelDao = app.database.modelDao(),
+            rag = app.ragPipeline
         )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(viewModel: ChatViewModel = rememberChatViewModel()) {
+fun ChatScreen(
+    enabledModels: List<com.screenbuddy.android.data.model.AiModel> = emptyList(),
+    selectedModelId: String = "",
+    onModelSelected: (String) -> Unit = {},
+    ttsEnabled: Boolean = false
+) {
+    val viewModel = rememberChatViewModel()
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
     val listState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
 
-    // Auto-scroll to bottom when new messages arrive
-    LaunchedEffect(uiState.messages.size) {
-        if (uiState.messages.isNotEmpty()) {
-            listState.animateScrollToItem(0) // reverseLayout = true, so 0 is the newest
+    val app = remember { context.applicationContext as ScreenBuddyApp }
+    val tts = remember { app.ttsEngine }
+
+    // Restore the persisted model selection once models are known.
+    LaunchedEffect(enabledModels, selectedModelId) {
+        if (enabledModels.isEmpty()) return@LaunchedEffect
+        val target = enabledModels.firstOrNull { it.id == selectedModelId }
+            ?: enabledModels.first()
+        if (uiState.selectedModel?.id != target.id) {
+            viewModel.setModel(target)
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        // Header
-        Text("Chat", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 16.dp))
-
-        // Model selector
-        if (uiState.selectedModel != null) {
-            Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                Text("Model: ${uiState.selectedModel!!.displayName}", modifier = Modifier.padding(12.dp))
-            }
+    LaunchedEffect(uiState.messages.size) {
+        if (uiState.messages.isNotEmpty()) {
+            listState.animateScrollToItem(uiState.messages.size - 1)
         }
+    }
 
-        // Messages
-        LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            state = listState,
-            reverseLayout = true
-        ) {
-            items(uiState.messages.reversed()) { message ->
-                MessageBubble(message = message)
-                Spacer(modifier = Modifier.height(8.dp))
-            }
+    // Speak each new assistant reply when TTS is on.
+    var lastSpokenId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(uiState.messages.lastOrNull()?.id) {
+        val last = uiState.messages.lastOrNull() ?: return@LaunchedEffect
+        if (ttsEnabled && last.role == "assistant" && last.id != lastSpokenId) {
+            lastSpokenId = last.id
+            tts.speak(last.content)
         }
+    }
 
-        // Input
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = uiState.inputText,
-                onValueChange = viewModel::updateInput,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a message...") },
-                enabled = !uiState.isLoading,
-                singleLine = false,
-                maxLines = 4
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            IconButton(
-                onClick = {
-                    viewModel.sendMessage()
-                    coroutineScope.launch {
-                        if (uiState.messages.isNotEmpty()) {
-                            listState.animateScrollToItem(0)
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("ScreenBuddy")
+                        val model = uiState.selectedModel
+                        if (model != null) {
+                            Text(
+                                model.displayName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 },
-                enabled = !uiState.isLoading && uiState.inputText.isNotBlank()
-            ) {
-                Icon(Icons.Filled.Send, contentDescription = "Send")
-            }
-        }
-
-        // Loading indicator
-        if (uiState.isLoading) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-        }
-
-        // Error with dismiss button
-        uiState.error?.let { error ->
-            Card(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = viewModel::dismissError) {
-                        Text("Dismiss")
+                actions = {
+                    if (enabledModels.size > 1) {
+                        var open by remember { mutableStateOf(false) }
+                        IconButton(onClick = { open = true }) {
+                            Icon(Icons.Filled.ExpandMore, contentDescription = "Change model")
+                        }
+                        if (open) {
+                            ModelChooser(
+                                models = enabledModels,
+                                selectedId = uiState.selectedModel?.id,
+                                onSelect = {
+                                    viewModel.setModel(it)
+                                    onModelSelected(it.id)
+                                    open = false
+                                },
+                                onDismiss = { open = false }
+                            )
+                        }
                     }
+                    IconButton(onClick = viewModel::clearMessages, enabled = uiState.messages.isNotEmpty()) {
+                        Icon(Icons.Filled.Close, contentDescription = "Clear conversation")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp)
+        ) {
+            if (uiState.error != null) {
+                ErrorCard(uiState.error!!, viewModel::dismissError)
+            }
+
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                if (uiState.messages.isEmpty()) {
+                    item { EmptyState(uiState.selectedModel == null) }
+                }
+                items(uiState.messages, key = { it.id }) { msg ->
+                    MessageBubble(msg)
+                }
+                if (uiState.isLoading) {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+
+            if (uiState.selectedModel == null) {
+                Text(
+                    "Enable a model in the Providers tab to start chatting.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = uiState.inputText,
+                    onValueChange = viewModel::updateInput,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type a message...") },
+                    maxLines = 4,
+                    enabled = !uiState.isLoading
+                )
+                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = viewModel::sendMessage,
+                    enabled = uiState.inputText.isNotBlank() &&
+                        uiState.selectedModel != null &&
+                        !uiState.isLoading
+                ) {
+                    Icon(Icons.Filled.Send, contentDescription = "Send")
                 }
             }
         }
@@ -125,23 +190,118 @@ fun ChatScreen(viewModel: ChatViewModel = rememberChatViewModel()) {
 }
 
 @Composable
-fun MessageBubble(message: com.screenbuddy.android.data.model.ChatMessage) {
-    val isUser = message.role == "user"
-    val alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
-    val color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
+private fun EmptyState(noModel: Boolean) {
+    Column(
+        Modifier.fillMaxWidth().padding(vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            if (noModel) "No model selected" else "Ask ScreenBuddy anything",
+            style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (noModel) {
+                "Pick a provider and enable one of its models to begin."
+            } else {
+                "Chat runs against whichever provider you configured."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
 
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
-        Box(
-            modifier = Modifier
-                .widthIn(max = 280.dp)
+@Composable
+private fun ErrorCard(message: String, onDismiss: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                message,
+                Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodySmall
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Filled.Close, contentDescription = "Dismiss")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(message: ChatMessage) {
+    val isUser = message.role == "user"
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Column(
+            Modifier
+                .widthIn(max = 300.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(color)
+                .background(
+                    if (isUser) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant
+                )
                 .padding(12.dp)
         ) {
             Text(
                 message.content,
-                color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (!message.providerUsed.isNullOrBlank()) {
+                Text(
+                    message.providerUsed,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelChooser(
+    models: List<com.screenbuddy.android.data.model.AiModel>,
+    selectedId: String?,
+    onSelect: (com.screenbuddy.android.data.model.AiModel) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Change model") },
+        text = {
+            LazyColumn {
+                items(models, key = { it.id }) { model ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(model) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(model.displayName, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                model.providerId,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (model.id == selectedId) {
+                            Text("✓", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
 }

@@ -1,160 +1,231 @@
 package com.screenbuddy.android.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.screenbuddy.android.data.model.Provider
-import com.screenbuddy.android.data.model.AiModel
-import com.screenbuddy.android.data.model.ApiKey
-import com.screenbuddy.android.ui.theme.*
+import com.screenbuddy.android.viewmodel.ProvidersUiState
 import com.screenbuddy.android.viewmodel.ProvidersViewModel
+
+@Composable
+private fun rememberProvidersViewModel(): ProvidersViewModel {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val app = context.applicationContext as com.screenbuddy.android.ScreenBuddyApp
+    return remember {
+        ProvidersViewModel(
+            apiKeyDao = app.database.apiKeyDao(),
+            modelDao = app.database.modelDao()
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProvidersScreen(viewModel: ProvidersViewModel = remember { ProvidersViewModel() }) {
+fun ProvidersScreen(viewModel: ProvidersViewModel = rememberProvidersViewModel()) {
     val uiState by viewModel.uiState.collectAsState()
-    var selectedProvider by remember { mutableStateOf<Provider?>(null) }
-    var showApiKeyDialog by remember { mutableStateOf(false) }
-    var apiKeyInput by remember { mutableStateOf("") }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text("AI Providers", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(bottom = 16.dp))
-
-        if (uiState.isLoading) {
-            CircularProgressIndicator()
-            return@Column
-        }
-
-        LazyColumn {
-            items(uiState.providers) { provider ->
-                ProviderCard(
-                    provider = provider,
-                    onToggleModel = { modelId, enabled -> viewModel.toggleModel(modelId, enabled) },
-                    onToggleAllPaid = { providerId -> viewModel.disableAllPaidModels(providerId) },
-                    onEnableAllPaid = { providerId -> viewModel.enableAllModels(providerId) },
-                    onSetApiKey = { providerId, key -> viewModel.setApiKey(providerId, key) },
-                    onRemoveApiKey = { providerId -> viewModel.removeApiKey(providerId) },
-                    onClick = { selectedProvider = provider }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-        }
-    }
-
-    // API Key Dialog
-    if (showApiKeyDialog && selectedProvider != null) {
-        AlertDialog(
-            onDismissRequest = { showApiKeyDialog = false },
-            title = { Text("Set API Key for ${selectedProvider!!.name}") },
-            text = {
-                Column {
-                    Text("Enter your API key:", modifier = Modifier.padding(bottom = 8.dp))
-                    OutlinedTextField(
-                        value = apiKeyInput,
-                        onValueChange = { apiKeyInput = it },
-                        label = { Text(selectedProvider!!.apiKeyName) },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.setApiKey(selectedProvider!!.id, apiKeyInput)
-                    showApiKeyDialog = false
-                    apiKeyInput = ""
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showApiKeyDialog = false }) { Text("Cancel") }
-            }
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Providers") }) }
+    ) { padding ->
+        ProvidersContent(
+            uiState = uiState,
+            modifier = Modifier.padding(padding),
+            onToggleModel = viewModel::toggleModel,
+            onSetApiKey = viewModel::setApiKey,
+            onRemoveApiKey = viewModel::removeApiKey,
+            onEnableAll = viewModel::enableAllModels,
+            onDisableAll = viewModel::disableAllModels,
+            onErrorShown = viewModel::clearError
         )
     }
 }
 
 @Composable
-fun ProviderCard(
-    provider: Provider,
+private fun ProvidersContent(
+    uiState: ProvidersUiState,
+    modifier: Modifier = Modifier,
     onToggleModel: (String, Boolean) -> Unit,
-    onToggleAllPaid: (String) -> Unit,
-    onEnableAllPaid: (String) -> Unit,
     onSetApiKey: (String, String) -> Unit,
     onRemoveApiKey: (String) -> Unit,
-    onClick: () -> Unit
+    onEnableAll: (String) -> Unit,
+    onDisableAll: (String) -> Unit,
+    onErrorShown: () -> Unit
+) {
+    Column(modifier = modifier.fillMaxSize()) {
+        if (uiState.error != null) {
+            ErrorBanner(uiState.error, onDismiss = onErrorShown)
+        }
+
+        if (uiState.isLoading) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@Column
+        }
+
+        LazyColumn(contentPadding = PaddingValues(16.dp)) {
+            item {
+                Text(
+                    "${uiState.providers.size} providers available",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            items(uiState.providers, key = { it.id }) { provider ->
+                ProviderCard(
+                    provider = provider,
+                    hasKey = provider.id in uiState.providersWithKeys,
+                    endpoint = uiState.endpoints[provider.id],
+                    onToggleModel = onToggleModel,
+                    onSetApiKey = { key -> onSetApiKey(provider.id, key) },
+                    onRemoveApiKey = { onRemoveApiKey(provider.id) },
+                    onEnableAll = { onEnableAll(provider.id) },
+                    onDisableAll = { onDisableAll(provider.id) }
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Error,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                message,
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Filled.Close, contentDescription = "Dismiss")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProviderCard(
+    provider: Provider,
+    hasKey: Boolean,
+    endpoint: String?,
+    onToggleModel: (String, Boolean) -> Unit,
+    onSetApiKey: (String) -> Unit,
+    onRemoveApiKey: () -> Unit,
+    onEnableAll: () -> Unit,
+    onDisableAll: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val freeModels = provider.models.filter { it.isFree }
-    val paidModels = provider.models.filter { !it.isFree }
 
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() },
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+    Card(shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(Modifier.weight(1f)) {
                     Text(provider.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(provider.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        provider.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
-                // API Key status indicator
-                if (provider.apiKey?.isSet == true) {
-                    Icon(Icons.Filled.CheckCircle, contentDescription = "API Key Set", tint = ApiKeySetColor)
-                } else {
-                    Icon(Icons.Filled.Warning, contentDescription = "API Key Missing", tint = ApiKeyMissingColor)
+                if (hasKey) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("Key set") },
+                        leadingIcon = { Icon(Icons.Filled.Check, null, Modifier.size(16.dp)) }
+                    )
+                    Spacer(Modifier.width(4.dp))
                 }
                 IconButton(onClick = { expanded = !expanded }) {
-                    Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Expand")
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "Collapse" else "Expand"
+                    )
                 }
             }
 
-            // API Key buttons
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (provider.apiKey?.isSet == true) {
-                    TextButton(onClick = { onRemoveApiKey(provider.id) }) { Text("Remove Key") }
-                    TextButton(onClick = { /* Show dialog to edit */ }) { Text("Edit") }
-                } else {
-                    TextButton(onClick = { /* Show dialog to add */ }) { Text("Add API Key") }
+            Text(
+                "${provider.models.count { it.isEnabled }}/${provider.models.size} models enabled",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            if (expanded) {
+                Spacer(Modifier.height(12.dp))
+                if (!endpoint.isNullOrBlank()) {
+                    Text(
+                        "Endpoint: $endpoint",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(4.dp))
                 }
-            }
 
-            AnimatedVisibility(visible = expanded) {
-                Column(modifier = Modifier.padding(top = 8.dp)) {
-                    // Free models section
-                    if (freeModels.isNotEmpty()) {
-                        Text("Free Models", style = MaterialTheme.typography.labelLarge, color = FreeModelColor, modifier = Modifier.padding(vertical = 4.dp))
-                        freeModels.forEach { model ->
-                            ModelRow(model = model, onToggle = onToggleModel)
-                        }
-                    }
+                Row {
+                    TextButton(onClick = onEnableAll) { Text("Enable all") }
+                    TextButton(onClick = onDisableAll) { Text("Disable all") }
+                }
 
-                    // Paid models section
-                    if (paidModels.isNotEmpty()) {
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Paid Models", style = MaterialTheme.typography.labelLarge, color = PaidModelColor)
-                            Row {
-                                TextButton(onClick = { onEnableAllPaid(provider.id) }) { Text("Turn On All") }
-                                TextButton(onClick = { onToggleAllPaid(provider.id) }) { Text("Turn Off All") }
-                            }
+                if (provider.requiresApiKey()) {
+                    Spacer(Modifier.height(8.dp))
+                    ApiKeyRow(
+                        hasKey = hasKey,
+                        apiKeyName = provider.apiKeyName,
+                        onSetApiKey = onSetApiKey,
+                        onRemoveApiKey = onRemoveApiKey
+                    )
+                }
+
+                Divider(Modifier.padding(vertical = 8.dp))
+
+                provider.models.forEach { model ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(model.displayName, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                model.description,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                        paidModels.forEach { model ->
-                            ModelRow(model = model, onToggle = onToggleModel)
+                        if (model.isFree) {
+                            Icon(
+                                Icons.Filled.Favorite,
+                                contentDescription = "Free tier",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(6.dp))
                         }
+                        Switch(
+                            checked = model.isEnabled,
+                            onCheckedChange = { onToggleModel(model.id, it) }
+                        )
                     }
                 }
             }
@@ -162,18 +233,73 @@ fun ProviderCard(
     }
 }
 
+/** True when the provider needs a credential; mirrors AiService's routing table. */
+private fun Provider.requiresApiKey(): Boolean = id !in setOf(
+    "ollama", "llamacpp", "lmstudio", "llmstudio", "vllm", "koboldcpp", "textgen", "opencode-go"
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelRow(model: AiModel, onToggle: (String, Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(model.displayName, style = MaterialTheme.typography.bodyMedium)
-            if (model.description.isNotEmpty()) {
-                Text(model.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun ApiKeyRow(
+    hasKey: Boolean,
+    apiKeyName: String,
+    onSetApiKey: (String) -> Unit,
+    onRemoveApiKey: () -> Unit
+) {
+    var showDialog by remember { mutableStateOf(false) }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("API key", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+            Text(
+                if (hasKey) "Configured ($apiKeyName)" else "Not set ($apiKeyName)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        TextButton(onClick = { showDialog = true }) {
+            Text(if (hasKey) "Replace" else "Add")
+        }
+        if (hasKey) {
+            IconButton(onClick = onRemoveApiKey) {
+                Icon(Icons.Filled.Delete, contentDescription = "Remove key")
             }
         }
-        if (!model.isFree) {
-            Text("Paid", style = MaterialTheme.typography.labelSmall, color = PaidModelColor, modifier = Modifier.padding(end = 8.dp))
-        }
-        Switch(checked = model.isEnabled, onCheckedChange = { onToggle(model.id, it) })
+    }
+
+    if (showDialog) {
+        var entry by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showDialog = false },
+            title = { Text("Set API key") },
+            text = {
+                Column {
+                    Text(
+                        apiKeyName,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = entry,
+                        onValueChange = { entry = it },
+                        label = { Text("Key") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = entry.isNotBlank(),
+                    onClick = {
+                        onSetApiKey(entry)
+                        showDialog = false
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 }

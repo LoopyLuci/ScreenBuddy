@@ -92,6 +92,24 @@ either drop it in `toolkit/bin/` or point `GODOT_BIN` at it.
 ./bin/godot-harness.sh --export-all --output ./exports
 ```
 
+## Feature parity
+
+The desktop and Android clients cover the same feature set:
+
+| Capability | Desktop (Rust) | Android (Kotlin) |
+|---|---|---|
+| Multi-provider AI (OpenAI, Anthropic, DeepSeek, Mistral, xAI, OpenRouter, Together, Ollama, self-hosted) | `ai.rs` | `AiService.kt` |
+| Agent tool calling | `agent.rs` | `AgentLoop.kt` |
+| RAG memory | `rag.rs` (vector store) | `RagPipeline.kt` (BM25, fully offline) |
+| Text-to-speech | `tts.rs` | `TtsEngine.kt` |
+| Provider/model management | `settings_ui.rs` | `ProvidersScreen.kt` |
+| Persistent settings | `config.rs` | `SettingsRepository.kt` |
+| Creatures | 7 animated | 7 selectable |
+| Encrypted credential storage | config file | Android Keystore (AES-256-GCM) |
+
+Both clients' agent loops dispatch tools, feed results back, and iterate until a
+text-only answer or the iteration cap. Neither can get stuck.
+
 ## Architecture
 
 ```
@@ -101,9 +119,31 @@ crates/screenbuddy-core/   # Platform-agnostic core library
   render/                 # GDI + wgpu rendering backends
   rag.rs                  # Retrieval-augmented memory
 crates/screenbuddy/       # Windows desktop app
-ScreenBuddy-Android/      # Native Android app (Kotlin + Compose)
+ScreenBuddy-Android/
+  data/repository/        # Room + DataStore persistence
+  data/agent/             # Tool-calling loop
+  data/rag/               # BM25 retrieval
+  service/                # AI backends, TTS
+  ui/screens/             # Jetpack Compose UI
 toolkit/godot-project/    # Godot creature editor
 ```
+
+## Testing
+
+```bash
+# Desktop: 137 tests
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+
+# Android: 77 tests
+cd ScreenBuddy-Android && ./gradlew testDebugUnitTest
+```
+
+Android unit tests run on the JVM against in-memory fake DAOs, so no emulator is
+needed. `ProviderRouteTest` guards the routing table specifically: an unknown
+provider must never fall through to another vendor's endpoint, which would leak
+the user's credential.
 
 ## Releases
 

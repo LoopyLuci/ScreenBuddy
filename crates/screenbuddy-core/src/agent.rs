@@ -184,13 +184,16 @@ impl AgentRuntime {
                     assistant_content.push('\n');
                 }
                 assistant_content.push_str(&format!("[called {} -> {}]", call.name, output));
+                // The call id is carried in the transcript so the matching
+                // tool_result can reference it via `tool_call_id` (OpenAI) or
+                // `tool_use_id` (Anthropic).
                 history.push(Message {
                     role: MessageRole::Assistant,
-                    content: format!("[tool_use {} {}]", call.name, call.arguments),
+                    content: format!("[tool_use {} {} {}]", call.id, call.name, call.arguments),
                 });
                 history.push(Message {
                     role: MessageRole::User,
-                    content: format!("[tool_result {}] {}", call.name, output),
+                    content: format!("[tool_result {} {}] {}", call.id, call.name, output),
                 });
             }
             if !ai_resp.text.is_empty() {

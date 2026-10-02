@@ -3,6 +3,17 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Maximum transcript messages sent per request.
+///
+/// The newest are kept: during a tool-use loop the recent exchange is what the
+/// model needs, so truncation must discard the oldest.
+const MAX_HISTORY_MESSAGES: usize = 20;
+
+/// Placeholders for a malformed tool tag, so one malformed entry cannot make a
+/// whole request invalid.
+const TOOL_ID_FALLBACK: &str = "call_unknown";
+const TOOL_NAME_FALLBACK: &str = "tool";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum ModelTier {
     LocalTiny,
@@ -410,17 +421,82 @@ impl AiEngine {
             msgs.push(serde_json::json!({"role":"system","content":sys}));
         }
         if let Some(hist) = &req.history {
-            for msg in hist.iter().take(20) {
-                let role = match msg.role {
-                    MessageRole::System => "system",
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                };
-                msgs.push(serde_json::json!({"role":role,"content":&msg.content}));
+            // Keep the *newest* messages: on a long tool-use loop the relevant
+            // context is the most recent exchange, and truncating from the front
+            // would discard exactly the messages the model needs.
+            for msg in Self::recent_messages(hist, MAX_HISTORY_MESSAGES) {
+                msgs.push(Self::message_json(msg));
             }
         }
-        msgs.push(serde_json::json!({"role":"user","content":&req.prompt}));
+        // Only append the prompt when it carries content. On continuation turns
+        // the transcript already ends with the tool results, and an empty user
+        // turn would be rejected by some backends.
+        if !req.prompt.is_empty() {
+            msgs.push(serde_json::json!({"role":"user","content":&req.prompt}));
+        }
         msgs
+    }
+
+    /// The last `max` messages, preserving chronological order.
+    fn recent_messages(history: &[Message], max: usize) -> &[Message] {
+        if history.len() <= max {
+            history
+        } else {
+            &history[history.len() - max..]
+        }
+    }
+
+    /// Render one transcript entry into an OpenAI-shaped message.
+    ///
+    /// Tool turns are stored with a tagged encoding written by `AgentRuntime`:
+    /// `[tool_use <id> <name> <json-args>]` and `[tool_result <id> <name>] <text>`.
+    /// The shared `<id>` lets a tool result reference the exact call it answers,
+    /// which OpenAI requires via `tool_call_id`.
+    fn message_json(msg: &Message) -> serde_json::Value {
+        let content = msg.content.as_str();
+
+        if let Some(rest) = content.strip_prefix("[tool_use ") {
+            // The tag closes with ']', which belongs to the encoding rather than
+            // the JSON argument object; strip it or the args fail to parse.
+            let rest = rest.strip_suffix(']').unwrap_or(rest);
+            let mut parts = rest.splitn(3, ' ');
+            let (id, name, args) = match (parts.next(), parts.next(), parts.next()) {
+                (Some(id), Some(name), Some(args)) => (id, name, args),
+                _ => (TOOL_ID_FALLBACK, TOOL_NAME_FALLBACK, "{}"),
+            };
+            return serde_json::json!({
+                "role": "assistant",
+                "content": serde_json::Value::Null,
+                "tool_calls": [{
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args},
+                }],
+            });
+        }
+
+        if let Some(rest) = content.strip_prefix("[tool_result ") {
+            let (head, output) = match rest.split_once(']') {
+                Some((h, o)) => (h, o.trim_start()),
+                None => (rest, ""),
+            };
+            let mut parts = head.splitn(2, ' ');
+            let id = parts.next().unwrap_or(TOOL_ID_FALLBACK);
+            let name = parts.next().unwrap_or(TOOL_NAME_FALLBACK);
+            return serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "name": name,
+                "content": output,
+            });
+        }
+
+        let role = match msg.role {
+            MessageRole::System => "system",
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+        };
+        serde_json::json!({"role":role,"content":content})
     }
 
     // ============ OLLAMA ============
@@ -570,6 +646,63 @@ impl AiEngine {
         })
     }
 
+    /// Render one transcript entry for Anthropic's content-block format.
+    ///
+    /// Anthropic requires tool results in a `user` turn containing a `tool_result`
+    /// block that references the `tool_use` id, so tagged transcript entries are
+    /// converted rather than passed through as text. `None` means "drop this
+    /// entry" (a system message, which belongs in the top-level `system` field).
+    fn anthropic_message(msg: &Message) -> Option<serde_json::Value> {
+        let content = msg.content.as_str();
+
+        if let Some(rest) = content.strip_prefix("[tool_use ") {
+            // The tag closes with ']', which belongs to the encoding rather than
+            // the JSON argument object; strip it or the args fail to parse.
+            let rest = rest.strip_suffix(']').unwrap_or(rest);
+            let mut parts = rest.splitn(3, ' ');
+            let (id, name, args) = match (parts.next(), parts.next(), parts.next()) {
+                (Some(id), Some(name), Some(args)) => (id, name, args),
+                _ => (TOOL_ID_FALLBACK, TOOL_NAME_FALLBACK, "{}"),
+            };
+            let input: serde_json::Value =
+                serde_json::from_str(args).unwrap_or(serde_json::Value::Object(Default::default()));
+            return Some(serde_json::json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": input,
+                }],
+            }));
+        }
+
+        if let Some(rest) = content.strip_prefix("[tool_result ") {
+            let (head, output) = match rest.split_once(']') {
+                Some((h, o)) => (h, o.trim_start()),
+                None => (rest, ""),
+            };
+            let id = head.split(' ').next().unwrap_or(TOOL_ID_FALLBACK);
+            // Anthropic wants tool results in a user turn.
+            return Some(serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": output,
+                }],
+            }));
+        }
+
+        let role = match msg.role {
+            MessageRole::User => "user",
+            MessageRole::Assistant => "assistant",
+            // System text belongs in the request's top-level `system` field.
+            MessageRole::System => return None,
+        };
+        Some(serde_json::json!({"role": role, "content": content}))
+    }
+
     // ============ ANTHROPIC ============
     async fn gen_anthropic(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
         let key = self
@@ -579,16 +712,18 @@ impl AiEngine {
             .ok_or_else(|| crate::error::Error::InvalidConfig("No Anthropic key".into()))?;
         let mut messages = Vec::new();
         if let Some(hist) = &req.history {
-            for msg in hist.iter().take(20) {
-                let role = match msg.role {
-                    MessageRole::User => "user",
-                    MessageRole::Assistant => "assistant",
-                    MessageRole::System => continue,
-                };
-                messages.push(serde_json::json!({"role": role, "content": &msg.content}));
+            // Keep the newest entries, matching the OpenAI path.
+            for msg in Self::recent_messages(hist, MAX_HISTORY_MESSAGES) {
+                if let Some(entry) = Self::anthropic_message(msg) {
+                    messages.push(entry);
+                }
             }
         }
-        messages.push(serde_json::json!({"role":"user","content":&req.prompt}));
+        // Skip an empty continuation prompt; the transcript already ends with
+        // the tool results, and Anthropic rejects an empty final user turn.
+        if !req.prompt.is_empty() {
+            messages.push(serde_json::json!({"role":"user","content":&req.prompt}));
+        }
         let mut body = serde_json::json!({
             "model": model.name,
             "system": req.system_prompt.clone().unwrap_or_default(),
@@ -830,5 +965,146 @@ mod tests {
     fn default_ai_config_offers_local_models() {
         let engine = AiEngine::new(AiConfig::default());
         assert!(!engine.available_models().is_empty());
+    }
+
+    fn msg(role: MessageRole, content: &str) -> Message {
+        Message {
+            role,
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn history_truncation_keeps_the_newest_messages() {
+        // Regression: truncation used `.take(20)`, keeping the OLDEST messages
+        // and dropping the recent tool exchange the model needs to answer.
+        let history: Vec<Message> = (0..50)
+            .map(|i| msg(MessageRole::User, &format!("m{i}")))
+            .collect();
+        let engine = AiEngine::new(AiConfig::default());
+        let req = AiRequest {
+            prompt: "next".into(),
+            history: Some(history),
+            ..Default::default()
+        };
+        let msgs = engine.build_messages(&req);
+        // Default config sets no system_prompt: 20 history + 1 prompt.
+        assert_eq!(msgs.len(), 21);
+        let hist_slice = &msgs[..20];
+        assert_eq!(hist_slice[0]["content"].as_str(), Some("m30"));
+        assert_eq!(hist_slice[19]["content"].as_str(), Some("m49"));
+        assert_eq!(msgs[20]["content"].as_str(), Some("next"));
+    }
+
+    #[test]
+    fn short_history_is_not_truncated() {
+        let history: Vec<Message> = (0..5)
+            .map(|i| msg(MessageRole::User, &format!("m{i}")))
+            .collect();
+        let engine = AiEngine::new(AiConfig::default());
+        let req = AiRequest {
+            prompt: "next".into(),
+            history: Some(history),
+            ..Default::default()
+        };
+        // 5 history + 1 prompt, no system message.
+        assert_eq!(engine.build_messages(&req).len(), 6);
+    }
+
+    #[test]
+    fn empty_continuation_prompt_is_omitted() {
+        // A continuation turn must not send an empty user message.
+        let engine = AiEngine::new(AiConfig::default());
+        let req = AiRequest {
+            prompt: String::new(),
+            history: Some(vec![msg(MessageRole::User, "hi")]),
+            ..Default::default()
+        };
+        let msgs = engine.build_messages(&req);
+        assert!(msgs.iter().all(|m| m["content"] != serde_json::json!("")));
+        assert!(!msgs
+            .iter()
+            .any(|m| m["role"] == "user" && m["content"] == ""));
+    }
+
+    #[test]
+    fn tool_use_entry_renders_native_tool_calls() {
+        let out = AiEngine::message_json(&msg(
+            MessageRole::Assistant,
+            r#"[tool_use call_abc123 echo {"text":"hi"}]"#,
+        ));
+        assert_eq!(out["role"], "assistant");
+        assert_eq!(out["tool_calls"][0]["id"], "call_abc123");
+        assert_eq!(out["tool_calls"][0]["type"], "function");
+        assert_eq!(out["tool_calls"][0]["function"]["name"], "echo");
+        assert!(out["tool_calls"][0]["function"]["arguments"].is_string());
+    }
+
+    #[test]
+    fn tool_result_entry_uses_the_tool_role_with_matching_id() {
+        // OpenAI requires role="tool" plus tool_call_id matching the assistant call.
+        let out =
+            AiEngine::message_json(&msg(MessageRole::User, "[tool_result call_abc123 echo] hi"));
+        assert_eq!(out["role"], "tool");
+        assert_eq!(out["tool_call_id"], "call_abc123");
+        assert_eq!(out["name"], "echo");
+        assert_eq!(out["content"], "hi");
+    }
+
+    #[test]
+    fn malformed_tool_tags_do_not_break_rendering() {
+        // Truncated tags must still produce a structurally valid message.
+        let use_out = AiEngine::message_json(&msg(MessageRole::Assistant, "[tool_use call_1 echo"));
+        // Only two fields present, so arguments are missing and fall back to "{}".
+        assert_eq!(use_out["tool_calls"][0]["id"], TOOL_ID_FALLBACK);
+        assert_eq!(
+            use_out["tool_calls"][0]["function"]["name"],
+            TOOL_NAME_FALLBACK
+        );
+        assert_eq!(use_out["tool_calls"][0]["function"]["arguments"], "{}");
+
+        let result_out = AiEngine::message_json(&msg(MessageRole::User, "[tool_result call_2]"));
+        assert_eq!(result_out["tool_call_id"], "call_2");
+    }
+
+    #[test]
+    fn anthropic_tool_use_block_is_native() {
+        let out = AiEngine::anthropic_message(&msg(
+            MessageRole::Assistant,
+            r#"[tool_use call_abc123 echo {"text":"hi"}]"#,
+        ))
+        .unwrap();
+        assert_eq!(out["role"], "assistant");
+        assert_eq!(out["content"][0]["type"], "tool_use");
+        assert_eq!(out["content"][0]["id"], "call_abc123");
+        assert_eq!(out["content"][0]["name"], "echo");
+        // Arguments must be parsed into a real object, not left as a string.
+        assert_eq!(out["content"][0]["input"]["text"].as_str(), Some("hi"));
+    }
+
+    #[test]
+    fn anthropic_tool_result_block_is_native() {
+        // Anthropic requires tool_result inside a user turn.
+        let out = AiEngine::anthropic_message(&msg(
+            MessageRole::User,
+            "[tool_result call_abc123 echo] hi",
+        ))
+        .unwrap();
+        assert_eq!(out["role"], "user");
+        assert_eq!(out["content"][0]["type"], "tool_result");
+        assert_eq!(out["content"][0]["tool_use_id"], "call_abc123");
+        assert_eq!(out["content"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn anthropic_drops_system_messages_from_the_turn_list() {
+        assert!(AiEngine::anthropic_message(&msg(MessageRole::System, "be nice")).is_none());
+    }
+
+    #[test]
+    fn anthropic_keeps_plain_messages() {
+        let out = AiEngine::anthropic_message(&msg(MessageRole::Assistant, "hello")).unwrap();
+        assert_eq!(out["role"], "assistant");
+        assert_eq!(out["content"], "hello");
     }
 }
