@@ -1,0 +1,42 @@
+name: ScreenBuddy Android CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ScreenBuddy-Android/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ScreenBuddy-Android/**'
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ScreenBuddy-Android
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.2.0 is built and tested against JDK 17; JDK 21+ fails its
+      # JdkImageTransform (jlink) step. Keep this pinned to 17.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+
+      - name: Validate wrapper
+        uses: gradle/actions/wrapper-validation@v3
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenbuddy-android-debug
+          path: ScreenBuddy-Android/app/build/outputs/apk/debug/*.apk

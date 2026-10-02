@@ -34,37 +34,86 @@ ScreenBuddy/
 
 ## Quick Start
 
-### Godot Editor (Creature Creation)
+### Build (Windows)
 
-1. Open `toolkit/godot-project/project.godot` in Godot 4.3
-2. Use the creature editor to create and modify creatures
-3. Export creatures to `exports/` directory
+The Rust workspace targets Windows and requires a working Rust toolchain.
 
-### Godot CLI (Headless)
+```bash
+# Build + test the Rust workspace
+cargo build --workspace
+cargo test --workspace
+
+# Lint gates (these are what CI enforces)
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+```
+
+### Run
+
+```bash
+cargo run --bin screenbuddy
+```
+
+The app starts, loads its 7 creatures, and runs the animation loop at 30 FPS.
+
+### Android (APK)
+
+Requires **JDK 17** (AGP 8.2.0's `JdkImageTransform` fails on JDK 21+) and the
+Android SDK. Point `local.properties` at your SDK, or set `ANDROID_HOME`.
+
+```bash
+cd ScreenBuddy-Android
+./gradlew assembleDebug    # debug APK
+./gradlew assembleRelease  # minified release APK
+```
+
+Release signing reads `ScreenBuddy-Android/keystore.properties` (git-ignored)
+or `SCREENBUDDY_KEYSTORE` / `SCREENBUDDY_STORE_PASSWORD` /
+`SCREENBUDDY_KEY_PASSWORD`. With no keystore configured, the release build falls
+back to the debug key and logs a warning.
+
+### Toolkit (Godot)
+
+The Godot editor is used to author creatures. The engine binaries are **not**
+committed — they exceed GitHub's 100 MB per-file limit. Download Godot 4.3 and
+either drop it in `toolkit/bin/` or point `GODOT_BIN` at it.
 
 ```bash
 # List all creatures
-./toolkit/bin/godot-harness.sh --list-creatures
+./bin/godot-harness.sh --list-creatures
 
 # Validate a creature
-./toolkit/bin/godot-harness.sh --validate companion-bird-01
+./bin/godot-harness.sh --validate companion-bird-01
 
 # Export a creature
-./toolkit/bin/godot-harness.sh --export-creature companion-bird-01 --output ./exports
+./bin/godot-harness.sh --export-creature companion-bird-01 --output ./exports
 
 # Export all creatures
-./toolkit/bin/godot-harness.sh --export-all --output ./exports
+./bin/godot-harness.sh --export-all --output ./exports
 ```
 
-### Rust Core
+## Architecture
 
-```bash
-# Build the core library
-cargo build --package screenbuddy-core
-
-# Run tests
-cargo test --package screenbuddy-core
 ```
+crates/screenbuddy-core/   # Platform-agnostic core library
+  ai.rs                   # Multi-backend AI engine + tool-call parsing
+  agent.rs                # Agent runtime: tool dispatch loop
+  render/                 # GDI + wgpu rendering backends
+  rag.rs                  # Retrieval-augmented memory
+crates/screenbuddy/       # Windows desktop app
+ScreenBuddy-Android/      # Native Android app (Kotlin + Compose)
+toolkit/godot-project/    # Godot creature editor
+```
+
+## Releases
+
+Prebuilt binaries are attached to
+[GitHub Releases](https://github.com/LoopyLuci/ScreenBuddy/releases):
+
+- `ScreenBuddy-v<version>-windows-x64.exe` — desktop app
+- `ScreenBuddy-v<version>-android.apk` — Android app
+
+Stage them locally with `make stage-release VERSION=0.1.0`.
 
 ## Creature Format
 

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -22,11 +24,47 @@ android {
         }
     }
 
+    signingConfigs {
+        // Credentials come from keystore.properties (git-ignored) or the
+        // environment, so no secrets are committed. Falls back to the debug key
+        // so `assembleRelease` still produces an installable APK locally.
+        create("release") {
+            val props = Properties()
+            val f = rootProject.file("keystore.properties")
+            if (f.exists()) {
+                f.inputStream().use { props.load(it) }
+            }
+            val storePath = props.getProperty("storeFile")
+                ?: System.getenv("SCREENBUDDY_KEYSTORE")
+            // Resolve relative to the root project: keystore.properties and the
+            // keystore it points at live beside each other, not under app/.
+            val store = storePath?.let { p ->
+                val direct = file(p)
+                if (direct.exists()) direct else rootProject.file(p)
+            }
+            if (store != null && store.exists()) {
+                storeFile = store
+                storePassword = props.getProperty("storePassword")
+                    ?: System.getenv("SCREENBUDDY_STORE_PASSWORD")
+                keyAlias = props.getProperty("keyAlias") ?: "screenbuddy"
+                keyPassword = props.getProperty("keyPassword")
+                    ?: System.getenv("SCREENBUDDY_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            val releaseSigning = signingConfigs.getByName("release")
+            signingConfig = if (releaseSigning.storeFile != null) {
+                releaseSigning
+            } else {
+                logger.warn("No release keystore configured; signing the release APK with the debug key.")
+                signingConfigs.getByName("debug")
+            }
         }
         debug {
             isMinifyEnabled = false

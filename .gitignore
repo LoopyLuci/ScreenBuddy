@@ -11,6 +11,25 @@ Cargo.lock
 toolkit/godot-project/.godot/
 toolkit/godot-project/*.import/
 
+# Godot engine binaries are third-party downloads (~127 MB combined) and exceed
+# GitHub's 100 MB per-file limit. They are not tracked. See README "Toolkit"
+# for how to fetch them; godot-harness.sh also honours the GODOT_BIN env var.
+/toolkit/bin/*.exe
+/toolkit/bin/Godot_*
+
+# Android build output
+ScreenBuddy-Android/local.properties
+ScreenBuddy-Android/keystore.properties
+ScreenBuddy-Android/.gradle/
+**/build/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Staged release artifacts (attached to GitHub Releases, not committed)
+/dist/
+
 # Exports (keep directory)
 exports/.gitkeep
 
