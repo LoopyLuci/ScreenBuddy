@@ -69,8 +69,26 @@ cd ScreenBuddy-Android
 
 Release signing reads `ScreenBuddy-Android/keystore.properties` (git-ignored)
 or `SCREENBUDDY_KEYSTORE` / `SCREENBUDDY_STORE_PASSWORD` /
-`SCREENBUDDY_KEY_PASSWORD`. With no keystore configured, the release build falls
-back to the debug key and logs a warning.
+`SCREENBUDDY_KEY_PASSWORD`. With no keystore configured, the local release build
+falls back to the debug key and logs a warning.
+
+CI does **not** allow that fallback: the `Build signed release APK` job fails if
+the key is missing, and verifies the APK is signed by the release key rather
+than the debug key. It reads four repository secrets:
+
+| Secret | Value |
+|---|---|
+| `SCREENBUDDY_KEYSTORE_B64` | `base64 -w0 screenbuddy-release.jks` |
+| `SCREENBUDDY_STORE_PASSWORD` | keystore password |
+| `SCREENBUDDY_KEY_PASSWORD` | key password |
+| `SCREENBUDDY_KEY_ALIAS` | key alias, `screenbuddy` |
+
+Set them with `gh secret set <NAME> --repo LoopyLuci/ScreenBuddy` (pipe the value
+on stdin so it stays out of shell history).
+
+> The signing key is **not** recoverable. Android requires every update to a
+> published app to be signed by the same key. Keep an offline backup of the
+> `.jks` and `keystore.properties` somewhere you control.
 
 ### Toolkit (Godot)
 

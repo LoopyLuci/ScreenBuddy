@@ -711,7 +711,10 @@ fn main() {
                     settings_win.toggle();
                 }
                 screenbuddy_core::TrayEvent::About => {
-                    println!("[About] ScreenBuddy v0.1.0 - AI Desktop Companion");
+                    println!(
+                        "[About] ScreenBuddy v{} - AI Desktop Companion",
+                        env!("CARGO_PKG_VERSION")
+                    );
                 }
             }
         }
