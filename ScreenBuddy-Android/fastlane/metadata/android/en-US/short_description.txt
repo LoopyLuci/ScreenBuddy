@@ -1,0 +1,1 @@
+AI desktop companion with an agent runtime and RAG memory

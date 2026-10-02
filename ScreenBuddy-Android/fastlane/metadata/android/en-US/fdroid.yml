@@ -1,0 +1,62 @@
+# F-Droid build configuration for the ScreenBuddy Android client.
+#
+# F-Droid builds from published source with a 100% FLOSS toolchain, so this file
+# must not reference the local release keystore, an Oracle JDK, or any
+# proprietary SDK. The signing block below substitutes a throwaway key because
+# F-Droid signs the final artifact with its own.
+#
+# Reference: https://f-droid.org/docs/Submitting_to_F-Droid_Quick_Start_Guide/
+
+Categories:
+  - Multimedia
+  - Artificial Intelligence
+
+License: MIT OR Apache-2.0
+
+SourceCode: https://github.com/LoopyLuci/ScreenBuddy
+
+Repo: https://github.com/LoopyLuci/ScreenBuddy
+
+Issues: https://github.com/LoopyLuci/ScreenBuddy/issues
+
+Changelog: https://github.com/LoopyLuci/ScreenBuddy/releases
+
+BuildType: Gradle
+
+GradlePlugin: com.android.application
+
+Submodules: false
+
+RequiresSigning: true
+
+# Build the tagged release so the published version matches the GitHub release.
+Tags: v0.3.0
+
+PreBuild: |
+    # Guard the assumptions this build depends on, so a violation fails loudly
+    # at submission time rather than producing a rejected build.
+    ! grep -rqiE 'play-services|firebase|crashlytics|com\.google\.android\.gms' \
+        app/build.gradle.kts build.gradle.kts \
+      || { echo "F-Droid: proprietary Google SDKs are not permitted"; exit 1; }
+    for f in ../LICENSE-MIT ../LICENSE-APACHE; do
+      test -f "$f" || { echo "F-Droid: $f is required for a FLOSS submission"; exit 1; }
+    done
+    ! test -f keystore.properties \
+      || { echo "F-Droid: keystore.properties must not be present; it is git-ignored"; exit 1; }
+
+Build:
+    - ./gradlew --no-daemon --offline assembleRelease
+
+Signing: |
+    # F-Droid provides its own signing key. Drop any local keystore and pin the
+    # debug config so no release credentials are consulted or required.
+    rm -f keystore.properties
+    keytool -genkeypair -keystore dummy.keystore -storepass android \
+        -keypass android -alias androiddebugkey \
+        -dname "CN=Android Debug,O=Android,C=US" \
+        -keyalg RSA -keysize 2048 -validity 10000
+    sed -i 's/signingConfig = if (releaseSigning.*/signingConfig = signingConfigs.getByName("debug")/' \
+        app/build.gradle.kts
+    rm -f keystore.properties
+
+ArchiveName: ScreenBuddy

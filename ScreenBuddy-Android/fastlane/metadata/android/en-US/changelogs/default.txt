@@ -1,0 +1,8 @@
+ScreenBuddy v0.3.0
+
+* Live control API over IPC, with an MCP server so an AI agent can drive the
+  running desktop client.
+* Fixed memory search: documents were embedded from empty text, so recall could
+  not distinguish them. Search now also matches synonyms and inflected words.
+* Fixed a crash on the Providers screen.
+* AI keys encrypted at rest with the Android Keystore.

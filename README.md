@@ -233,6 +233,21 @@ Creatures are defined as JSON files with the following structure:
 }
 ```
 
+## F-Droid
+
+The Android client is prepared for F-Droid: no proprietary SDKs (no Play
+Services, no Firebase, no tracking), no prebuilt binaries, and it builds from
+published source. Store metadata lives in
+`ScreenBuddy-Android/fastlane/metadata/android/en-US/`, and the build definition
+is `fdroid.yml` in the same directory.
+
+`fdroid.yml` builds the tagged release, guards against a proprietary dependency
+being added, and signs with a throwaway key since F-Droid applies its own
+signing. Update `Tags:` when cutting a new tag.
+
+Note that F-Droid builds with a FLOSS toolchain, so it cannot use Oracle's JDK.
+
 ## License
 
-MIT OR Apache-2.0
+MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and
+[LICENSE-APACHE](LICENSE-APACHE).

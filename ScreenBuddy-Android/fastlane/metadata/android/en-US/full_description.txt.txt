@@ -1,0 +1,79 @@
+Categories:
+  - Multimedia
+  - Artificial Intelligence
+
+License: MIT OR Apache-2.0
+
+SourceCode: https://github.com/LoopyLuci/ScreenBuddy
+
+Repo: https://github.com/LoopyLuci/ScreenBuddy
+
+Issues: https://github.com/LoopyLuci/ScreenBuddy/issues
+
+Changelog: https://github.com/LoopyLuci/ScreenBuddy/releases
+
+BuildType: Gradle
+
+GradlePlugin: com.android.application
+
+Submodules: false
+
+RequiresSigning: true
+
+# Built from the release tag so the version F-Droid publishes matches the
+# published release. Update this when cutting a new tag.
+Tags: v0.3.0
+
+PreBuild: |
+    # Keep the F-Droid build free of proprietary tooling and verify the
+    # assumptions this build depends on.
+    ! grep -rqiE 'play-services|firebase|crashlytics' app/build.gradle.kts \
+      || { echo "F-Droid: proprietary Google SDKs are not permitted"; exit 1; }
+    ! test -f ../LICENSE-MIT \
+      || { echo "F-Droid: LICENSE-MIT is required"; exit 1; }
+    ! test -f ../LICENSE-APACHE \
+      || { echo "F-Droid: LICENSE-APACHE is required"; exit 1; }
+
+Build:
+    - ./gradlew --no-daemon assembleRelease
+
+Signing:
+    # F-Droid signs with its own key. The in-tree release signing config is
+    # bypassed here so no local keystore is required or consulted.
+    - rm -f keystore.properties
+    - keytool -genkeypair -keystore dummy.keystore -storepass android \
+        -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" \
+        -keyalg RSA -keysize 2048 -validity 10000
+    - sed -i 's/^signingConfig.*=.*/signingConfig = signingConfigs.getByName("debug")/' app/build.gradle.kts
+    - rm -f keystore.properties
+
+ArchiveName: ScreenBuddy
+
+# The app is a desktop companion with the same feature set as the Windows
+# client. This listing covers the Android client specifically.
+Description: |
+  ScreenBuddy is an AI desktop companion: a small, customisable creature that
+  lives on your screen and reacts to what you are doing.
+
+  This is the Android client, at feature parity with the desktop application.
+
+  Features:
+
+  - Talk to your companion with any supported AI provider (Anthropic, OpenAI,
+    OpenRouter, Ollama, llama.cpp, LM Studio, vLLM, and more).
+  - An agent runtime that can call tools while answering, not just reply.
+  - RAG memory: ingest notes and have them recalled later in context.
+  - A small creature library to choose from, with per-creature personality.
+  - Provider keys encrypted at rest with the Android Keystore.
+
+  Privacy:
+
+  - No advertising, no analytics, and no tracking of any kind.
+  - No Google Play Services or Firebase. The APK contains no proprietary
+    libraries and is built from published source.
+  - Your API keys never leave the device except to the provider you chose.
+  - If you run a local model through Ollama or llama.cpp, no text leaves the
+    machine at all.
+
+  The desktop client for Windows is open source under the same licence and adds
+  an MCP control surface so an AI agent can drive the running application.

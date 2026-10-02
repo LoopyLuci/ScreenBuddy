@@ -9,7 +9,9 @@ plugins {
 android {
     namespace = "com.screenbuddy.android"
     compileSdk = 34
-    buildToolsVersion = "34.0.0"
+    // buildToolsVersion is intentionally not pinned. F-Droid builds with its own
+    // Debian-packaged SDK, and a hardcoded version makes the build fail there
+    // whenever that differs. AGP picks a compatible version automatically.
 
     defaultConfig {
         applicationId = "com.screenbuddy.android"
