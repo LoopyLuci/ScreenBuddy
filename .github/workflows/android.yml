@@ -5,10 +5,14 @@ on:
     branches: [main]
     paths:
       - 'ScreenBuddy-Android/**'
+      # Without this, editing this workflow never runs it, so a broken edit
+      # goes unnoticed until the next unrelated Android change.
+      - '.github/workflows/android.yml'
   pull_request:
     branches: [main]
     paths:
       - 'ScreenBuddy-Android/**'
+      - '.github/workflows/android.yml'
 
 jobs:
   build:
