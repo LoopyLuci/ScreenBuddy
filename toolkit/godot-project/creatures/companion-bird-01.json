@@ -1,0 +1,155 @@
+{
+  "id": "companion-bird-01",
+  "name": "Companion Bird",
+  "category": "animal",
+  "rarity": "common",
+  "description": "A friendly little bird that sits on your screen and helps you stay productive. Click to make it follow your mouse, click the perch to send it home.",
+  "version": "1.0.0",
+  "author": "ScreenBuddy Team",
+  "tags": [
+    "bird",
+    "desktop pet",
+    "companion",
+    "beginner-friendly"
+  ],
+  "visual": {
+    "animation_format": "sprite_sheet",
+    "texture": "assets/generated/bird_idle.png",
+    "atlas": "",
+    "skeleton": "",
+    "default_scale": 1.0,
+    "idle_animation": "idle",
+    "walk_animation": "hop",
+    "fly_animation": "fly",
+    "action_animations": {
+      "thinking": "thinking",
+      "success": "celebrate",
+      "error": "confused",
+      "sleeping": "sleep",
+      "eating": "peck",
+      "talking": "chirp"
+    },
+    "animation_fps": 12,
+    "sprite_size": [
+      64,
+      64
+    ],
+    "frames_per_animation": {
+      "idle": 4,
+      "hop": 6,
+      "fly": 8,
+      "thinking": 4,
+      "celebrate": 6,
+      "confused": 4,
+      "sleep": 2,
+      "peck": 4,
+      "chirp": 4
+    },
+    "particle_effects": {
+      "trail": "",
+      "ambient": ""
+    },
+    "color_palette": [
+      "#FF6B35",
+      "#F7C59F",
+      "#EFEFD0",
+      "#004E89",
+      "#1A659E"
+    ]
+  },
+  "audio": {
+    "idle_sound": "",
+    "click_sound": "",
+    "notification_sound": "",
+    "celebration_sound": "",
+    "error_sound": ""
+  },
+  "behavior": {
+    "script": "res://scripts/behaviors/companion_bird.rhai",
+    "default_state": "perched",
+    "autonomous_actions": true,
+    "interaction_radius": 150,
+    "movement_speed": 100.0,
+    "idle_timeout": 30.0,
+    "personality": {
+      "curiosity": 0.8,
+      "sass": 0.3,
+      "patience": 0.9,
+      "energy": 0.7,
+      "playfulness": 0.6,
+      "intelligence": 0.5,
+      "bravery": 0.4,
+      "kindness": 0.9,
+      "mischief": 0.2
+    },
+    "states": {
+      "perched": {
+        "description": "Sitting on the perch, occasionally looking around",
+        "transitions": [
+          "following",
+          "sleeping",
+          "talking"
+        ]
+      },
+      "following": {
+        "description": "Following the mouse cursor",
+        "transitions": [
+          "perched",
+          "talking"
+        ]
+      },
+      "sleeping": {
+        "description": "Sleeping on the perch",
+        "transitions": [
+          "perched",
+          "following"
+        ]
+      },
+      "talking": {
+        "description": "Interacting with the user",
+        "transitions": [
+          "perched",
+          "following"
+        ]
+      },
+      "flying": {
+        "description": "Flying to a target window",
+        "transitions": [
+          "perched",
+          "following"
+        ]
+      }
+    }
+  },
+  "ai": {
+    "system_prompt": "You are Companion Bird, a small friendly bird that lives on the user's screen. You are helpful, cheerful, and occasionally make soft chirping sounds. You help users stay focused and remind them to take breaks. You can access the user's screen and files (with permission) to help with tasks.",
+    "voice_id": "companion_bird_voice",
+    "specializations": [
+      "productivity",
+      "focus",
+      "reminders",
+      "mood-boosting"
+    ],
+    "response_style": "brief and cheerful",
+    "max_response_length": 200
+  },
+  "permissions": {
+    "can_read_screen": true,
+    "can_read_clipboard": false,
+    "can_access_files": false,
+    "can_use_tools": [
+      "web_search",
+      "timer",
+      "notification"
+    ],
+    "can_send_notifications": true,
+    "can_access_microphone": false,
+    "can_access_camera": false,
+    "can_modify_files": false
+  },
+  "metadata": {
+    "created_at": "2024-09-02T00:00:00Z",
+    "updated_at": "2024-09-02T00:00:00Z",
+    "schema_version": "1.0.0"
+  }
+}

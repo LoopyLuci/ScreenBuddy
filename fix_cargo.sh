@@ -1,0 +1,58 @@
+#!/bin/bash
+cd /G/Projects/ScreenBuddy
+
+# Remove any old Cargo.toml content
+> crates/screenbuddy-core/Cargo.toml
+
+cat > crates/screenbuddy-core/Cargo.toml << 'EOF'
+[package]
+name = "screenbuddy-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["ScreenBuddy Team"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+
+# Rendering
+wgpu = "0.20"
+winit = "0.30"
+raw-window-handle = "0.6"
+pollster = "0.3"
+
+# Image loading
+image = "0.25"
+
+# Math
+glam = { version = "0.28", features = ["serde"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12"
+dashmap = "5"
+notify = "6"
+toml = "0.8"
+directories = "5"
+rand = "0.8"
+
+# Windows-specific
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = [
+    "winuser", "wingdi", "windef", "minwindef",
+    "libloaderapi", "shellapi", "processthreadsapi",
+    "handleapi", "sysinfoapi",
+] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+EOF
+echo "Cargo.toml rewritten"

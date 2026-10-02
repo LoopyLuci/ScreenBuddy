@@ -1,0 +1,12 @@
+[package]
+name = "screenbuddy"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+screenbuddy-core = { path = "../screenbuddy-core" }
+image = "0.25"
+glam = "0.28"
+winapi = { version = "0.3", features = ["winuser", "wingdi", "windef", "minwindef", "libloaderapi", "errhandlingapi"] }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ScreenBuddy</string>
+    <string name="chat">Chat</string>
+    <string name="providers">Providers</string>
+    <string name="settings">Settings</string>
+    <string name="creatures">Creatures</string>
+    <string name="api_keys">API Keys</string>
+</resources>

@@ -1,0 +1,23 @@
+; Engine configuration version 4.3
+config_version=5
+
+[application]
+config/name="ScreenBuddy Creature Toolkit"
+config/description="Godot project for creating and exporting ScreenBuddy creatures"
+run/main_scene="res://scenes/editor.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+boot_splash/show_image=false
+
+[autoload]
+CreatureDB="*res://scripts/creature_db.gd"
+ExportPlugin="*res://scripts/export_plugin.gd"
+AssetManager="*res://scripts/asset_manager.gd"
+
+[display]
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/resizable=true
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

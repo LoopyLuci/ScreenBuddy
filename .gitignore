@@ -1,0 +1,34 @@
+# Git ignore for ScreenBuddy
+
+# Rust
+/target/
+**/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Godot
+toolkit/godot-project/.godot/
+toolkit/godot-project/*.import/
+
+# Exports (keep directory)
+exports/.gitkeep
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary
+*.tmp
+*.bak

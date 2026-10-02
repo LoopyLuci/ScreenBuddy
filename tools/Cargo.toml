@@ -1,0 +1,11 @@
+[package]
+name = "screenbuddy-tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+image = "0.25"
+
+[[bin]]
+name = "gen_sprites"
+path = "gen_sprites.rs"

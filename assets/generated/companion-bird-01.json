@@ -1,0 +1,115 @@
+{
+    "id": "companion-bird-01",
+    "name": "Companion Bird",
+    "category": "animal",
+    "rarity": "common",
+    "description": "A friendly little bird that sits on your screen and helps you stay productive.",
+    "version": "1.0.0",
+    "author": "ScreenBuddy Team",
+    "tags": ["bird", "desktop pet", "companion"],
+    
+    "visual": {
+        "animation_format": "sprite_sheet",
+        "texture": "bird_idle.png",
+        "default_scale": 1.0,
+        "idle_animation": "idle",
+        "walk_animation": "walk",
+        "fly_animation": "fly",
+        "frames_per_animation": {
+            "idle": 4,
+            "walk": 4,
+            "fly": 4,
+            "sleep": 2,
+            "celebrate": 4
+        },
+        "animation_fps": 12,
+        "sprite_size": [64, 64],
+        "action_animations": {
+            "peck": "peck",
+            "sing": "sing",
+            "hop": "hop"
+        }
+    },
+    
+    "behavior": {
+        "default_state": "idle",
+        "autonomous_actions": true,
+        "idle_timeout": 15.0,
+        "movement_speed": 30.0,
+        "interaction_radius": 100.0,
+        "personality": {
+            "curiosity": 0.8,
+            "sass": 0.3,
+            "patience": 0.9,
+            "energy": 0.7,
+            "playfulness": 0.6
+        },
+        "states": {
+            "idle": {
+                "animation": "idle",
+                "loop": true,
+                "can_transition_to": ["walk", "sleep", "celebrate", "peck"],
+                "auto_transition": {
+                    "after_seconds": 15.0,
+                    "to": "walk"
+                }
+            },
+            "walk": {
+                "animation": "walk",
+                "loop": true,
+                "movement": "horizontal",
+                "speed_range": [20.0, 40.0],
+                "can_transition_to": ["idle", "fly", "sleep"],
+                "auto_transition": {
+                    "after_seconds": 30.0,
+                    "to": "idle"
+                }
+            },
+            "fly": {
+                "animation": "fly",
+                "loop": true,
+                "movement": "free",
+                "speed_range": [40.0, 80.0],
+                "can_transition_to": ["idle", "walk"],
+                "auto_transition": {
+                    "after_seconds": 20.0,
+                    "to": "idle"
+                }
+            },
+            "sleep": {
+                "animation": "sleep",
+                "loop": true,
+                "movement": "none",
+                "can_transition_to": ["idle"],
+                "auto_transition": {
+                    "after_seconds": 60.0,
+                    "to": "idle"
+                }
+            },
+            "celebrate": {
+                "animation": "celebrate",
+                "loop": false,
+                "movement": "bounce",
+                "can_transition_to": ["idle"],
+                "auto_transition": {
+                    "after_seconds": 3.0,
+                    "to": "idle"
+                }
+            }
+        }
+    },
+    
+    "ai": {
+        "system_prompt": "You are Companion Bird, a small friendly bird that lives on the user's screen. You are helpful, cheerful, and occasionally make soft chirping sounds.",
+        "specializations": ["productivity", "focus", "reminders"]
+    },
+    
+    "permissions": {
+        "can_read_screen": true,
+        "can_send_notifications": true
+    },
+    
+    "metadata": {
+        "schema_version": "1.0.0"
+    }
+}

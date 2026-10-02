@@ -1,0 +1,139 @@
+{
+  "id": "cosmic-jellyfish-01",
+  "name": "Cosmic Jellyfish",
+  "category": "strange",
+  "rarity": "mythic",
+  "description": "A translucent jellyfish that drifts through space, trailing stardust and cosmic energy.",
+  "version": "1.0.0",
+  "author": "ScreenBuddy Team",
+  "tags": [
+    "jellyfish",
+    "cosmic",
+    "space",
+    "ethereal",
+    "strange"
+  ],
+  "visual": {
+    "animation_format": "sprite_sheet",
+    "texture": "assets/generated/cosmic_jellyfish_idle.png",
+    "default_scale": 1.5,
+    "idle_animation": "pulse",
+    "walk_animation": "drift",
+    "fly_animation": "float",
+    "action_animations": {
+      "stargate": {
+        "frames": 10,
+        "fps": 8
+      },
+      "supernova": {
+        "frames": 12,
+        "fps": 15
+      },
+      "warp": {
+        "frames": 6,
+        "fps": 20
+      }
+    },
+    "animation_fps": 6,
+    "sprite_size": [
+      96,
+      96
+    ],
+    "frames_per_animation": 4,
+    "particle_effects": {
+      "idle": "stardust_trail",
+      "walk": "cosmic_swirl",
+      "fly": "nebula_cloud"
+    },
+    "color_palette": [
+      "#8844FF",
+      "#FF44FF",
+      "#44FFFF",
+      "#FFFFFF"
+    ]
+  },
+  "audio": {
+    "idle_sound": "assets/audio/cosmic_drone.wav",
+    "walk_sound": "assets/audio/space_whoosh.wav",
+    "action_sounds": {
+      "stargate": "assets/audio/wormhole.wav",
+      "supernova": "assets/audio/explosion_cosmic.wav",
+      "warp": "assets/audio/warp_speed.wav"
+    }
+  },
+  "behavior": {
+    "script": null,
+    "default_state": "idle",
+    "autonomous_actions": true,
+    "interaction_radius": 150,
+    "movement_speed": 15,
+    "idle_timeout": 20,
+    "personality": {
+      "curiosity": 1.0,
+      "playfulness": 0.3,
+      "sociability": 0.4,
+      "energy": 0.5
+    },
+    "states": {
+      "idle": {
+        "animation": "pulse",
+        "duration_range": [
+          3,
+          6
+        ],
+        "auto_transition": {
+          "after_seconds": 20,
+          "to": "walk"
+        }
+      },
+      "walk": {
+        "animation": "drift",
+        "duration_range": [
+          4,
+          8
+        ],
+        "auto_transition": {
+          "after_seconds": 30,
+          "to": "idle"
+        }
+      },
+      "fly": {
+        "animation": "float",
+        "duration_range": [
+          3,
+          5
+        ],
+        "auto_transition": {
+          "after_seconds": 10,
+          "to": "idle"
+        }
+      },
+      "celebrate": {
+        "animation": "supernova",
+        "duration_range": [
+          1,
+          2
+        ],
+        "auto_transition": {
+          "after_seconds": 4,
+          "to": "idle"
+        }
+      }
+    }
+  },
+  "ai": {
+    "voice": "cosmic_jellyfish_voice",
+    "personality_prompt": "You are a Cosmic Jellyfish from beyond the stars. You speak slowly, wisely, with an otherworldly calm."
+  },
+  "permissions": {
+    "can_move": true,
+    "can_interact": true,
+    "can_speak": true,
+    "can_access_files": false
+  },
+  "metadata": {
+    "created": "2024-01-15",
+    "modified": "2024-01-15",
+    "version": "1.0.0"
+  }
+}

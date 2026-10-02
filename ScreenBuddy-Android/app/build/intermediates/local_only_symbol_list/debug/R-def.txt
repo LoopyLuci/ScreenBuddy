@@ -1,0 +1,10 @@
+R_DEF: Internal format may change without notice
+local
+drawable ic_launcher
+string api_keys
+string app_name
+string chat
+string creatures
+string providers
+string settings
+style Theme.ScreenBuddy

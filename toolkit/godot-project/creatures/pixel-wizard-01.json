@@ -1,0 +1,139 @@
+{
+  "id": "pixel-wizard-01",
+  "name": "Pixel Wizard",
+  "category": "humanoid",
+  "rarity": "legendary",
+  "description": "A tiny wizard made of pure pixels, casting 8-bit spells and muttering arcane incantations.",
+  "version": "1.0.0",
+  "author": "ScreenBuddy Team",
+  "tags": [
+    "wizard",
+    "pixel",
+    "magic",
+    "8bit",
+    "humanoid"
+  ],
+  "visual": {
+    "animation_format": "sprite_sheet",
+    "texture": "assets/generated/pixel_wizard_idle.png",
+    "default_scale": 1.0,
+    "idle_animation": "idle",
+    "walk_animation": "walk",
+    "fly_animation": "levitate",
+    "action_animations": {
+      "cast_spell": {
+        "frames": 8,
+        "fps": 15
+      },
+      "teleport": {
+        "frames": 4,
+        "fps": 20
+      },
+      "enchant": {
+        "frames": 6,
+        "fps": 10
+      }
+    },
+    "animation_fps": 10,
+    "sprite_size": [
+      64,
+      64
+    ],
+    "frames_per_animation": 4,
+    "particle_effects": {
+      "idle": "pixel_sparkle",
+      "walk": "magic_trail",
+      "cast_spell": "explosion_pixels"
+    },
+    "color_palette": [
+      "#FF00FF",
+      "#8800FF",
+      "#FFFFFF",
+      "#000000"
+    ]
+  },
+  "audio": {
+    "idle_sound": "assets/audio/magic_hum.wav",
+    "walk_sound": "assets/audio/spell_woosh.wav",
+    "action_sounds": {
+      "cast_spell": "assets/audio/spell_cast.wav",
+      "teleport": "assets/audio/teleport.wav",
+      "enchant": "assets/audio/enchant.wav"
+    }
+  },
+  "behavior": {
+    "script": null,
+    "default_state": "idle",
+    "autonomous_actions": true,
+    "interaction_radius": 120,
+    "movement_speed": 35,
+    "idle_timeout": 12,
+    "personality": {
+      "curiosity": 0.9,
+      "playfulness": 0.5,
+      "sociability": 0.6,
+      "energy": 0.7
+    },
+    "states": {
+      "idle": {
+        "animation": "idle",
+        "duration_range": [
+          2,
+          5
+        ],
+        "auto_transition": {
+          "after_seconds": 12,
+          "to": "walk"
+        }
+      },
+      "walk": {
+        "animation": "walk",
+        "duration_range": [
+          3,
+          7
+        ],
+        "auto_transition": {
+          "after_seconds": 25,
+          "to": "idle"
+        }
+      },
+      "fly": {
+        "animation": "levitate",
+        "duration_range": [
+          2,
+          4
+        ],
+        "auto_transition": {
+          "after_seconds": 8,
+          "to": "idle"
+        }
+      },
+      "celebrate": {
+        "animation": "cast_spell",
+        "duration_range": [
+          1,
+          2
+        ],
+        "auto_transition": {
+          "after_seconds": 3,
+          "to": "idle"
+        }
+      }
+    }
+  },
+  "ai": {
+    "voice": "pixel_wizard_voice",
+    "personality_prompt": "You are Pixel Wizard, an ancient magical being trapped in an 8-bit form. You speak in riddles and arcane metaphors."
+  },
+  "permissions": {
+    "can_move": true,
+    "can_interact": true,
+    "can_speak": true,
+    "can_access_files": true
+  },
+  "metadata": {
+    "created": "2024-01-15",
+    "modified": "2024-01-15",
+    "version": "1.0.0"
+  }
+}

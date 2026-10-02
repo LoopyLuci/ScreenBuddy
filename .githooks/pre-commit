@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "Running pre-commit checks..."
+cargo fmt --all -- --check || { echo "❌ Format failed"; exit 1; }
+cargo clippy --all-targets -- -D warnings || { echo "❌ Clippy failed"; exit 1; }
+cargo test --workspace || { echo "❌ Tests failed"; exit 1; }
+echo "✅ All checks passed!"

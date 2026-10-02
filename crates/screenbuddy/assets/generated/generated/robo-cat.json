@@ -1,0 +1,67 @@
+{
+  "id": "robo-cat",
+  "name": "Robo-Cat",
+  "category": "robot",
+  "rarity": "common",
+  "description": "A friendly robot companion.",
+  "version": "1.0.0",
+  "author": "ScreenBuddy Team",
+  "tags": [
+    "robot",
+    "companion",
+    "cat"
+  ],
+  "visual": {
+    "animation_format": "sprite_sheet",
+    "texture": "robo-cat.png",
+    "default_scale": 1.0,
+    "idle_animation": "idle",
+    "action_animations": {
+      "thinking": "thinking",
+      "success": "celebrate",
+      "error": "confused",
+      "sleeping": "sleep"
+    },
+    "animation_fps": 12,
+    "sprite_size": [
+      64,
+      64
+    ],
+    "frames_per_animation": {
+      "idle": 4,
+      "thinking": 4,
+      "celebrate": 6,
+      "confused": 4,
+      "sleep": 2
+    },
+    "color_palette": [
+      "#4A90D9",
+      "#2C5282",
+      "#FF3333"
+    ]
+  },
+  "behavior": {
+    "default_state": "perched",
+    "autonomous_actions": true,
+    "personality": {
+      "curiosity": 0.7,
+      "sass": 0.4,
+      "patience": 0.8,
+      "energy": 0.6,
+      "playfulness": 0.7
+    }
+  },
+  "ai": {
+    "system_prompt": "You are Robo-Cat, a friendly robot companion.",
+    "specializations": [
+      "companion"
+    ]
+  },
+  "permissions": {
+    "can_read_screen": true,
+    "can_send_notifications": true
+  },
+  "metadata": {
+    "schema_version": "1.0.0"
+  }
+}
