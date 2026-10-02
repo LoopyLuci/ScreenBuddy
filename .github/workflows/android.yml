@@ -73,9 +73,13 @@ jobs:
           KEY_PASSWORD: ${{ secrets.SCREENBUDDY_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.SCREENBUDDY_KEY_ALIAS }}
         run: |
+          # A missing key must fail the job. Exiting 0 here made this job report
+          # success while producing no signed artifact at all.
           if [ -z "$KEYSTORE_B64" ]; then
-            echo "::warning::No signing key configured; skipping signed release build."
-            exit 0
+            echo "::error::No signing key configured. Set these repository secrets:"
+            echo "::error::  SCREENBUDDY_KEYSTORE_B64 (base64 of the .jks)"
+            echo "::error::  SCREENBUDDY_STORE_PASSWORD, SCREENBUDDY_KEY_PASSWORD, SCREENBUDDY_KEY_ALIAS"
+            exit 1
           fi
           echo "$KEYSTORE_B64" | base64 -d > screenbuddy-release.jks
           {
@@ -87,6 +91,26 @@ jobs:
 
       - name: Build release APK
         run: ./gradlew assembleRelease
+
+      - name: Verify the APK is signed by the release key
+        run: |
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          test -f "$APK" || { echo "::error::No release APK produced"; exit 1; }
+          # Locate apksigner rather than assuming a version or ANDROID_HOME.
+          APKSIGNER=$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found under ${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools"
+            exit 1
+          fi
+          "$APKSIGNER" verify --print-certs "$APK" > verify.txt 2>&1 \
+            || { echo "::error::APK signature did not verify"; cat verify.txt; exit 1; }
+          # Guard against the signed build silently falling back to the debug key.
+          if grep -q "Android Debug" verify.txt; then
+            echo "::error::APK is debug-signed, not release-signed"
+            cat verify.txt
+            exit 1
+          fi
+          grep -E "certificate DN|SHA-256 digest" verify.txt
 
       - name: Upload release APK
         uses: actions/upload-artifact@v4
