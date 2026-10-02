@@ -11,19 +11,21 @@ Hermes  ──MCP (stdio)──▶  mcp/server.py  ──TCP JSON──▶  Scre
 ## Quick start
 
 ```bash
-# 1. Start the app (it opens its control port automatically)
-cargo run --bin screenbuddy
+# 1. Build the app once (the MCP server will start it on demand)
+cargo build --release
 
 # 2. Register the MCP server with Hermes (one time)
-hermes mcp add screenbuddy --command python --args "C:/Projects/ScreenBuddy/mcp/server.py"
+hermes mcp add screenbuddy --command python --args "<repo>/mcp/server.py"
 
 # 3. Start a new Hermes session, or run /reload-mcp
 ```
 
 Tools then appear as `mcp_screenbuddy_*`.
 
-The app must be running; if it is not, the MCP server still starts and each tool
-reports the connection error rather than the server vanishing.
+You do **not** need to start the app yourself. The server resolves the executable
+relative to its own location (`target/release`, then `target/debug`, then `dist`,
+then `PATH`) and launches it if nothing is answering on the control port, so a
+tool call works from a cold start.
 
 ## Configuration
 
@@ -32,6 +34,8 @@ reports the connection error rather than the server vanishing.
 | `SCREENBUDDY_IPC_ADDR` | `127.0.0.1:34567` | Control port (app side) |
 | `SCREENBUDDY_IPC_TIMEOUT` | `10` | Per-command socket timeout, seconds |
 | `SCREENBUDDY_DISABLE_IPC` | unset | Set on the app to disable the control server |
+| `SCREENBUDDY_EXE` | auto | Explicit path to the executable to launch |
+| `SCREENBUDDY_AUTOSTART` | `1` | Set to `0` to never launch the app |
 
 ## Tools
 
@@ -96,7 +100,9 @@ python tools/ipc_probe.py
 python mcp/test_mcp.py
 ```
 
-Both suites are meaningful only with the app running; they are not unit tests.
+`mcp/test_mcp.py` includes a cold-start check: it stops the app, confirms the
+port is closed, and verifies the server brings it back up. It reports SKIP when
+autostart is disabled or no executable is present.
 
 ## Security
 

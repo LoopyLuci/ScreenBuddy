@@ -173,8 +173,12 @@ The running app exposes a control port, and `mcp/server.py` bridges it to the
 Model Context Protocol so an agent can drive it directly:
 
 ```bash
+cargo build --release   # once
 hermes mcp add screenbuddy --command python --args "<repo>/mcp/server.py"
 ```
+
+The server starts the app itself if it is not already running, so no separate
+launch step is needed.
 
 That registers 18 tools (`mcp_screenbuddy_*`) for status, chat, agent runs,
 creature movement and animation, audio, settings, and RAG memory. See

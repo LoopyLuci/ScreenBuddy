@@ -117,6 +117,97 @@ def parse_tool_text(result: dict) -> object:
         return joined
 
 
+def check_cold_start() -> tuple[str, str, str]:
+    """Verify the server can start the app itself when nothing is listening.
+
+    Skipped when autostart is disabled or the app cannot be found, so the suite
+    still runs on a machine without a built binary.
+    """
+    import os
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    if os.environ.get("SCREENBUDDY_AUTOSTART", "1") in ("0", "false", "no"):
+        return ("cold start", "SKIP", "autostart disabled")
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import server as sb
+    except Exception as exc:  # noqa: BLE001
+        return ("cold start", "SKIP", str(exc)[:80])
+
+    exe = sb.find_app()
+    if exe is None:
+        return ("cold start", "SKIP", "no executable found")
+
+    addr = os.environ.get("SCREENBUDDY_IPC_ADDR", "127.0.0.1:34567")
+    host, _, port = addr.rpartition(":")
+
+    def port_open() -> bool:
+        s = socket.socket()
+        s.settimeout(1)
+        try:
+            s.connect((host, int(port)))
+            return True
+        except OSError:
+            return False
+        finally:
+            s.close()
+
+    subprocess.run(["taskkill", "/F", "/IM", exe.name], capture_output=True, text=True)
+    for _ in range(20):
+        if not port_open():
+            break
+        time.sleep(0.5)
+    if port_open():
+        return ("cold start", "SKIP", "could not stop the running app")
+
+    proc = subprocess.Popen(
+        [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, bufsize=1,
+    )
+    try:
+        req_id = 0
+
+        def req(method, params=None):
+            nonlocal req_id
+            req_id += 1
+            msg = {"jsonrpc": "2.0", "id": req_id, "method": method}
+            if params:
+                msg["params"] = params
+            proc.stdin.write(json.dumps(msg) + "\n")
+            proc.stdin.flush()
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError("server closed")
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("id") == req_id:
+                    if "error" in r:
+                        raise RuntimeError(r["error"])
+                    return r.get("result", {})
+
+        req("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
+                           "clientInfo": {"name": "coldstart", "version": "1"}})
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
+        proc.stdin.flush()
+        req("tools/list")
+        if not port_open():
+            raise AssertionError("server started but the app never opened its port")
+        return ("cold start", "PASS", "server launched the app")
+    except Exception as exc:  # noqa: BLE001
+        return ("cold start", "FAIL", str(exc)[:120])
+    finally:
+        proc.stdin.close()
+        proc.terminate()
+
+
 def main() -> int:
     client = McpStdioClient()
     checks: list[tuple[str, str, str]] = []
@@ -301,12 +392,22 @@ def main() -> int:
     finally:
         client.close()
 
+    name, result, detail = check_cold_start()
+    checks.append((name, result, detail))
+
     width = max(len(n) for n, _, _ in checks)
     for name, result, detail in checks:
         suffix = f"  {detail}" if detail else ""
         print(f"  {name:<{width}}  {result}{suffix}")
-    failed = [n for n, r, _ in checks if r != "PASS"]
-    print(f"\n{len(checks) - len(failed)}/{len(checks)} MCP checks passed")
+    passed = [n for n, r, _ in checks if r == "PASS"]
+    skipped = [(n, d) for n, r, d in checks if r == "SKIP"]
+    failed = [n for n, r, _ in checks if r == "FAIL"]
+
+    for name, detail in skipped:
+        print(f"  {name:<{width}}  SKIP ({detail})")
+    print(f"\n{len(passed)}/{len(checks) - len(skipped)} MCP checks passed")
+    if skipped:
+        print(f"{len(skipped)} skipped")
     return 1 if failed else 0
 
 

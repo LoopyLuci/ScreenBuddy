@@ -5,19 +5,23 @@ Speaks the Model Context Protocol over stdio and forwards tool calls to the
 app's IPC control surface (length-prefixed JSON over TCP). Hermes discovers these
 tools at startup and registers them as `mcp_screenbuddy_*`.
 
-Requires the ScreenBuddy app to be running; it starts its IPC server on
-127.0.0.1:34567. Override with SCREENBUDDY_IPC_ADDR.
+The app listens on 127.0.0.1:34567 (override with SCREENBUDDY_IPC_ADDR). If it is
+not running, this server will start it -- see `find_app()` -- so a tool call works
+from a cold start without manual setup. Set SCREENBUDDY_AUTOSTART=0 to disable.
 
 Usage:
-    python mcp_server.py            # stdio transport (for Hermes)
+    python mcp/server.py            # stdio transport (for Hermes)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import pathlib
+import shutil
 import socket
 import struct
+import subprocess
 import sys
 import time
 from typing import Any
@@ -29,6 +33,12 @@ except ModuleNotFoundError:  # mcp 1.x
 
 DEFAULT_ADDR = os.environ.get("SCREENBUDDY_IPC_ADDR", "127.0.0.1:34567")
 DEFAULT_TIMEOUT = float(os.environ.get("SCREENBUDDY_IPC_TIMEOUT", "10"))
+AUTOSTART = os.environ.get("SCREENBUDDY_AUTOSTART", "1") not in ("0", "false", "no")
+
+# This file lives in <repo>/mcp/, so the repo root is one level up. Resolving
+# relative to __file__ means the server keeps working if the checkout moves,
+# instead of depending on an absolute path baked into the Hermes config.
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 mcp = _Server(
     "screenbuddy",
@@ -86,12 +96,117 @@ def send_command(command: dict[str, Any], addr: str = DEFAULT_ADDR,
 
 def call(command: dict[str, Any], addr: str = DEFAULT_ADDR,
          timeout: float = DEFAULT_TIMEOUT) -> Any:
-    """Send a command and unwrap the success payload, raising on error."""
-    response = send_command(command, addr, timeout)
+    """Send a command and unwrap the success payload, raising on error.
+
+    If the app is not up, start it and retry once: an agent should not have to
+    know that ScreenBuddy has to be launched by hand first.
+    """
+    try:
+        response = send_command(command, addr, timeout)
+    except ScreenBuddyError:
+        if not ensure_app(addr):
+            raise
+        response = send_command(command, addr, timeout)
     status = response.get("status")
     if status == "error":
         raise ScreenBuddyError(response.get("message", "unknown IPC error"))
     return response.get("data")
+
+
+def find_app() -> pathlib.Path | None:
+    """Locate the ScreenBuddy executable, or None if it cannot be found.
+
+    Checked in order: an explicit override, a release build, a debug build, and
+    finally anything named screenbuddy on PATH (an installed copy).
+    """
+    override = os.environ.get("SCREENBUDDY_EXE")
+    if override:
+        candidate = pathlib.Path(override)
+        if candidate.exists():
+            return candidate
+
+    names = ["screenbuddy.exe", "screenbuddy"] if os.name == "nt" else ["screenbuddy"]
+    roots = [
+        REPO_ROOT / "target" / "release",
+        REPO_ROOT / "target" / "debug",
+        REPO_ROOT / "dist",
+    ]
+    for root in roots:
+        for name in names:
+            candidate = root / name
+            if candidate.exists():
+                return candidate
+
+    for name in names:
+        found = shutil.which(name.removesuffix(".exe"))
+        if found:
+            return pathlib.Path(found)
+    return None
+
+
+def launch_app(addr: str = DEFAULT_ADDR) -> subprocess.Popen | None:
+    """Start the app in the background and return the process, if possible."""
+    exe = find_app()
+    if exe is None:
+        return None
+
+    host, _, port = addr.rpartition(":")
+    # Keep the port explicit so a non-default address is honoured on launch.
+    env = dict(os.environ, SCREENBUDDY_IPC_ADDR=f"{host}:{port}")
+    kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        # Avoid a console window for a GUI app.
+        kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    else:
+        kwargs["start_new_session"] = True
+
+    return subprocess.Popen(
+        [str(exe)],
+        cwd=str(exe.parent),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **kwargs,
+    )
+
+
+def ensure_app(addr: str = DEFAULT_ADDR) -> bool:
+    """Make sure the app is up, starting it if permitted. Returns reachability."""
+    if app_running(addr):
+        return True
+    if not AUTOSTART:
+        return False
+
+    exe = find_app()
+    if exe is None:
+        print(
+            "ScreenBuddy executable not found; build it with 'cargo build --release' "
+            "or set SCREENBUDDY_EXE.",
+            file=sys.stderr,
+        )
+        return False
+
+    try:
+        launch_app(addr)
+    except OSError as exc:
+        print(f"Could not launch {exe}: {exc}", file=sys.stderr)
+        return False
+
+    # The app needs a moment to open its window and bind the port.
+    if wait_for_app(addr, attempts=40, delay=0.5):
+        return True
+    print(f"Launched {exe} but it is not answering on {addr}.", file=sys.stderr)
+    return False
+
+
+def app_running(addr: str = DEFAULT_ADDR) -> bool:
+    try:
+        return send_command({"cmd": "ping"}, addr, 2.0).get("status") == "pong"
+    except ScreenBuddyError:
+        return False
 
 
 def wait_for_app(addr: str = DEFAULT_ADDR, attempts: int = 20,
@@ -302,7 +417,7 @@ def main() -> int:
     # Probe once, briefly. Blocking here would stall Hermes' startup discovery,
     # so a missing app must not delay registering the tools: the server comes up
     # either way and each tool reports the connection error when called.
-    if not wait_for_app(attempts=2, delay=0.2):
+    if not app_running() and not ensure_app():
         print(
             f"ScreenBuddy not reachable at {DEFAULT_ADDR}; tools will error until it starts.",
             file=sys.stderr,
