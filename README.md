@@ -138,12 +138,30 @@ cargo clippy --all-targets -- -D warnings
 
 # Android: 77 tests
 cd ScreenBuddy-Android && ./gradlew testDebugUnitTest
+
+# Integration suites (require the app to be running)
+python tools/ipc_probe.py    # IPC protocol
+python mcp/test_mcp.py       # MCP handshake, discovery, and tool calls
 ```
 
 Android unit tests run on the JVM against in-memory fake DAOs, so no emulator is
 needed. `ProviderRouteTest` guards the routing table specifically: an unknown
 provider must never fall through to another vendor's endpoint, which would leak
 the user's credential.
+
+## Controlling ScreenBuddy from an agent
+
+The running app exposes a control port, and `mcp/server.py` bridges it to the
+Model Context Protocol so an agent can drive it directly:
+
+```bash
+hermes mcp add screenbuddy --command python --args "<repo>/mcp/server.py"
+```
+
+That registers 18 tools (`mcp_screenbuddy_*`) for status, chat, agent runs,
+creature movement and animation, audio, settings, and RAG memory. See
+[docs/control-api.md](docs/control-api.md) for the full list, the wire protocol,
+and the pinning / auto-cycle caveats.
 
 ## Releases
 

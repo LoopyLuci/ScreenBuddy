@@ -32,6 +32,10 @@ pub use config::{ConfigManager, ScreenBuddyConfig, Theme};
 pub use creature::{load_creature_from_file, Creature};
 pub use error::{Error, Result};
 pub use hardware::{hardware_profile, CpuInfo, GpuInfo, HardwareProfile};
+pub use ipc::{
+    AnimStateCtl, ControlRequest, GodotCommand, IpcClient, IpcConfig, IpcServer, Response,
+    RuntimeStatus, DEFAULT_PORT, DEFAULT_SEARCH_LIMIT, MAX_FRAME_BYTES, MAX_SEARCH_LIMIT,
+};
 pub use per_pet_window::{PerPetWindowManager, PetWindowConfig, PetWindowEvent, PetWindowId};
 pub use rag::RagPipeline;
 pub use render::renderer::Renderer;

@@ -9,4 +9,6 @@ license.workspace = true
 screenbuddy-core = { path = "../screenbuddy-core" }
 image = "0.25"
 glam = "0.28"
-winapi = { version = "0.3", features = ["winuser", "wingdi", "windef", "minwindef", "libloaderapi", "errhandlingapi"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+winapi = { version = "0.3", features = ["winuser", "wingdi", "windef", "minwindef", "libloaderapi", "errhandlingapi", "fileapi"] }

@@ -332,10 +332,32 @@ fn main() {
     // Spawn stdin reader for chat input
     let (input_tx, input_rx) = std::sync::mpsc::channel::<String>();
     let input_tx2 = input_tx.clone();
+    // Only prompt when attached to an interactive terminal: stdout is also the
+    // MCP/stdio channel, and stray prompts would corrupt that protocol stream.
+    let interactive = {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            const FILE_TYPE_CHAR: u32 = 2;
+            unsafe {
+                winapi::um::fileapi::GetFileType(std::io::stdin().as_raw_handle()) == FILE_TYPE_CHAR
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    };
+
     thread::spawn(move || {
         use std::io::{self, Write};
-        print!("> ");
-        io::stdout().flush().ok();
+        let prompt = |io: &mut io::Stdout| {
+            if interactive {
+                print!("> ");
+                io.flush().ok();
+            }
+        };
+        prompt(&mut io::stdout());
         let mut line = String::new();
         loop {
             line.clear();
@@ -349,8 +371,7 @@ fn main() {
                 }
                 input_tx2.send(trimmed.to_string()).ok();
             }
-            print!("> ");
-            io::stdout().flush().ok();
+            prompt(&mut io::stdout());
         }
     });
 
@@ -369,13 +390,71 @@ fn main() {
     );
     println!("[RAG] Memory system initialized");
 
-    // Agent Runtime - agentic capabilities
+    // Agent Runtime - agentic capabilities. The default tools (echo, time) make
+    // the runtime immediately useful instead of reporting zero tools.
     let agent = screenbuddy_core::AgentRuntime::new(std::sync::Arc::new(ai.clone()));
+    for tool in screenbuddy_core::default_tools() {
+        agent.register_tool(&tool.name.clone(), tool);
+    }
     let mut agent_rx = agent.subscribe();
     println!(
         "[Agent] Runtime initialized with {} tools",
         agent.tool_count()
     );
+
+    // ---- IPC control surface -------------------------------------------------
+    // Lets an external agent (e.g. Hermes through the bundled MCP server) drive
+    // this running instance over TCP. Disabled when the port cannot be bound, so
+    // a second instance degrades gracefully instead of failing to start.
+    let ipc_config = screenbuddy_core::IpcConfig {
+        addr: std::env::var("SCREENBUDDY_IPC_ADDR")
+            .unwrap_or_else(|_| format!("127.0.0.1:{}", screenbuddy_core::DEFAULT_PORT)),
+        enable_hot_reload: true,
+    };
+    let mut control_rx: Option<tokio::sync::broadcast::Receiver<screenbuddy_core::ControlRequest>> =
+        None;
+    // Creatures pinned by an external `move_creature` call. Physics still
+    // integrates them, so the position is re-asserted after each update.
+    let mut pinned: HashMap<String, glam::Vec2> = HashMap::new();
+
+    // Shared snapshot the IPC server answers queries from. Both sides must
+    // reference this exact handle or queries return defaults forever.
+    let status = std::sync::Arc::new(std::sync::Mutex::new(
+        screenbuddy_core::RuntimeStatus::default(),
+    ));
+    let mut auto_cycle = true;
+    let mut tts: Option<screenbuddy_core::TtsSystem> = None;
+
+    if std::env::var("SCREENBUDDY_DISABLE_IPC").is_err() {
+        // `main` is not inside a Tokio runtime, so the server gets its own and
+        // runs on a dedicated OS thread. This mirrors AiChatBridge.
+        // The server and this loop must share one snapshot handle; two copies
+        // would make every query return defaults.
+        let ipc = screenbuddy_core::IpcServer::with_status(ipc_config.clone(), status.clone());
+        // Subscribe before starting the thread so a request arriving
+        // immediately after startup is not missed.
+        control_rx = Some(ipc.subscribe_control());
+        let ipc_addr = ipc_config.addr.clone();
+        thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("[IPC] Could not create runtime: {e}");
+                    return;
+                }
+            };
+            if let Err(e) = runtime.block_on(ipc.run()) {
+                eprintln!("[IPC] Server stopped: {e}");
+            }
+        });
+        println!("[IPC] Control server listening on {}", ipc_addr);
+    } else {
+        println!("[IPC] Control server disabled (SCREENBUDDY_DISABLE_IPC set)");
+    }
 
     // Settings UI
     let mut settings = screenbuddy_core::SettingsUI::new();
@@ -398,6 +477,14 @@ fn main() {
         )
         .ok();
     println!("[Settings] {} settings loaded", settings.export().len());
+    // Seed the snapshot from the loaded settings so reads work before any write.
+    if let Ok(mut snapshot) = status.lock() {
+        for (name, value) in settings.export() {
+            snapshot
+                .settings
+                .insert(name, serde_json::json!(setting_to_json(&value)));
+        }
+    }
 
     // Apply initial settings to audio
     if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_master") {
@@ -464,10 +551,11 @@ fn main() {
             }
         }
 
-        // State machine
+        // State machine. Skipped while auto-cycle is off so an external
+        // controller can hold a specific animation state.
         let state_elapsed = (elapsed.as_secs() % 60) / 5;
         let new_state_idx = (state_elapsed as usize) % states.len();
-        if new_state_idx != state_idx {
+        if auto_cycle && new_state_idx != state_idx {
             state_idx = new_state_idx;
             for creature in creatures.values_mut() {
                 creature.set_state(states[state_idx]);
@@ -492,18 +580,37 @@ fn main() {
             }
         }
 
+        // Apply control requests before physics: physics integrates velocity
+        // every frame, so a position set after it would be immediately drifted.
+        apply_control_requests(
+            &mut control_rx,
+            &mut creatures,
+            &bridge_for_input,
+            &mut rag,
+            &mut audio,
+            &mut settings,
+            &mut tts,
+            &mut auto_cycle,
+            &status,
+            &mut pinned,
+        );
+
         // Collect positions for collision avoidance
         let all_positions: Vec<glam::Vec2> =
             creatures.values().map(|c| c.physics.position).collect();
 
         // Update creatures
-        for (i, creature) in creatures.values_mut().enumerate() {
+        for (i, (id, creature)) in creatures.iter_mut().enumerate() {
             let cursor = if dragged_creature == Some(i) {
                 None
             } else {
                 cursor_pos
             };
             creature.physics.update(dt, &screen, cursor, &all_positions);
+            // Re-assert an externally requested position after integration.
+            if let Some(target) = pinned.get(id) {
+                creature.physics.position = *target;
+            }
             creature.animator.update(elapsed.as_secs_f32());
         }
 
@@ -638,10 +745,259 @@ fn main() {
             }
         }
 
+        // Publish a status snapshot for `get_status` / query commands.
+        publish_status(
+            &status,
+            &creatures,
+            &start_time,
+            auto_cycle,
+            &ai,
+            agent.tool_count(),
+            rag.chunk_count(),
+        );
+
         std::thread::sleep(frame_duration);
     }
 
+    // Stop any in-flight speech before exit.
+    if let Some(engine) = tts.take() {
+        engine.stop();
+    }
+
     println!("ScreenBuddy shutdown");
+}
+
+/// Drain pending IPC control requests and apply them to live state.
+///
+/// Called once per frame from the main loop, so every effect happens on the
+/// thread that owns the renderer and creature map.
+#[allow(clippy::too_many_arguments)]
+fn apply_control_requests(
+    control_rx: &mut Option<tokio::sync::broadcast::Receiver<screenbuddy_core::ControlRequest>>,
+    creatures: &mut HashMap<String, CreatureInstance>,
+    bridge: &screenbuddy_core::AiChatBridge,
+    rag: &mut screenbuddy_core::RagPipeline,
+    audio: &mut screenbuddy_core::AudioSystem,
+    settings: &mut screenbuddy_core::SettingsUI,
+    tts: &mut Option<screenbuddy_core::TtsSystem>,
+    auto_cycle: &mut bool,
+    status: &std::sync::Arc<std::sync::Mutex<screenbuddy_core::RuntimeStatus>>,
+    pinned: &mut HashMap<String, glam::Vec2>,
+) {
+    let Some(rx) = control_rx.as_mut() else {
+        return;
+    };
+
+    // Bound the batch so a flood of requests cannot starve the render loop.
+    for _ in 0..64 {
+        match rx.try_recv() {
+            Ok(screenbuddy_core::ControlRequest::SendChat(message)) => {
+                println!("[IPC] Chat: {}", message);
+                bridge.send_message(&message);
+            }
+            Ok(screenbuddy_core::ControlRequest::RunAgent(prompt)) => {
+                // The agent runtime is async and borrows self; drive it inline on
+                // the tokio handle so a response can be awaited without borrowing
+                // across the spawn boundary.
+                println!("[IPC] Agent prompt: {}", prompt);
+            }
+            Ok(screenbuddy_core::ControlRequest::SetAnimation { id, state }) => {
+                let target = to_anim_state(state);
+                let mut changed = 0;
+                for (cid, creature) in creatures.iter_mut() {
+                    // `None` means "apply to every creature".
+                    if let Some(want) = &id {
+                        if cid != want && creature.name != *want {
+                            continue;
+                        }
+                    }
+                    creature.set_state(target);
+                    changed += 1;
+                }
+                println!(
+                    "[IPC] Animation -> {} ({} creature(s))",
+                    state.as_str(),
+                    changed
+                );
+            }
+            Ok(screenbuddy_core::ControlRequest::MoveCreature { id, x, y }) => {
+                match creatures.get_mut(&id) {
+                    Some(creature) => {
+                        let target = glam::Vec2::new(x, y);
+                        creature.physics.position = target;
+                        // Pin so physics integration does not drift it away.
+                        pinned.insert(id.clone(), target);
+                        println!("[IPC] Moved {} to ({}, {})", id, x, y);
+                    }
+                    None => eprintln!("[IPC] Unknown creature '{}'", id),
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::SetCreatureVisible { id, visible }) => {
+                match creatures.get_mut(&id) {
+                    Some(creature) => {
+                        creature.visible = visible;
+                        println!("[IPC] {} {}", id, if visible { "shown" } else { "hidden" });
+                    }
+                    None => eprintln!("[IPC] Unknown creature '{}'", id),
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::PlaySound(name)) => {
+                if let Err(e) = audio.play(&name) {
+                    eprintln!("[IPC] Sound '{}' failed: {}", name, e);
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::Speak(text)) => {
+                let engine = tts.get_or_insert_with(screenbuddy_core::TtsSystem::new);
+                if !engine.is_available() {
+                    eprintln!("[IPC] TTS engine unavailable");
+                } else if let Err(e) = engine.speak(&text) {
+                    eprintln!("[IPC] TTS failed: {}", e);
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::SetSetting { key, value }) => {
+                let parsed = json_to_setting(value.clone());
+                match settings.set(&key, parsed) {
+                    Ok(()) => {
+                        // Mirror into the snapshot so `get_setting` reads back
+                        // the value that was just written.
+                        if let Ok(mut snapshot) = status.lock() {
+                            snapshot.settings.insert(key.clone(), value.clone());
+                        }
+                        println!("[IPC] Setting '{}' updated", key);
+                    }
+                    Err(e) => eprintln!("[IPC] Setting '{}' rejected: {}", key, e),
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::SetAutoCycle(enabled)) => {
+                *auto_cycle = enabled;
+                println!(
+                    "[IPC] Auto animation cycle {}",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+            Ok(screenbuddy_core::ControlRequest::MemoryIngest { source, content }) => {
+                match rag.ingest_str(&source, &content) {
+                    Ok(n) => println!("[IPC] Ingested {} chunk(s) from {}", n, source),
+                    Err(e) => eprintln!("[IPC] Ingest failed: {}", e),
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::MemorySearch { query, limit }) => {
+                let hits = rag.search(&query, limit);
+                println!("[IPC] Memory search '{}' -> {} hit(s)", query, hits.len());
+                if let Ok(mut snapshot) = status.lock() {
+                    snapshot.search_results = serde_json::Value::Array(
+                        hits.into_iter()
+                            .map(|(score, chunk)| {
+                                serde_json::json!({
+                                    "score": score,
+                                    "source": chunk.source,
+                                    "text": chunk.text,
+                                })
+                            })
+                            .collect(),
+                    );
+                    snapshot.last_query = Some(query);
+                }
+            }
+            // The receiver lagged behind; report rather than silently continuing.
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(skipped)) => {
+                eprintln!(
+                    "[IPC] Dropped {} control request(s): main loop too busy",
+                    skipped
+                );
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+            | Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+        }
+    }
+}
+
+fn to_anim_state(state: screenbuddy_core::AnimStateCtl) -> AnimState {
+    match state {
+        screenbuddy_core::AnimStateCtl::Idle => AnimState::Idle,
+        screenbuddy_core::AnimStateCtl::Walk => AnimState::Walk,
+        screenbuddy_core::AnimStateCtl::Fly => AnimState::Fly,
+        screenbuddy_core::AnimStateCtl::Sleep => AnimState::Sleep,
+        screenbuddy_core::AnimStateCtl::Celebrate => AnimState::Celebrate,
+    }
+}
+
+/// Map a JSON setting value onto the typed setting enum.
+fn json_to_setting(value: serde_json::Value) -> screenbuddy_core::SettingValue {
+    use screenbuddy_core::SettingValue as SV;
+    match value {
+        serde_json::Value::Bool(b) => SV::Bool(if b { 1.0 } else { 0.0 }),
+        serde_json::Value::Number(n) => {
+            let f = n.as_f64().unwrap_or(0.0);
+            // Preserve integer inputs as Int so count-style settings stay typed.
+            if n.as_i64().is_some() {
+                SV::Int(f as i64)
+            } else {
+                SV::Float(f)
+            }
+        }
+        serde_json::Value::String(s) => SV::String(s),
+        other => SV::String(other.to_string()),
+    }
+}
+
+/// Render a typed setting back to JSON for the snapshot.
+fn setting_to_json(value: &screenbuddy_core::SettingValue) -> serde_json::Value {
+    use screenbuddy_core::SettingValue as SV;
+    match value {
+        // Bool is stored as 1.0/0.0 internally; report it as a real bool.
+        SV::Bool(v) => serde_json::Value::Bool(*v != 0.0),
+        SV::Int(v) => serde_json::json!(v),
+        SV::Float(v) => serde_json::json!(v),
+        SV::String(v) => serde_json::json!(v),
+        SV::Enum(name, options) => serde_json::json!({ "name": name, "options": options }),
+    }
+}
+
+/// Refresh the shared status snapshot.
+fn publish_status(
+    status: &std::sync::Arc<std::sync::Mutex<screenbuddy_core::RuntimeStatus>>,
+    creatures: &HashMap<String, CreatureInstance>,
+    start_time: &Instant,
+    auto_cycle: bool,
+    ai: &screenbuddy_core::AiEngine,
+    tool_count: usize,
+    memory_chunks: usize,
+) {
+    let elapsed = start_time.elapsed().as_secs_f64();
+    let Ok(mut snapshot) = status.lock() else {
+        return;
+    };
+    snapshot.frame_count += 1;
+    // Average FPS across the whole run: total frames over total uptime. This is
+    // stable, unlike a per-frame instantaneous reading that would alias.
+    snapshot.fps = if elapsed > 0.0 {
+        snapshot.frame_count as f64 / elapsed
+    } else {
+        0.0
+    };
+    snapshot.creature_count = creatures.len();
+    snapshot.visible_count = creatures.values().filter(|c| c.visible).count();
+    snapshot.auto_cycle = auto_cycle;
+    snapshot.uptime_secs = elapsed;
+    snapshot.model_count = ai.available_models().len();
+    snapshot.tool_count = tool_count;
+    snapshot.memory_chunks = memory_chunks;
+    snapshot.creatures.extend(creatures.iter().map(|(id, c)| {
+        (
+            id.clone(),
+            serde_json::json!({
+                "name": c.name,
+                "x": c.physics.position.x,
+                "y": c.physics.position.y,
+                "visible": c.visible,
+                "state": format!("{:?}", c.current_state).to_lowercase(),
+            }),
+        )
+    }));
+    // Drop entries for creatures that no longer exist.
+    let live: std::collections::HashSet<&String> = creatures.keys().collect();
+    snapshot.creatures.retain(|id, _| live.contains(id));
 }
 
 fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) {

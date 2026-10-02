@@ -30,6 +30,11 @@ ScreenBuddy-Android/.gradle/
 # Staged release artifacts (attached to GitHub Releases, not committed)
 /dist/
 
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
 # Exports (keep directory)
 exports/.gitkeep
 
