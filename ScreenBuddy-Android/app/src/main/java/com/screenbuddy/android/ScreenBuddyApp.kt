@@ -32,6 +32,25 @@ class ScreenBuddyApp : Application() {
 
     val ttsEngine: TtsEngine by lazy { TtsEngine(this) }
 
+    /**
+     * Control command handlers, installed once so agents can drive the app.
+     *
+     * Touched from onCreate rather than left lazy: a control broadcast can arrive
+     * while the process is cold, and nothing else would ever force this to be
+     * initialised, so the commands would silently do nothing.
+     */
+    val controlCommands: com.screenbuddy.android.data.control.ControlCommands by lazy {
+        com.screenbuddy.android.data.control.ControlCommands.also { it.install(this) }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // Force the control handlers to register now. A broadcast can start the
+        // process without the UI, and an unregistered handler would make every
+        // command look accepted while doing nothing.
+        controlCommands
+    }
+
     override fun onTerminate() {
         super.onTerminate()
         // Only invoked on emulators, but release the TTS engine where possible.

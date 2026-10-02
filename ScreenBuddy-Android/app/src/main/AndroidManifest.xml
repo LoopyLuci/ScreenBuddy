@@ -35,6 +35,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          Control surface for agents, mirroring the desktop's TCP control port.
+          Exported so `adb shell am broadcast` can drive the app; every command is
+          validated in ControlCommands and unknown ones are rejected, and no
+          privileged action is reachable through it.
+        -->
+        <receiver
+            android:name=".receiver.ControlReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.screenbuddy.android.CONTROL" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

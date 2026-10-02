@@ -90,6 +90,28 @@ disconnected app is reported rather than silently dropping the request.
 
 Frames above 8 MB are refused.
 
+## Android
+
+The Android client exposes the same command vocabulary through a broadcast
+receiver, since a phone should not listen on a socket:
+
+```bash
+adb shell am broadcast -a com.screenbuddy.android.CONTROL \
+  -n com.screenbuddy.android/.receiver.ControlReceiver --es cmd get_status
+adb shell am broadcast -a com.screenbuddy.android.CONTROL \
+  -n com.screenbuddy.android/.receiver.ControlReceiver \
+  --es cmd set_animation --es state celebrate
+```
+
+Each extra maps onto the same field names as the desktop request. The response
+is written to logcat under the `ScreenBuddyControl` tag and mirrored into the
+broadcast result code (`0` success, `1` error). Name the component explicitly
+with `-n`; the implicit form depends on implicit-broadcast resolution and was
+not delivered on an Android 11 device.
+
+Android adds `select_creature`, which has no desktop equivalent since the phone
+shows one creature at a time.
+
 ## Verifying a change
 
 ```bash

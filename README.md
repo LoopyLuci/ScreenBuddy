@@ -157,9 +157,10 @@ cargo clippy --all-targets -- -D warnings
 # Android: 77 tests
 cd ScreenBuddy-Android && ./gradlew testDebugUnitTest
 
-# Integration suites (require the app to be running)
-python tools/ipc_probe.py    # IPC protocol
-python mcp/test_mcp.py       # MCP handshake, discovery, and tool calls
+# Integration suites
+python tools/ipc_probe.py           # desktop IPC protocol (app must be running)
+python mcp/test_mcp.py              # MCP handshake, discovery, tool calls
+python tools/android_control_probe.py --serial <device>   # Android control surface
 ```
 
 Android unit tests run on the JVM against in-memory fake DAOs, so no emulator is
