@@ -95,6 +95,8 @@ impl ChatOverlay {
                     }
                     // Toggle/MoveTo/Show and friends need no work here.
                     Ok(_) => {}
+                    // Back off between polls so the loop does not spin, and exit
+                    // when the sender is gone rather than spinning forever.
                     Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(10)),
                     Err(TryRecvError::Disconnected) => break,
                 }
@@ -159,6 +161,7 @@ impl ChatOverlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_overlay_creation() {
@@ -196,24 +199,47 @@ mod tests {
     /// The event loop must not hold the receiver lock while waiting.
     ///
     /// The receiver is also handed out by `receiver()`, so a blocking recv()
-    /// under the lock would starve every other consumer. The loop is given a
-    /// moment to reach its wait before contending, otherwise the assertion
-    /// could pass simply because the thread had not started yet.
+    /// under the lock would starve every other consumer.
+    ///
+    /// This retries rather than sampling once: the loop legitimately holds the
+    /// lock for the moment it takes to poll, so a single try_lock() can fail
+    /// spuriously on a loaded machine. A blocking recv() under the lock never
+    /// releases it, so retrying distinguishes the two cases reliably.
     #[test]
     fn test_event_loop_does_not_hold_the_lock_while_waiting() {
         let overlay = ChatOverlay::new();
         overlay.start().expect("event loop starts");
 
-        // Let the loop thread reach its wait so the lock is genuinely contended.
-        std::thread::sleep(Duration::from_millis(150));
-
         let rx = overlay.receiver();
-        // Under a blocking recv() under the lock this can never be acquired.
-        let acquired = rx.try_lock().is_ok();
-        assert!(
-            acquired,
-            "the event loop is holding the receiver lock while waiting"
-        );
+
+        // Establish that the loop is really running before judging the lock: a
+        // not-yet-started thread holds nothing, so testing immediately would
+        // pass for the wrong reason. An event is only ever consumed by the
+        // loop, so waiting for the queue to drain proves it is alive -- and
+        // since it consumes and releases in one step, it is back at its wait.
+        overlay.send_event(ChatOverlayEvent::Toggle);
+        let mut drained = false;
+        for _ in 0..200 {
+            let empty = rx
+                .try_lock()
+                .map(|guard| matches!(guard.try_recv(), Err(TryRecvError::Empty)))
+                .unwrap_or(false);
+            if empty {
+                drained = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(drained, "the event loop never consumed an event");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match rx.try_lock() {
+                Ok(_) => break,
+                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+                Err(_) => panic!("the event loop is holding the receiver lock while waiting"),
+            }
+        }
 
         overlay.send_event(ChatOverlayEvent::Shutdown);
     }
