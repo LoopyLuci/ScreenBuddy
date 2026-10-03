@@ -424,6 +424,11 @@ impl AgentProfile {
             max_iterations: self.max_iterations.max(1),
             timeout_secs: self.timeout_secs.max(1),
             system_prompt: self.composed_system_prompt(),
+            // Empty means "let the engine choose", which is why the runtime
+            // filters blank values rather than passing them on.
+            model: self.model.trim().to_string(),
+            temperature: self.temperature,
+            tools_enabled: self.tools_enabled,
         }
     }
 
@@ -450,6 +455,14 @@ impl AgentProfile {
         self.temperature = self.temperature.clamp(0.0, 2.0);
         self
     }
+}
+
+/// Where the active-agent marker lives, beside the profiles file.
+///
+/// `with_extension` would turn `agents.json` into `agents.active.json`, which is
+/// confusing next to the real file; this names it plainly.
+fn active_path(profiles_path: &std::path::Path) -> PathBuf {
+    profiles_path.with_file_name("active_agent.json")
 }
 
 /// Reduce an id to characters that are safe in a filename and a JSON key.
@@ -535,6 +548,37 @@ impl AgentStore {
             .iter()
             .find(|p| p.id == id)
             .cloned()
+    }
+
+    /// Record which agent is in effect, so it survives a restart.
+    ///
+    /// Without this the active agent is forgotten on exit and the app silently
+    /// reverts to defaults, losing the user's choice.
+    pub fn set_active(&self, id: &str) -> Result<()> {
+        if self.path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::json!({ "active": id });
+        std::fs::write(active_path(&self.path), serde_json::to_string(&json)?)?;
+        Ok(())
+    }
+
+    /// The agent to restore on startup, if any.
+    pub fn active_id(&self) -> Option<String> {
+        if self.path.as_os_str().is_empty() {
+            return None;
+        }
+        let raw = std::fs::read_to_string(active_path(&self.path)).ok()?;
+        let id = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()?
+            .get("active")?
+            .as_str()?
+            .to_string();
+        // Only restore an agent that still exists.
+        self.get(&id).map(|_| id)
     }
 
     /// Insert or update, and persist.

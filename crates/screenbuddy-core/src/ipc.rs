@@ -137,19 +137,15 @@ pub enum GodotCommand {
     DeleteAgent {
         id: String,
     },
+    /// Make an agent the one in effect, restoring it on next launch.
+    ActivateAgent {
+        id: String,
+    },
     /// Report which 9Router is configured and which models it can reach.
     NineRouterStatus {
         endpoint: Option<String>,
         api_key: Option<String>,
     },
-    /// List saved agent profiles.
-    /// Create or update an agent profile.
-    /// Duplicate an agent into an editable copy.
-    /// Delete a user agent.
-    /// List saved agent profiles.
-    /// Create or update an agent profile.
-    /// Duplicate an agent into an editable copy.
-    /// Delete a user agent. Built-ins are refused.
     /// Enable or disable the automatic animation state rotation.
     SetAutoCycle {
         enabled: bool,
@@ -224,9 +220,18 @@ pub enum ControlRequest {
     DeleteAgent {
         id: String,
     },
+    /// Make an agent the one in effect, restoring it on next launch.
+    ActivateAgent {
+        id: String,
+    },
+    /// Drive a creature into an animation state.
     SetAnimation {
         id: Option<String>,
         state: AnimStateCtl,
+    },
+    /// Enable or disable the automatic animation state rotation.
+    SetAutoCycle {
+        enabled: bool,
     },
     MoveCreature {
         id: String,
@@ -243,7 +248,6 @@ pub enum ControlRequest {
         key: String,
         value: serde_json::Value,
     },
-    SetAutoCycle(bool),
     MemoryIngest {
         source: String,
         content: String,
@@ -290,6 +294,11 @@ impl Response {
 #[derive(Debug, Clone, Default)]
 pub struct RuntimeStatus {
     pub fps: f64,
+    /// The agent currently in effect, published by the render loop so
+    /// `get_agent_info` can report it.
+    pub active_agent: Option<String>,
+    /// The settings that agent is actually running with.
+    pub active_agent_settings: serde_json::Value,
     pub frame_count: u64,
     pub creature_count: usize,
     pub visible_count: usize,
@@ -561,6 +570,7 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
             api_key: api_key.clone(),
         },
         GodotCommand::ListAgents => ControlRequest::ListAgents,
+        GodotCommand::ActivateAgent { id } => ControlRequest::ActivateAgent { id: id.clone() },
         GodotCommand::SaveAgent { profile } => ControlRequest::SaveAgent {
             profile: profile.clone(),
         },
@@ -570,7 +580,9 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
             key: key.clone(),
             value: value.clone(),
         },
-        GodotCommand::SetAutoCycle { enabled } => ControlRequest::SetAutoCycle(*enabled),
+        GodotCommand::SetAutoCycle { enabled } => {
+            ControlRequest::SetAutoCycle { enabled: *enabled }
+        }
         GodotCommand::MemoryIngest { source, content } => ControlRequest::MemoryIngest {
             source: source.clone(),
             content: content.clone(),
@@ -782,6 +794,10 @@ async fn process_command(
                 "memory_chunks": snapshot.memory_chunks,
                 "last_tool": snapshot.last_agent_tool,
                 "last_response": snapshot.last_agent_response,
+                // Which agent is in effect, and the settings in force. Without
+                // these there was no way to confirm a profile took effect.
+                "active_agent": snapshot.active_agent,
+                "active_settings": snapshot.active_agent_settings,
             }));
         }
 
@@ -1097,7 +1113,7 @@ mod tests {
                 |r| matches!(r, ControlRequest::SetSetting { key, .. } if key == "volume_master"),
             ),
             (GodotCommand::SetAutoCycle { enabled: true }, |r| {
-                matches!(r, ControlRequest::SetAutoCycle(true))
+                matches!(r, ControlRequest::SetAutoCycle { enabled: true })
             }),
             (
                 GodotCommand::MemoryIngest {

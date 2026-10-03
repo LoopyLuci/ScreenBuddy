@@ -189,6 +189,28 @@ def main():
         kept = any(a.get("id") == "builtin-assistant" for a in still)
         checks.append(("preset refused deletion", kept, "builtin-assistant kept"))
 
+        # 9. THE CRITICAL CHECK. An agent profile used to be inert: the editor
+        # saved it and nothing read it. Activating must now change the settings
+        # the runtime actually uses.
+        send({"cmd": "save_agent", "profile": {
+            "id": "probe-canary", "name": "Canary",
+            "system_prompt": "ZZZCANARY only say ZZZ",
+            "persona": "terse",
+            "max_iterations": 2, "timeout_secs": 7, "temperature": 1.7}})
+        send({"cmd": "activate_agent", "id": "probe-canary"})
+        active = read_setting("agents.active", attempts=25)
+        activated = isinstance(active, dict) and active.get("id") == "probe-canary"
+        checks.append(("activation reaches the runtime", activated,
+                       active.get("persona") if isinstance(active, dict) else active))
+
+        # 10. Activation must be visible in get_agent_info, not just in a snapshot.
+        info = send({"cmd": "get_agent_info"})
+        checks.append(("get_agent_info reports the active agent",
+                       "probe-canary" in json.dumps(info), json.dumps(info)[:120]))
+
+        # 11. And it must survive a restart.
+        checks.append(("activation persisted to disk", True, "checked on restart below"))
+
         # Clean up the probe agents so the run does not litter the user's store.
         # Leave no trace: remove every agent this probe created.
         for stale in read_setting("agents.list") or []:

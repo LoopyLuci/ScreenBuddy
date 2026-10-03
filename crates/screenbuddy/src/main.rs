@@ -407,7 +407,15 @@ fn main() {
 
     // Agent Runtime - agentic capabilities. The default tools (echo, time) make
     // the runtime immediately useful instead of reporting zero tools.
-    let agent = screenbuddy_core::AgentRuntime::new(std::sync::Arc::new(ai.clone()));
+    // The store is created first because restoring the active agent needs it.
+    // Agent editor, backed by the persistent profile store.
+    let agent_store = screenbuddy_core::agent_profile::agent_store();
+    let mut agent_win = agent_editor::AgentEditor::new(agent_store, None);
+    agent_editor::create_editor_window(&mut agent_win);
+
+    let agent = std::sync::Arc::new(screenbuddy_core::AgentRuntime::new(std::sync::Arc::new(
+        ai.clone(),
+    )));
     for tool in screenbuddy_core::default_tools() {
         agent.register_tool(&tool.name.clone(), tool);
     }
@@ -416,6 +424,13 @@ fn main() {
         "[Agent] Runtime initialized with {} tools",
         agent.tool_count()
     );
+
+    // Restore the agent the user had in effect last time. Without this the choice
+    // is silently forgotten on restart, which makes activating one pointless.
+    if let Some(profile) = agent_store.active_id().and_then(|id| agent_store.get(&id)) {
+        agent.apply_profile(&profile);
+        println!("[Agent] Restored active agent '{}'", profile.name);
+    }
 
     // ---- IPC control surface -------------------------------------------------
     // Lets an external agent (e.g. Hermes through the bundled MCP server) drive
@@ -533,11 +548,6 @@ fn main() {
     // current session rather than owning the conversation.
     // The main window is the place a person actually talks to the app. The old
     // chat overlay remains for the tray/menu path, but this is the real UI.
-    // Agent editor, backed by the persistent profile store.
-    let agent_store = screenbuddy_core::agent_profile::agent_store();
-    let mut agent_win = agent_editor::AgentEditor::new(agent_store, None);
-    agent_editor::create_editor_window(&mut agent_win);
-
     let mut main_ui = MainWindow::new();
     let main_hwnd = create_main_window(&mut main_ui);
     match main_hwnd {
@@ -644,6 +654,7 @@ fn main() {
             &mut pinned,
             agent_store,
             &mut agent_win,
+            agent.as_ref(),
         );
 
         // Collect positions for collision avoidance
@@ -809,6 +820,16 @@ fn main() {
                     }
                     agent_win.reload(agent_store);
                 }
+                agent_editor::EditorEvent::Activate(profile) => {
+                    // Activating from the GUI is deliberately separate from saving:
+                    // the draft applies as it stands, so a change can be tried
+                    // before committing it.
+                    agent.apply_profile(&profile);
+                    if let Err(e) = agent_store.set_active(&profile.id) {
+                        eprintln!("[Agents] Could not persist activation: {e}");
+                    }
+                    println!("[Agents] Activated '{}' from the editor", profile.name);
+                }
                 agent_editor::EditorEvent::Deleted(id) => {
                     match agent_store.delete(&id) {
                         Ok(true) => println!("[Agents] Deleted '{id}'"),
@@ -967,8 +988,8 @@ fn main() {
             &start_time,
             auto_cycle,
             &ai,
-            agent.tool_count(),
-            rag.chunk_count(),
+            agent.as_ref(),
+            (agent.tool_count(), rag.chunk_count()),
         );
 
         std::thread::sleep(frame_duration);
@@ -1002,6 +1023,7 @@ fn apply_control_requests(
     // the GUI immediately rather than on next launch.
     agent_store: &std::sync::Arc<screenbuddy_core::AgentStore>,
     agent_win: &mut agent_editor::AgentEditor,
+    agent_runtime: &screenbuddy_core::AgentRuntime,
 ) {
     let Some(rx) = control_rx.as_mut() else {
         return;
@@ -1124,6 +1146,30 @@ fn apply_control_requests(
                 }
                 agent_win.reload(agent_store);
             }
+            Ok(screenbuddy_core::ControlRequest::ActivateAgent { id }) => {
+                match agent_store.get(&id) {
+                    Some(profile) => {
+                        // This is the step that makes an agent real: the profile's
+                        // persona, model, tools, temperature and budget all become
+                        // the settings the next request uses.
+                        agent_runtime.apply_profile(&profile);
+                        if let Err(e) = agent_store.set_active(&id) {
+                            eprintln!("[Agents] Could not persist activation: {e}");
+                        }
+                        println!(
+                            "[Agents] Activated '{}' (persona {:?}, {} tool steps)",
+                            profile.name, profile.persona, profile.max_iterations
+                        );
+                        if let Ok(mut snapshot) = status.lock() {
+                            snapshot.settings.insert(
+                                "agents.active".into(),
+                                serde_json::to_value(&profile).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    }
+                    None => eprintln!("[Agents] No agent '{id}' to activate"),
+                }
+            }
             Ok(screenbuddy_core::ControlRequest::DeleteAgent { id }) => {
                 match agent_store.delete(&id) {
                     Ok(true) => println!("[Agents] Deleted '{id}'"),
@@ -1198,7 +1244,7 @@ fn apply_control_requests(
                     Err(e) => eprintln!("[IPC] Setting '{}' rejected: {}", key, e),
                 }
             }
-            Ok(screenbuddy_core::ControlRequest::SetAutoCycle(enabled)) => {
+            Ok(screenbuddy_core::ControlRequest::SetAutoCycle { enabled }) => {
                 *auto_cycle = enabled;
                 println!(
                     "[IPC] Auto animation cycle {}",
@@ -1337,9 +1383,11 @@ fn publish_status(
     start_time: &Instant,
     auto_cycle: bool,
     ai: &screenbuddy_core::AiEngine,
-    tool_count: usize,
-    memory_chunks: usize,
+    agent: &screenbuddy_core::AgentRuntime,
+    // How much the runtime has loaded: (tool count, memory chunk count).
+    loaded: (usize, usize),
 ) {
+    let (tool_count, memory_chunks) = loaded;
     let elapsed = start_time.elapsed().as_secs_f64();
     let Ok(mut snapshot) = status.lock() else {
         return;
@@ -1359,6 +1407,11 @@ fn publish_status(
     snapshot.model_count = ai.available_models().len();
     snapshot.tool_count = tool_count;
     snapshot.memory_chunks = memory_chunks;
+    // Publish which agent is in effect and the settings it is running with, so a
+    // query can confirm that activating an agent actually changed anything.
+    snapshot.active_agent = agent.active_agent();
+    snapshot.active_agent_settings =
+        serde_json::to_value(agent.active_config()).unwrap_or(serde_json::Value::Null);
     snapshot.creatures.extend(creatures.iter().map(|(id, c)| {
         (
             id.clone(),

@@ -43,7 +43,7 @@ const WIN_HEIGHT: i32 = 600;
 const TITLE_H: i32 = 34;
 const TAB_H: i32 = 32;
 const HEADER_H: i32 = TITLE_H + TAB_H;
-const FOOTER_H: i32 = 56;
+const FOOTER_H: i32 = 60;
 const PADDING: i32 = 16;
 const ROW_H: i32 = 30;
 /// Sidebar width.
@@ -95,6 +95,8 @@ enum Control {
         x: i32,
         y: i32,
     },
+    /// Make the edited agent the one in effect.
+    UseThis,
     /// Footer buttons.
     Save,
     Revert,
@@ -154,6 +156,9 @@ pub enum Field {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditorEvent {
     Saved(AgentProfile),
+    /// Make this agent the active one: its persona, model, tools and behaviour
+    /// take effect from the next request onward.
+    Activate(AgentProfile),
     Deleted(String),
     Activated(String),
     Closed,
@@ -441,6 +446,7 @@ impl AgentEditor {
             Control::Preset(index) => {
                 self.load_preset(index);
             }
+            Control::UseThis => self.activate(),
             Control::Save => self.save(),
             Control::Revert => {
                 self.draft = self.saved.clone();
@@ -516,6 +522,17 @@ impl AgentEditor {
             (current - 1 + len) % len
         } as usize;
         self.tab = Tab::ALL[next];
+    }
+
+    /// Ask the app to make this agent the active one.
+    fn activate(&mut self) {
+        // Activation is not a save: it applies the draft as it stands, so a user
+        // can try a change before committing it.
+        self.events.push(EditorEvent::Activate(self.draft.clone()));
+        self.notice = Some(Notice {
+            text: format!("'{}' is now active.", self.draft.name),
+            is_error: false,
+        });
     }
 
     fn save(&mut self) {
@@ -1388,6 +1405,24 @@ impl AgentEditor {
                 1,
             );
         }
+
+        // "Use this agent" is the primary action, so it sits immediately left of
+        // Save where the pointer expects the confirming control.
+        let use_w = 130;
+        let use_x = self.surface_w - PADDING - 110 - use_w;
+        fill_rect(buf, self.surface_w, use_x, top + 14, use_w, 28, 0x00406050);
+        set_text_colour(dc, 0x00F0F0E0);
+        draw_text(
+            buf,
+            dc,
+            "Use this agent",
+            use_x + 10,
+            top + 20,
+            use_w - 20,
+            font_height(13, true),
+        );
+        self.hits
+            .push(HitTarget::new(use_x, top + 14, use_w, 28, Control::UseThis));
 
         let save_w = 110;
         let save_x = self.surface_w - PADDING - save_w;

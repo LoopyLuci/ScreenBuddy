@@ -48,6 +48,12 @@ pub struct AiRequest {
     /// Tool schemas advertised to the model for this request.
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
+    /// Pin a specific model by name, bypassing tier selection.
+    ///
+    /// This is what lets an agent profile say "use this model". An empty value
+    /// keeps the automatic tier-based choice.
+    #[serde(default)]
+    pub force_model: Option<String>,
 }
 
 /// A tool the model is allowed to call, described in JSON Schema form.
@@ -197,10 +203,17 @@ impl AiEngine {
     }
 
     pub async fn generate(&self, req: AiRequest) -> Result<AiResponse> {
-        let tier = req
-            .force_tier
-            .unwrap_or_else(|| self.auto_select_tier(&req));
-        let model = self.select_model(tier)?;
+        // A named model wins over the tier: that is the whole point of a profile
+        // being able to pin one.
+        let model = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
+            Some(name) => self.find_model_by_name(name)?,
+            None => {
+                let tier = req
+                    .force_tier
+                    .unwrap_or_else(|| self.auto_select_tier(&req));
+                self.select_model(tier)?
+            }
+        };
         match model.backend {
             Backend::Ollama => self.gen_ollama(&req, model).await,
             Backend::LlamaCpp => self.gen_llama(&req, model).await,
@@ -250,6 +263,35 @@ impl AiEngine {
         self.models
             .iter()
             .any(|m| matches!(m.backend, Backend::Ollama | Backend::LlamaCpp))
+    }
+
+    /// Find a model by its exact name.
+    ///
+    /// Falls back to a case-insensitive match so a name typed by hand still
+    /// resolves, and reports what is available when it does not -- a silent
+    /// fallback to a different model would be worse than an error.
+    pub fn find_model_by_name(&self, name: &str) -> Result<&ModelInfo> {
+        if let Some(model) = self.models.iter().find(|m| m.name == name) {
+            return Ok(model);
+        }
+        let lowered = name.trim().to_ascii_lowercase();
+        if let Some(model) = self
+            .models
+            .iter()
+            .find(|m| m.name.to_ascii_lowercase() == lowered)
+        {
+            return Ok(model);
+        }
+        let available: Vec<&str> = self.models.iter().map(|m| m.name.as_str()).collect();
+        Err(crate::error::Error::InvalidConfig(format!(
+            "no configured model named '{name}'; available: {}",
+            available.join(", ")
+        )))
+    }
+
+    /// Whether a model name resolves, for validating a profile before use.
+    pub fn has_model(&self, name: &str) -> bool {
+        self.find_model_by_name(name).is_ok()
     }
 
     fn select_model(&self, tier: ModelTier) -> Result<&ModelInfo> {
@@ -1007,6 +1049,51 @@ impl AiEngine {
         models.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(models)
     }
+}
+
+/// A profile naming a model must actually select it, and an unknown name
+/// must say so rather than silently using a different model.
+#[test]
+fn a_pinned_model_is_found_by_name() {
+    let engine = AiEngine::new(AiConfig::default());
+    let names: Vec<String> = engine
+        .available_models()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert!(!names.is_empty(), "the engine ships no models to pin");
+
+    let found = engine.find_model_by_name(&names[0]).expect("exact name");
+    assert_eq!(found.name, names[0]);
+
+    assert!(engine.has_model(&names[0]));
+}
+
+#[test]
+fn model_lookup_ignores_case_and_surrounding_space() {
+    let engine = AiEngine::new(AiConfig::default());
+    let name = engine.available_models()[0].name.clone();
+    let shouty = name.to_uppercase();
+    assert!(
+        engine.find_model_by_name(&shouty).is_ok(),
+        "a hand-typed name should still resolve"
+    );
+    assert!(engine.has_model(&format!("  {name}  ")));
+}
+
+#[test]
+fn an_unknown_model_name_reports_what_is_available() {
+    let engine = AiEngine::new(AiConfig::default());
+    let error = engine
+        .find_model_by_name("no-such-model")
+        .expect_err("must not silently fall back")
+        .to_string();
+    assert!(error.contains("no-such-model"), "got: {error}");
+    assert!(
+        error.contains("available"),
+        "the error should list what is configured, got: {error}"
+    );
+    assert!(!engine.has_model("no-such-model"));
 }
 
 #[cfg(test)]

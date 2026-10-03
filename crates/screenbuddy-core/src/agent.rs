@@ -1,7 +1,7 @@
 //! Agentic Runtime for ScreenBuddy
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -39,11 +39,24 @@ pub struct Tool {
     pub handler: ToolHandler,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentConfig {
     pub max_iterations: usize,
     pub timeout_secs: u64,
     pub system_prompt: String,
+    /// A model name to pin, or empty to let the engine choose by tier.
+    pub model: String,
+    /// Sampling temperature for this agent.
+    pub temperature: f32,
+    /// Whether this agent may use tools.
+    #[serde(default = "default_true")]
+    pub tools_enabled: bool,
+}
+
+/// Serialisation default for `tools_enabled`, so an older config file without
+/// the field means "tools on" rather than "tools off".
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AgentConfig {
@@ -52,6 +65,9 @@ impl Default for AgentConfig {
             max_iterations: 10,
             timeout_secs: 120,
             system_prompt: "You are ScreenBuddy, a helpful desktop AI companion.".to_string(),
+            model: String::new(),
+            temperature: 0.7,
+            tools_enabled: true,
         }
     }
 }
@@ -59,7 +75,12 @@ impl Default for AgentConfig {
 pub struct AgentRuntime {
     ai: Arc<AiEngine>,
     tools: Arc<Mutex<HashMap<String, Tool>>>,
-    config: AgentConfig,
+    /// Shared so applying an agent profile takes effect on the next request,
+    /// rather than only at construction. Without this an agent's persona, tool
+    /// budget and timeout were inert.
+    config: Arc<RwLock<AgentConfig>>,
+    /// The agent currently in effect, for status and diagnostics.
+    active_agent: Arc<Mutex<Option<String>>>,
     tx: broadcast::Sender<AgentEvent>,
 }
 
@@ -69,14 +90,50 @@ impl AgentRuntime {
         Self {
             ai,
             tools: Arc::new(Mutex::new(HashMap::new())),
-            config: AgentConfig::default(),
+            config: Arc::new(RwLock::new(AgentConfig::default())),
+            active_agent: Arc::new(Mutex::new(None)),
             tx,
         }
     }
 
     pub fn with_config(mut self, config: AgentConfig) -> Self {
-        self.config = config;
+        self.config = Arc::new(RwLock::new(config));
         self
+    }
+
+    /// Apply an agent profile's runtime settings.
+    ///
+    /// This is the link that makes a saved agent actually do anything: its
+    /// composed system prompt, tool budget and timeout take effect on the next
+    /// request.
+    pub fn apply_profile(&self, profile: &crate::agent_profile::AgentProfile) {
+        let config = profile.to_agent_config();
+        {
+            let Ok(mut current) = self.config.write() else {
+                return;
+            };
+            *current = config;
+        }
+        if let Ok(mut active) = self.active_agent.lock() {
+            *active = Some(profile.id.clone());
+        }
+    }
+
+    /// The id of the agent currently in effect.
+    pub fn active_agent(&self) -> Option<String> {
+        self.active_agent
+            .lock()
+            .ok()
+            .and_then(|a| a.clone())
+            .filter(|id| !id.is_empty())
+    }
+
+    /// A snapshot of the settings in force, for `get_agent_info`.
+    pub fn active_config(&self) -> AgentConfig {
+        self.config
+            .read()
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| AgentConfig::default())
     }
 
     pub fn register_tool(&self, name: &str, tool: Tool) {
@@ -100,7 +157,19 @@ impl AgentRuntime {
         // below (raw prompt) versus continuations (history).
         let mut history: Vec<Message> = Vec::new();
         // Registered tools, advertised on every turn so the model can call them.
-        let tools: Vec<ToolSpec> = {
+        let tools_enabled = {
+            let Ok(guard) = self.config.read() else {
+                return Err(crate::error::Error::InvalidConfig(
+                    "agent config lock poisoned".into(),
+                ));
+            };
+            guard.tools_enabled
+        };
+        let tools: Vec<ToolSpec> = if !tools_enabled {
+            // Advertising tools the agent may not use invites calls it cannot
+            // answer, so an agent with tools off advertises none.
+            Vec::new()
+        } else {
             let map = self.tools.lock().unwrap_or_else(|e| e.into_inner());
             map.values()
                 .map(|t| ToolSpec {
@@ -110,7 +179,17 @@ impl AgentRuntime {
                 })
                 .collect()
         };
-        let max_iterations = self.config.max_iterations.max(1);
+        // Snapshot once per run: an agent applied mid-request must not change the
+        // budget part way through, and holding the read guard across an await
+        // would block the writer.
+        let config = self.active_config();
+        let max_iterations = config.max_iterations.max(1);
+        // An agent may pin a model by name; empty keeps tier selection.
+        let pinned_model = if config.model.trim().is_empty() {
+            None
+        } else {
+            Some(config.model.trim().to_string())
+        };
 
         for iteration in 0..max_iterations {
             let _ = self.tx.send(AgentEvent::Thinking(if iteration == 0 {
@@ -130,17 +209,19 @@ impl AgentRuntime {
 
             let req = AiRequest {
                 prompt,
-                system_prompt: Some(self.config.system_prompt.clone()),
+                system_prompt: Some(config.system_prompt.clone()),
                 max_tokens: Some(1024),
-                temperature: Some(0.7),
+                // The agent's own temperature, not a fixed default.
+                temperature: Some(config.temperature),
                 stream: false,
                 force_tier: None,
                 history: turn_history,
                 tools: tools.clone(),
+                force_model: pinned_model.clone(),
             };
 
             let ai_result = tokio::time::timeout(
-                Duration::from_secs(self.config.timeout_secs),
+                Duration::from_secs(config.timeout_secs),
                 self.ai.generate(req),
             )
             .await;
@@ -271,6 +352,82 @@ mod tests {
     fn test_default_tools() {
         let tools = default_tools();
         assert_eq!(tools.len(), 2);
+    }
+
+    /// Regression: an agent profile's settings reached nowhere. The config was
+    /// fixed at construction and nothing ever called it, so persona, tool budget,
+    /// timeout, temperature and model were all inert. These assert the values
+    /// the runtime will actually use.
+    #[test]
+    fn applying_a_profile_changes_the_settings_in_force() {
+        let ai = Arc::new(AiEngine::new(AiConfig::default()));
+        let agent = AgentRuntime::new(ai);
+
+        let mut profile = crate::agent_profile::AgentProfile::new("p", "P");
+        profile.system_prompt = "ZZZ distinct role".into();
+        profile.max_iterations = 3;
+        profile.timeout_secs = 42;
+        profile.temperature = 1.4;
+        profile.tools_enabled = false;
+        profile.model = "cc/claude-opus-4-6".into();
+        agent.apply_profile(&profile);
+
+        let config = agent.active_config();
+        assert!(
+            config.system_prompt.contains("ZZZ"),
+            "prompt must be applied"
+        );
+        assert_eq!(config.max_iterations, 3);
+        assert_eq!(config.timeout_secs, 42);
+        assert!((config.temperature - 1.4).abs() < f32::EPSILON);
+        assert!(!config.tools_enabled, "tools must be able to be turned off");
+        assert_eq!(config.model, "cc/claude-opus-4-6");
+        assert_eq!(agent.active_agent().as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn applying_a_second_profile_replaces_the_first() {
+        let ai = Arc::new(AiEngine::new(AiConfig::default()));
+        let agent = AgentRuntime::new(ai);
+
+        let mut first = crate::agent_profile::AgentProfile::new("a", "A");
+        first.max_iterations = 5;
+        agent.apply_profile(&first);
+
+        let mut second = crate::agent_profile::AgentProfile::new("b", "B");
+        second.max_iterations = 11;
+        agent.apply_profile(&second);
+
+        assert_eq!(agent.active_config().max_iterations, 11);
+        assert_eq!(agent.active_agent().as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn a_fresh_runtime_reports_no_active_agent() {
+        let ai = Arc::new(AiEngine::new(AiConfig::default()));
+        let agent = AgentRuntime::new(ai);
+        assert_eq!(agent.active_agent(), None);
+        // Defaults must still be sane before any profile is applied.
+        assert!(agent.active_config().max_iterations >= 1);
+    }
+
+    /// The composed prompt is what the model sees, so persona must reach it.
+    #[test]
+    fn a_profile_persona_reaches_the_runtime_system_prompt() {
+        let ai = Arc::new(AiEngine::new(AiConfig::default()));
+        let agent = AgentRuntime::new(ai);
+
+        let mut profile = crate::agent_profile::AgentProfile::new("p", "P");
+        profile.persona = crate::agent_profile::Persona::Terse;
+        profile.system_prompt = "You are a test agent.".into();
+        agent.apply_profile(&profile);
+
+        let prompt = agent.active_config().system_prompt;
+        assert!(
+            prompt.contains("few words"),
+            "persona guidance missing from the live prompt: {prompt}"
+        );
+        assert!(prompt.contains("You are a test agent."));
     }
 
     #[test]

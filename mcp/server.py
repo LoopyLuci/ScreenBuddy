@@ -445,6 +445,31 @@ def screenbuddy_duplicate_agent(agent_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def screenbuddy_activate_agent(agent_id: str) -> dict[str, Any]:
+    """Make an agent the one in effect.
+
+    This is what actually changes how the assistant behaves: its persona, model,
+    temperature, tool budget and timeout take effect from the next request on, and
+    the choice is restored the next time ScreenBuddy starts.
+
+    Args:
+        agent_id: The agent to activate, e.g. "builtin-coder".
+    """
+    call({"cmd": "activate_agent", "id": agent_id})
+    return call({"cmd": "get_agent_info"})
+
+
+@mcp.tool()
+def screenbuddy_active_agent() -> dict[str, Any]:
+    """Which agent is currently in effect, and the settings it is running with.
+
+    Use this to confirm an activation took effect: it reports the active agent id
+    plus the live system prompt, model, temperature, tool-step budget and timeout.
+    """
+    return call({"cmd": "get_agent_info"})
+
+
+@mcp.tool()
 def screenbuddy_delete_agent(agent_id: str) -> str:
     """Delete a user agent. Built-in presets are kept.
 

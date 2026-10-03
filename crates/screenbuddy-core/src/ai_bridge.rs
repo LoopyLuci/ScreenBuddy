@@ -70,6 +70,7 @@ impl AiChatBridge {
                 force_tier: None,
                 history: None,
                 tools: Vec::new(),
+                force_model: None,
             };
 
             // Call AI using tokio runtime

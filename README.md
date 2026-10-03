@@ -231,11 +231,18 @@ Five built-in presets ship with the app: **Assistant**, **Coder**, **Study Buddy
 editable copy rather than changing the default for everyone. Your agents persist to
 `%APPDATA%\ScreenBuddy\agents.json`.
 
+**Use this agent** in the footer applies a profile: its persona, model,
+temperature, tool budget and timeout become the settings the next request uses,
+and the choice is restored the next time ScreenBuddy starts. Activation is
+separate from saving on purpose, so you can try a change before committing it.
+
 From Hermes:
 
     screenbuddy_list_agents()                 # includes the presets
     screenbuddy_save_agent({...})             # partial profiles are fine
     screenbuddy_duplicate_agent("builtin-coder")
+    screenbuddy_activate_agent("builtin-coder")
+    screenbuddy_active_agent()                # what is in effect right now
     screenbuddy_delete_agent("my-agent")
 
 Values are validated and clamped on the way in, so `max_iterations: 0` becomes 1
