@@ -122,6 +122,11 @@ pub enum GodotCommand {
     GetSetting {
         key: Option<String>,
     },
+    /// Report which 9Router is configured and which models it can reach.
+    NineRouterStatus {
+        endpoint: Option<String>,
+        api_key: Option<String>,
+    },
     /// Enable or disable the automatic animation state rotation.
     SetAutoCycle {
         enabled: bool,
@@ -174,6 +179,14 @@ pub enum GodotCommand {
 pub enum ControlRequest {
     SendChat(String),
     RunAgent(String),
+    /// Point ScreenBuddy at a [9Router](https://github.com/decolua/9router)
+    /// instance and report the models it advertises.
+    NineRouterStatus {
+        /// Optional base URL; omitted means "use the configured one, or default".
+        endpoint: Option<String>,
+        /// Optional bearer token, for a router running with auth.
+        api_key: Option<String>,
+    },
     SetAnimation {
         id: Option<String>,
         state: AnimStateCtl,
@@ -506,6 +519,10 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
         },
         GodotCommand::PlaySound { name } => ControlRequest::PlaySound(name.clone()),
         GodotCommand::Speak { text } => ControlRequest::Speak(text.clone()),
+        GodotCommand::NineRouterStatus { endpoint, api_key } => ControlRequest::NineRouterStatus {
+            endpoint: endpoint.clone(),
+            api_key: api_key.clone(),
+        },
         GodotCommand::SetSetting { key, value } => ControlRequest::SetSetting {
             key: key.clone(),
             value: value.clone(),

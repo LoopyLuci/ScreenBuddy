@@ -1,4 +1,5 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::nine_router::{self, RouterModel};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,6 +30,9 @@ pub enum Backend {
     LlamaCpp,
     OpenAi,
     Anthropic,
+    /// [9Router](https://github.com/decolua/9router): an OpenAI-compatible
+    /// router that fronts many providers with automatic fallback.
+    NineRouter,
     Custom,
 }
 
@@ -121,6 +125,12 @@ pub struct AiConfig {
     pub llamacpp_endpoint: Option<String>,
     pub custom_endpoint: Option<String>,
     pub custom_api_key: Option<String>,
+    /// Base URL for a [9Router](https://github.com/decolua/9router) instance.
+    /// Defaults to its documented local port when unset.
+    pub nine_router_endpoint: Option<String>,
+    /// Optional bearer token. 9Router accepts requests without one when it runs
+    /// without auth, so this is only sent when set.
+    pub nine_router_api_key: Option<String>,
     pub local_model_path: Option<PathBuf>,
     pub local_model_type: LocalModelType,
     pub default_tier: ModelTier,
@@ -144,6 +154,8 @@ impl Default for AiConfig {
             llamacpp_endpoint: Some("http://localhost:8080".into()),
             custom_endpoint: None,
             custom_api_key: None,
+            nine_router_endpoint: None,
+            nine_router_api_key: None,
             local_model_path: None,
             local_model_type: LocalModelType::Ollama,
             default_tier: ModelTier::LocalTiny,
@@ -194,6 +206,7 @@ impl AiEngine {
             Backend::LlamaCpp => self.gen_llama(&req, model).await,
             Backend::OpenAi => self.gen_openai(&req, model).await,
             Backend::Anthropic => self.gen_anthropic(&req, model).await,
+            Backend::NineRouter => self.gen_nine_router(&req, model).await,
             Backend::Custom => self.gen_custom(&req, model).await,
         }
     }
@@ -850,6 +863,149 @@ impl AiEngine {
     }
     pub fn available_models(&self) -> &[ModelInfo] {
         &self.models
+    }
+}
+
+impl AiEngine {
+    /// Chat completion through 9Router.
+    ///
+    /// The body is OpenAI-shaped, which is what 9Router expects; the difference
+    /// from the plain OpenAI path is the base URL, the optional bearer token,
+    /// and an error message that names 9Router so a failure is diagnosable.
+    pub async fn gen_nine_router(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
+        let base = nine_router::base_url(self.config.nine_router_endpoint.as_deref());
+        let url = nine_router::endpoint(&base, "chat/completions");
+
+        let mut body = serde_json::json!({
+            // 9Router expects the upstream-qualified name it advertises.
+            "model": model.name,
+            "messages": self.build_messages(req),
+            "max_tokens": req.max_tokens.unwrap_or(self.config.max_tokens_default),
+            "temperature": req.temperature.unwrap_or(0.7),
+            "stream": false,
+        });
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(Self::openai_tools(&req.tools));
+        }
+
+        let mut request = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .json(&body);
+
+        // 9Router may run without auth, so only send a token when configured
+        // rather than sending an empty "Bearer".
+        if let Some(key) = self
+            .config
+            .nine_router_api_key
+            .as_ref()
+            .filter(|k| !k.trim().is_empty())
+        {
+            request = request.header("Authorization", format!("Bearer {}", key.trim()));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("9Router unreachable at {url}: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(Error::Network(format!(
+                "9Router returned {}: {}",
+                status,
+                nine_router::truncate(&detail, 400)
+            )));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| Error::Network(format!("9Router sent an unreadable reply: {e}")))?;
+
+        let text = json["choices"][0]["message"]["content"]
+            .as_str()
+            .ok_or_else(|| Error::Network("9Router reply had no message content".into()))?
+            .to_string();
+
+        Ok(AiResponse {
+            tool_calls: Self::parse_openai_tool_calls(&json),
+            ..AiResponse::plain(
+                text,
+                model.tier,
+                model.backend,
+                json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32,
+                FinishReason::Stop,
+            )
+        })
+    }
+
+    /// Ask 9Router which models it can reach.
+    ///
+    /// This is the discovery path: the router's catalogue depends on which
+    /// providers the user has configured, so it cannot be hardcoded here.
+    pub async fn nine_router_models(&self) -> Result<Vec<RouterModel>> {
+        self.nine_router_models_at(None, None).await
+    }
+
+    /// Model discovery against an explicit base URL and key, overriding config.
+    ///
+    /// [`Self::nine_router_models`] is the normal path and reads the configured
+    /// endpoint; this exists for probing a second router or for tests.
+    pub async fn nine_router_models_at(
+        &self,
+        configured: Option<&str>,
+        api_key: Option<&str>,
+    ) -> Result<Vec<RouterModel>> {
+        let base =
+            nine_router::base_url(configured.or(self.config.nine_router_endpoint.as_deref()));
+        let url = nine_router::endpoint(&base, "models");
+
+        let mut request = self.client.get(&url);
+        let key = api_key.or(self.config.nine_router_api_key.as_deref());
+        if let Some(key) = key.map(str::trim).filter(|k| !k.is_empty()) {
+            request = request.header("Authorization", format!("Bearer {key}"));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("9Router unreachable at {url}: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            return Err(Error::Network(format!(
+                "9Router returned {} listing models: {}",
+                status,
+                nine_router::truncate(&detail, 200)
+            )));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| Error::Network(format!("9Router model list unreadable: {e}")))?;
+
+        // OpenAI shape: {"data": [{"id": "...", ...}]}
+        let entries = json["data"]
+            .as_array()
+            .ok_or_else(|| Error::Network("9Router model list had no 'data' array".into()))?;
+
+        let mut models = Vec::with_capacity(entries.len());
+        for entry in entries {
+            match serde_json::from_value::<RouterModel>(entry.clone()) {
+                Ok(model) => models.push(model),
+                // Skip entries without an id rather than failing the whole list:
+                // one malformed entry should not hide every usable model.
+                Err(_) => continue,
+            }
+        }
+        // Sorted so the picker does not reshuffle between calls.
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(models)
     }
 }
 

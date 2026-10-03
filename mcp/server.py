@@ -377,6 +377,28 @@ def screenbuddy_get_setting(key: str = "") -> dict[str, Any]:
 
 
 @mcp.tool()
+def screenbuddy_nine_router_status(
+    endpoint: str = "", api_key: str = ""
+) -> dict[str, Any]:
+    """Check a 9Router instance and list the models it can reach.
+
+    9Router (https://github.com/decolua/9router) is an OpenAI-compatible
+    router that fronts many providers with automatic fallback. Use this to
+    confirm it is running and to see the model names to pass to a chat.
+
+    Args:
+        endpoint: Base URL, e.g. "http://localhost:20128/v1". Empty uses the
+            configured one, falling back to 9Router's default port.
+        api_key: Bearer token, only needed when 9Router runs with auth.
+    """
+    return call({
+        "cmd": "nine_router_status",
+        "endpoint": endpoint or None,
+        "api_key": api_key or None,
+    })
+
+
+@mcp.tool()
 def screenbuddy_memory_ingest(source: str, content: str) -> str:
     """Add a document to the app's RAG memory so it can be recalled later.
 

@@ -371,12 +371,18 @@ fn main() {
             if io::stdin().read_line(&mut line).is_err() {
                 break;
             }
-            let trimmed = line.trim();
+            let trimmed = line.trim().to_string();
+            // read_line returns Ok(0) at EOF, which is not an error but never
+            // yields a line either. Without this the loop spun forever and
+            // printed the prompt continuously, flooding any captured log.
+            if trimmed.is_empty() && line.is_empty() {
+                break;
+            }
             if !trimmed.is_empty() {
                 if trimmed == "/quit" {
                     break;
                 }
-                input_tx2.send(trimmed.to_string()).ok();
+                input_tx2.send(trimmed).ok();
             }
             prompt(&mut io::stdout());
         }
@@ -1012,6 +1018,58 @@ fn apply_control_requests(
                     eprintln!("[IPC] TTS engine unavailable");
                 } else if let Err(e) = engine.speak(&text) {
                     eprintln!("[IPC] TTS failed: {}", e);
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::NineRouterStatus { endpoint, api_key }) => {
+                // Discovery is the useful part: it tells the user whether 9Router
+                // is running and what it can actually reach, instead of leaving
+                // them to guess from a failed chat.
+                // Probe on its own thread with its own runtime: blocking inside
+                // the render loop would stall the window, and calling block_on
+                // from within the app's runtime would deadlock.
+                let probe_endpoint = endpoint.clone();
+                let probe_key = api_key.clone();
+                let discovered = std::thread::spawn(move || {
+                    let worker = screenbuddy_core::AiEngine::new(screenbuddy_core::AiConfig {
+                        nine_router_endpoint: probe_endpoint.clone(),
+                        nine_router_api_key: probe_key.clone(),
+                        ..Default::default()
+                    });
+                    match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt.block_on(worker.nine_router_models_at(
+                            probe_endpoint.as_deref(),
+                            probe_key.as_deref(),
+                        )),
+                        Err(e) => Err(screenbuddy_core::Error::Network(format!(
+                            "9Router probe runtime unavailable: {e}"
+                        ))),
+                    }
+                })
+                .join()
+                .unwrap_or_else(|_| {
+                    Err(screenbuddy_core::Error::Network(
+                        "9Router probe thread panicked".into(),
+                    ))
+                });
+                match discovered {
+                    Ok(models) => {
+                        let ids: Vec<String> = models.iter().map(|m| m.id.clone()).collect();
+                        if let Ok(mut snapshot) = status.lock() {
+                            snapshot
+                                .settings
+                                .insert("nine_router.reachable".into(), serde_json::json!(true));
+                        }
+                        println!("[9Router] {} models available: {:?}", ids.len(), ids);
+                        if let Ok(mut snapshot) = status.lock() {
+                            snapshot
+                                .settings
+                                .insert("nine_router.models".into(), serde_json::json!(ids));
+                        }
+                    }
+                    Err(e) => eprintln!("[9Router] unavailable: {e}"),
                 }
             }
             Ok(screenbuddy_core::ControlRequest::SetSetting { key, value }) => {

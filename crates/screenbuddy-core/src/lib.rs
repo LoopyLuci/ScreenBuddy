@@ -10,6 +10,7 @@ pub mod creature;
 pub mod error;
 pub mod hardware;
 pub mod ipc;
+pub mod nine_router;
 pub mod per_pet_window;
 pub mod platform;
 pub mod providers;
@@ -25,7 +26,9 @@ pub mod system_tray;
 pub mod tts;
 
 pub use agent::{default_tools, AgentConfig, AgentEvent, AgentRuntime, Tool};
-pub use ai::{AiConfig, AiEngine, AiRequest, AiResponse, Message, MessageRole};
+pub use ai::{
+    AiConfig, AiEngine, AiRequest, AiResponse, Backend, Message, MessageRole, ModelInfo, ModelTier,
+};
 pub use ai_bridge::AiChatBridge;
 pub use audio::{AudioConfig, AudioEvent, AudioSystem, SoundCategory};
 pub use chat_overlay::{ChatMessage, ChatOverlay, ChatOverlayEvent, MessageRole as ChatMsgRole};
@@ -37,6 +40,7 @@ pub use ipc::{
     AnimStateCtl, ControlRequest, GodotCommand, IpcClient, IpcConfig, IpcServer, Response,
     RuntimeStatus, DEFAULT_PORT, DEFAULT_SEARCH_LIMIT, MAX_FRAME_BYTES, MAX_SEARCH_LIMIT,
 };
+pub use nine_router::{RouterModel, DEFAULT_BASE_URL as NINE_ROUTER_DEFAULT_URL};
 pub use per_pet_window::{PerPetWindowManager, PetWindowConfig, PetWindowEvent, PetWindowId};
 pub use rag::RagPipeline;
 pub use render::renderer::Renderer;

@@ -173,6 +173,26 @@ the user's credential.
 ScreenBuddy opens a main window at startup: sessions on the left, the
 conversation on the right, and a message box along the bottom.
 
+### 9Router
+
+[9Router](https://github.com/decolua/9router) is an OpenAI-compatible router that
+fronts many providers with automatic fallback. ScreenBuddy supports it as a
+first-class backend rather than as a generic custom endpoint.
+
+Set `nine_router_endpoint` in the AI config (it defaults to
+`http://localhost:20128/v1`, 9Router's documented port) and pick a model with
+9Router's `provider/model` naming, e.g. `cc/claude-opus-4-6`. `nine_router_api_key`
+is optional, since 9Router may run with or without auth.
+
+Model discovery goes through 9Router's `/v1/models`, so the list reflects the
+providers you have actually configured rather than a hardcoded set. From Hermes:
+
+    screenbuddy_nine_router_status()            # uses the configured endpoint
+    screenbuddy_nine_router_status("http://localhost:20128/v1")
+
+The same request is available over IPC as `nine_router_status`, and the
+discovered list is published under the `nine_router.models` setting.
+
 ### Tray and window
 
 The app keeps a tray icon in the notification area. Left-click it (or choose
