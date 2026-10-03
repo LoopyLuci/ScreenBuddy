@@ -186,6 +186,8 @@ pub struct AiEngine {
     config: AiConfig,
     models: Vec<ModelInfo>,
     client: reqwest::Client,
+    /// Model used when a request names none, set from ai_model.
+    pinned_model: Option<String>,
 }
 
 impl AiEngine {
@@ -199,6 +201,7 @@ impl AiEngine {
             config,
             models,
             client,
+            pinned_model: None,
         }
     }
 
@@ -903,6 +906,57 @@ impl AiEngine {
     pub fn config(&self) -> &AiConfig {
         &self.config
     }
+
+    /// Parse a provider name as written in settings, e.g. "9router".
+    pub fn parse_backend(name: &str) -> Result<Backend> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "ollama" => Ok(Backend::Ollama),
+            "llamacpp" | "llama_cpp" | "llama.cpp" => Ok(Backend::LlamaCpp),
+            "openai" => Ok(Backend::OpenAi),
+            "anthropic" | "claude" => Ok(Backend::Anthropic),
+            "9router" | "nine_router" | "ninerouter" | "router" => Ok(Backend::NineRouter),
+            "custom" => Ok(Backend::Custom),
+            other => Err(crate::error::Error::InvalidConfig(format!(
+                "unknown provider '{other}'"
+            ))),
+        }
+    }
+
+    /// Narrow the model list to one provider.
+    ///
+    /// The backend is recorded per model rather than on the config, so choosing
+    /// a provider means keeping only that provider's models. This is what
+    /// ai_provider selects, and what ai_model then chooses within.
+    pub fn restrict_to_backend(&mut self, backend: Backend) -> usize {
+        self.models.retain(|m| m.backend == backend);
+        self.models.len()
+    }
+
+    /// Pin the model used when a request names none.
+    ///
+    /// Errors naming what is available when the model is unknown, rather than
+    /// silently using a different one, which is the defect this replaces.
+    pub fn set_default_model(&mut self, name: &str) -> Result<&mut Self> {
+        if !self.has_model(name) {
+            return Err(crate::error::Error::InvalidConfig(format!(
+                "unknown model '{name}'; available: {}",
+                self.available_model_names().join(", ")
+            )));
+        }
+        self.pinned_model = Some(name.to_string());
+        Ok(self)
+    }
+
+    /// Every model name currently selectable, for error messages and pickers.
+    pub fn available_model_names(&self) -> Vec<String> {
+        self.models.iter().map(|m| m.name.clone()).collect()
+    }
+
+    /// The model a request would use now, for reporting in the UI.
+    pub fn effective_model(&self) -> Option<&str> {
+        self.pinned_model.as_deref()
+    }
+
     pub fn available_models(&self) -> &[ModelInfo] {
         &self.models
     }
@@ -1101,7 +1155,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_openai_tool_calls_with_string_arguments() {
+    fn provider_names_parse_including_the_spelled_out_forms() {
+        for (text, want) in [
+            ("ollama", Backend::Ollama),
+            ("OpenAI", Backend::OpenAi),
+            ("claude", Backend::Anthropic),
+            ("anthropic", Backend::Anthropic),
+            ("9router", Backend::NineRouter),
+            (" nine_router ", Backend::NineRouter),
+            ("llama.cpp", Backend::LlamaCpp),
+        ] {
+            assert_eq!(AiEngine::parse_backend(text).unwrap(), want, "{text}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_provider_is_rejected_by_name() {
+        // Naming the offending value beats silently keeping the old provider.
+        let err = AiEngine::parse_backend("skynet").unwrap_err().to_string();
+        assert!(err.contains("skynet"), "got: {err}");
+    }
+
+    #[test]
+    fn pinning_an_unknown_model_lists_what_is_available() {
+        // This is the defect the audit found: a profile naming a model the app
+        // did not have silently used a different one.
+        let mut engine = AiEngine::new(AiConfig::default());
+        let err = match engine.set_default_model("gpt-nonexistent") {
+            Ok(_) => panic!("an unknown model should be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("gpt-nonexistent"), "got: {err}");
+        assert!(
+            err.contains("available"),
+            "the error should say what is available: {err}"
+        );
+    }
+
+    #[test]
+    fn pinning_a_known_model_reports_it_as_effective() {
+        let mut engine = AiEngine::new(AiConfig::default());
+        let name = engine.available_model_names().first().cloned().unwrap();
+        if let Err(e) = engine.set_default_model(&name) {
+            panic!("{name} is in the list but was rejected: {e}");
+        }
+        assert_eq!(engine.effective_model(), Some(name.as_str()));
+    }
+
+    #[test]
+    fn restricting_a_provider_keeps_only_its_models() {
+        let mut engine = AiEngine::new(AiConfig::default());
+        let total = engine.available_models().len();
+        let kept = engine.restrict_to_backend(Backend::Ollama);
+        assert!(kept < total, "restricting removed nothing: {kept}/{total}");
+        assert!(
+            engine
+                .available_models()
+                .iter()
+                .all(|m| m.backend == Backend::Ollama),
+            "a non-Ollama model survived the filter"
+        );
+    }
+
+    #[test]
+    fn parsing_openai_tool_calls_with_string_arguments() {
         let json = serde_json::json!({
             "choices": [{"message": {"content": null, "tool_calls": [
                 {"id": "call_1", "type": "function",

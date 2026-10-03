@@ -166,7 +166,7 @@ fn main() {
     let mut audio = screenbuddy_core::AudioSystem::new();
     audio.load_default_sounds();
     let ai_config = config.get().ai.clone();
-    let ai = screenbuddy_core::AiEngine::new(ai_config);
+    let mut ai = screenbuddy_core::AiEngine::new(ai_config);
     println!(
         "AI engine: {} models available",
         ai.available_models().len()
@@ -541,9 +541,39 @@ fn main() {
         }
     }
 
+    // Apply the AI settings the engine was built before settings were loaded.
+    // These report what they did rather than failing silently.
+    {
+        if let Some(screenbuddy_core::SettingValue::String(provider)) = settings.get("ai_provider")
+        {
+            match screenbuddy_core::AiEngine::parse_backend(provider.as_str()) {
+                Ok(backend) => {
+                    let kept = ai.restrict_to_backend(backend);
+                    println!("[AI] provider {provider:?}: {kept} model(s) selectable");
+                }
+                Err(e) => println!("[AI] {e}; keeping the default model list"),
+            }
+        }
+        if let Some(screenbuddy_core::SettingValue::String(model)) = settings.get("ai_model") {
+            // An unknown model must say so: silently using a different one is
+            // exactly the defect this audit turned up.
+            match ai.set_default_model(model.as_str()) {
+                Ok(_) => println!("[AI] pinned model {model:?}"),
+                Err(e) => println!("[AI] {e}"),
+            }
+        }
+    }
+
     // Apply initial settings to audio
     if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_master") {
         audio.set_master_volume(vol as f32);
+    }
+    // The two bus levels had no path from settings to playback.
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_effects") {
+        audio.set_effects_volume(vol as f32);
+    }
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_music") {
+        audio.set_music_volume(vol as f32);
     }
 
     // Per-Pet Windows
@@ -603,10 +633,23 @@ fn main() {
 
     // Create per-pet windows
     let mut pet_hwnds: Vec<*mut core::ffi::c_void> = Vec::new();
+    // window_transparency is the fraction of the window kept opaque, 0..1.
+    let transparency = settings
+        .number("window_transparency")
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0) as f32;
     for (i, (_id, creature)) in creatures.iter().enumerate() {
         let x = 100 + (i as i32 * 160);
         let y = 100 + (i as i32 * 120);
-        let hwnd = create_pet_window(&creature.name, x, y);
+        // Read per window so a settings change applies to new creatures
+        // immediately, without recreating the ones already on screen.
+        let topmost_style = if settings.number("always_on_top").unwrap_or(1.0) != 0.0 {
+            winapi::um::winuser::WS_EX_TOPMOST
+        } else {
+            0
+        };
+        let hwnd = create_pet_window(&creature.name, x, y, topmost_style);
+        apply_window_transparency(hwnd, transparency);
         pet_hwnds.push(hwnd);
         println!(
             "[PerPet] Created window for {} at ({}, {})",
@@ -614,9 +657,57 @@ fn main() {
         );
     }
 
+    // Last applied window state, so SetLayeredWindowAttributes and
+    // SetWindowPos run only when a setting actually changed. Doing it every
+    // frame would fight the window manager and cost needless work.
+    let mut applied_transparency = transparency;
+    let mut applied_topmost = settings.number("always_on_top").unwrap_or(1.0) != 0.0;
+
     loop {
         let elapsed = start_time.elapsed();
         let dt = 1.0 / 30.0;
+
+        // Apply window appearance settings when they change.
+        {
+            let now_transparency = settings
+                .number("window_transparency")
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0) as f32;
+            let now_topmost = settings.number("always_on_top").unwrap_or(1.0) != 0.0;
+
+            if now_transparency != applied_transparency {
+                apply_transparency_to_all(&pet_hwnds, now_transparency);
+                applied_transparency = now_transparency;
+            }
+            if now_topmost != applied_topmost {
+                // Topmost is an extended style, so it has to be set on the live
+                // window; SetWindowPos with HWND_TOPMOST/HWND_NOTOPMOST does it.
+                for hwnd in &pet_hwnds {
+                    if hwnd.is_null() {
+                        continue;
+                    }
+                    unsafe {
+                        let insert_after = if now_topmost {
+                            winapi::um::winuser::HWND_TOPMOST
+                        } else {
+                            winapi::um::winuser::HWND_NOTOPMOST
+                        };
+                        winapi::um::winuser::SetWindowPos(
+                            *hwnd as *mut winapi::shared::windef::HWND__,
+                            insert_after,
+                            0,
+                            0,
+                            0,
+                            0,
+                            winapi::um::winuser::SWP_NOMOVE
+                                | winapi::um::winuser::SWP_NOSIZE
+                                | winapi::um::winuser::SWP_NOACTIVATE,
+                        );
+                    }
+                }
+                applied_topmost = now_topmost;
+            }
+        }
 
         // Forward AI responses to chat window
         {
@@ -1288,6 +1379,9 @@ fn apply_control_requests(
             }
             Ok(screenbuddy_core::ControlRequest::SetSetting { key, value }) => {
                 let parsed = json_to_setting(value.clone());
+                // The store rejects unknown keys and out-of-range values. That
+                // has to reach the caller: replying "success" regardless is how
+                // a rejected write looks like an accepted one.
                 match settings.set(&key, parsed) {
                     Ok(()) => {
                         // Mirror into the snapshot so `get_setting` reads back
@@ -1562,7 +1656,44 @@ fn pet_window_message_loop() {
     }
 }
 
-fn create_pet_window(creature_name: &str, x: i32, y: i32) -> *mut core::ffi::c_void {
+/// Set how opaque a creature window is, for the window_transparency setting.
+///
+/// The windows are already WS_EX_LAYERED, so this is the only thing needed to
+/// make them see-through. `opacity` is 0.0 (invisible) to 1.0 (solid).
+fn apply_window_transparency(hwnd: *mut core::ffi::c_void, opacity: f32) {
+    if hwnd.is_null() {
+        return;
+    }
+    // 0..255, and 255 when fully transparent so the window is not merely invisible.
+    let alpha: u8 = (opacity.clamp(0.05, 1.0) * 255.0).round() as u8;
+    unsafe {
+        winapi::um::winuser::SetLayeredWindowAttributes(
+            hwnd as *mut winapi::shared::windef::HWND__,
+            0 as winapi::shared::windef::COLORREF,
+            alpha,
+            winapi::um::winuser::LWA_ALPHA,
+        );
+    }
+}
+
+/// Apply transparency across every live creature window.
+fn apply_transparency_to_all(pet_hwnds: &[*mut core::ffi::c_void], opacity: f32) {
+    for hwnd in pet_hwnds {
+        apply_window_transparency(*hwnd, opacity);
+    }
+}
+
+/// Create one creature window.
+///
+/// `topmost_style` is WS_EX_TOPMOST when always_on_top is set; the style is a
+/// creation-time property, so changing the setting afterwards needs a rebuild or
+/// a SetWindowPos call, which the caller handles.
+fn create_pet_window(
+    creature_name: &str,
+    x: i32,
+    y: i32,
+    topmost_style: winapi::shared::minwindef::DWORD,
+) -> *mut core::ffi::c_void {
     unsafe {
         let h_instance = winapi::um::libloaderapi::GetModuleHandleW(ptr::null_mut());
         let class_name: Vec<u16> = format!("ScreenBuddyPet{}\0", x).encode_utf16().collect();
@@ -1584,8 +1715,9 @@ fn create_pet_window(creature_name: &str, x: i32, y: i32) -> *mut core::ffi::c_v
         };
         winapi::um::winuser::RegisterClassExW(&wc);
 
+        // always_on_top was hardcoded on, so the setting could not turn it off.
         let ex_style = winapi::um::winuser::WS_EX_LAYERED
-            | winapi::um::winuser::WS_EX_TOPMOST
+            | topmost_style
             | winapi::um::winuser::WS_EX_TOOLWINDOW;
         let hwnd = winapi::um::winuser::CreateWindowExW(
             ex_style,

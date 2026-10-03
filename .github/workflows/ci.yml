@@ -71,6 +71,8 @@ jobs:
         run: python tools/dead_settings_scan.py
       - name: Verify every MCP tool and IPC command is reachable
         run: python tools/mcp_ipc_audit.py
+      - name: Verify the rewired settings reach runtime state
+        run: python tools/wired_settings_probe.py
 
   # A second non-Windows target, for the same reason as the Linux job: an
   # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.

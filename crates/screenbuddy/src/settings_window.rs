@@ -45,16 +45,20 @@ const ROW_PITCH: i32 = 54;
 ///
 /// Presented as disabled rather than wired up on paper. Every entry here was
 /// previously shown as if it worked.
-pub const INERT_SETTINGS: &[&str] = &[
-    "ai_provider",
-    "ai_model",
-    "thread_pool_size",
-    "multi_gpu",
-    "window_transparency",
-    "always_on_top",
-    "volume_effects",
-    "volume_music",
-];
+/// Settings the app does not honour.
+///
+/// ai_provider, ai_model, always_on_top, window_transparency, volume_effects and
+/// volume_music were wired to real consumers. multi_gpu and thread_pool_size are
+/// still inert, and both say why:
+///
+/// - The app renders through GDI. `MultiGpuRenderer` enumerates real wgpu
+///   adapters but is never constructed and no code path builds a wgpu device,
+///   so there is no second GPU for the setting to select.
+/// - `ThreadPool::new()` takes no size, and the render loop is single-threaded,
+///   so a worker count has nothing to configure.
+///
+/// Both are left visible and disabled rather than quietly removed.
+pub const INERT_SETTINGS: &[&str] = &["multi_gpu", "thread_pool_size"];
 
 /// Settings the app writes but never reads.
 ///
@@ -1157,18 +1161,46 @@ mod tests {
     }
 
     #[test]
+    fn settings_that_were_rewired_are_now_editable() {
+        // These six had no consumer and are now wired to real code. Naming them
+        // means a future regression shows up as a failing test rather than a
+        // control that looks fine and does nothing.
+        for name in [
+            "ai_provider",
+            "ai_model",
+            "always_on_top",
+            "window_transparency",
+            "volume_effects",
+            "volume_music",
+        ] {
+            assert_eq!(availability(name), Availability::Live, "'{name}' regressed");
+            assert!(
+                !INERT_SETTINGS.contains(&name),
+                "'{name}' is still listed as inert"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_two_settings_the_app_cannot_honour_remain_inert() {
+        // multi_gpu: the app renders through GDI and MultiGpuRenderer is never
+        // constructed. thread_pool_size: ThreadPool::new() takes no size and the
+        // render loop is single-threaded.
+        assert_eq!(
+            INERT_SETTINGS,
+            &["multi_gpu", "thread_pool_size"],
+            "the inert list changed; update the reasoning if that was deliberate"
+        );
+    }
+
+    #[test]
     fn an_inert_setting_refuses_to_change_and_says_why() {
         // Presenting a dead control as working is the defect this guards.
         with_view(
-            Some((
-                "ai_provider",
-                SettingValue::String("auto".into()),
-                None,
-                None,
-            )),
+            Some(("multi_gpu", SettingValue::Bool(1.0), None, None)),
             |view| {
                 let index = last_index(view);
-                assert!(!view.rows[index].live, "ai_provider should be inert");
+                assert!(!view.rows[index].live, "multi_gpu should be inert");
                 let before = view.rows[index].value.clone();
                 view.cycle(index);
                 assert_eq!(

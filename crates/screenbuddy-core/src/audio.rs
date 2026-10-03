@@ -25,7 +25,7 @@ impl Default for AudioConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoundCategory {
     CreatureSound,
     Notification,
@@ -55,6 +55,9 @@ pub struct AudioSystem {
     sounds: HashMap<String, AudioFile>,
     stream: Option<rodio::OutputStream>,
     sink: Option<rodio::Sink>,
+    /// Per-sound sinks attach to this. Held because sinks need the handle to
+    /// outlive them; dropping it would silence playback.
+    handle: Option<rodio::OutputStreamHandle>,
     last_play: HashMap<String, Instant>,
 }
 
@@ -71,6 +74,7 @@ impl AudioSystem {
             sounds: HashMap::new(),
             stream: None,
             sink: None,
+            handle: None,
             last_play: HashMap::new(),
         };
         sys.init_audio();
@@ -165,10 +169,34 @@ impl AudioSystem {
             return Err(format!("Sound file not found: {}", path));
         }
 
-        if let Some(sink) = &self.sink {
+        // Every sound needs its own sink: a single shared sink can hold only
+        // one volume, so per-category buses were unreachable before this.
+        // Cache the handle: opening an output device per sound would be slow
+        // and can fail on machines with a busy audio device.
+        if self.handle.is_none() {
+            self.handle = rodio::OutputStream::try_default().ok().map(|(_, h)| h);
+        }
+
+        if let Some(handle) = self.handle.as_ref() {
             let file = std::fs::File::open(&full_path).map_err(|e| e.to_string())?;
             let source = rodio::Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
-            sink.append(source);
+
+            let file_info = self.sounds.get(name);
+            let category = file_info
+                .map(|s| s.category)
+                .unwrap_or(SoundCategory::CreatureSound);
+            let bus = match category {
+                SoundCategory::Music => self.config.music_volume,
+                _ => self.config.sfx_volume,
+            };
+            // Also honour the sound's own level, so a quiet sound stays quiet.
+            let own = file_info.map(|s| s.volume).unwrap_or(1.0);
+
+            let voice = rodio::Sink::try_new(handle).map_err(|e| e.to_string())?;
+            voice.set_volume((self.config.master_volume * bus * own).clamp(0.0, 1.0));
+            voice.append(source);
+            // Detach so playback survives this handle going out of scope.
+            voice.detach();
         }
         Ok(())
     }
@@ -188,6 +216,25 @@ impl AudioSystem {
         if let Some(sink) = &self.sink {
             sink.set_volume(self.config.master_volume * self.config.sfx_volume);
         }
+    }
+
+    /// Effects volume, applied to every non-music sound at playback time.
+    pub fn set_effects_volume(&mut self, vol: f32) {
+        self.config.sfx_volume = vol.clamp(0.0, 1.0);
+    }
+
+    /// Music volume, applied to sounds categorised as music.
+    pub fn set_music_volume(&mut self, vol: f32) {
+        self.config.music_volume = vol.clamp(0.0, 1.0);
+    }
+
+    /// The current bus levels, so a UI can show what is in force.
+    pub fn volumes(&self) -> (f32, f32, f32) {
+        (
+            self.config.master_volume,
+            self.config.sfx_volume,
+            self.config.music_volume,
+        )
     }
 
     pub fn set_master_volume(&mut self, vol: f32) {
@@ -246,6 +293,58 @@ mod tests {
         let mut sys = AudioSystem::new();
         sys.register_sound("test", "test.wav", SoundCategory::Notification, 0.5);
         let _ = sys.play("test");
+    }
+
+    /// The per-category bus a sound plays through, independent of playback.
+    fn effective_bus(config: &AudioConfig, category: SoundCategory) -> f32 {
+        match category {
+            SoundCategory::Music => config.music_volume,
+            _ => config.sfx_volume,
+        }
+    }
+
+    #[test]
+    fn effects_and_music_buses_are_independent() {
+        let mut audio = AudioSystem::new();
+        audio.set_effects_volume(0.25);
+        audio.set_music_volume(0.9);
+        let (master, sfx, music) = audio.volumes();
+        assert!((master - 0.7).abs() < 1e-6, "master changed: {master}");
+        assert!((sfx - 0.25).abs() < 1e-6, "sfx: {sfx}");
+        assert!((music - 0.9).abs() < 1e-6, "music: {music}");
+    }
+
+    #[test]
+    fn bus_levels_are_clamped_to_the_legal_range() {
+        let mut audio = AudioSystem::new();
+        audio.set_effects_volume(4.0);
+        audio.set_music_volume(-2.0);
+        let (_, sfx, music) = audio.volumes();
+        assert!((sfx - 1.0).abs() < 1e-6, "not clamped high: {sfx}");
+        assert!(music.abs() < 1e-6, "not clamped low: {music}");
+    }
+
+    #[test]
+    fn only_music_sounds_use_the_music_bus() {
+        let config = AudioConfig {
+            master_volume: 1.0,
+            sfx_volume: 0.5,
+            music_volume: 1.0,
+            ..Default::default()
+        };
+        // The bug this guards: every sound used to take the sfx bus, so
+        // volume_music could not be heard.
+        assert!((effective_bus(&config, SoundCategory::Music) - 1.0).abs() < 1e-6);
+        for category in [
+            SoundCategory::CreatureSound,
+            SoundCategory::Notification,
+            SoundCategory::Ui,
+        ] {
+            assert!(
+                (effective_bus(&config, category) - 0.5).abs() < 1e-6,
+                "{category:?} wrongly used the music bus"
+            );
+        }
     }
 
     #[test]
