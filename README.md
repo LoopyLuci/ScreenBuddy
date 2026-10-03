@@ -173,6 +173,22 @@ the user's credential.
 ScreenBuddy opens a main window at startup: sessions on the left, the
 conversation on the right, and a message box along the bottom.
 
+### Tray and window
+
+The app keeps a tray icon in the notification area. Left-click it (or choose
+**Open ScreenBuddy**) to bring the window back.
+
+- **Minimise** and **close** both hide the window to the tray rather than
+  quitting. A desktop companion that vanished when its window closed looked like
+  a crash.
+- The tray menu carries Open, Minimise, show/hide creature, open chat, next
+  creature, settings, About, and Quit.
+- **Quit ScreenBuddy** in the tray menu is the way to actually exit; it also
+  removes the icon, so no ghost is left behind.
+
+Minimize-to-tray is only offered when the icon really registered, so the window
+can never be hidden with no way back to it.
+
 - **Enter** sends the message; **Backspace** edits it; **Esc** hides the window.
 - The sidebar lists every session with its message count and an updated title
   derived from the first thing you asked. Click a session to switch to it, or

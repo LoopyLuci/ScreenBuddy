@@ -54,6 +54,11 @@ pub enum UiEvent {
     DeleteSession(String),
     /// Empty the current session.
     ClearSession,
+    /// The minimise button: hide to the tray.
+    Minimise,
+    /// The window was closed; hide it rather than quit, since the tray keeps
+    /// the app running.
+    Closed,
     Quit,
 }
 
@@ -71,6 +76,8 @@ enum UiAction {
     Select(String),
     Delete(String),
     Clear,
+    /// The minimise button: hide to the tray.
+    Minimise,
     Quit,
 }
 
@@ -168,6 +175,10 @@ impl MainWindow {
         self.visible = true;
         if let Some(hwnd) = self.hwnd {
             unsafe {
+                // Restore the taskbar button that hide() removed.
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style & !(WS_EX_TOOLWINDOW as isize));
+                ShowWindow(hwnd, SW_RESTORE);
                 ShowWindow(hwnd, SW_SHOW);
                 SetForegroundWindow(hwnd);
             }
@@ -180,6 +191,10 @@ impl MainWindow {
         if let Some(hwnd) = self.hwnd {
             unsafe {
                 ShowWindow(hwnd, SW_HIDE);
+                // Drop the taskbar button too, so the app rests only in the tray
+                // rather than leaving an orphaned entry the user cannot find.
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | WS_EX_TOOLWINDOW as isize);
             }
         }
     }
@@ -267,6 +282,7 @@ impl MainWindow {
             Some(UiAction::Select(id)) => self.events.push(UiEvent::SelectSession(id)),
             Some(UiAction::Delete(id)) => self.events.push(UiEvent::DeleteSession(id)),
             Some(UiAction::Clear) => self.events.push(UiEvent::ClearSession),
+            Some(UiAction::Minimise) => self.events.push(UiEvent::Minimise),
             Some(UiAction::Quit) => self.events.push(UiEvent::Quit),
             None => {}
         }
@@ -446,10 +462,27 @@ unsafe extern "system" fn main_window_proc(
             }
             0
         }
+        WM_SYSCOMMAND => {
+            let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
+            let command = wparam & 0xFFF0;
+            if command == SC_MINIMIZE && !win.is_null() {
+                // Minimising to the taskbar leaves the app running with a button
+                // the user then has to hunt for. The tray icon is the better
+                // resting place, so use that instead.
+                (*win).hide();
+                (*win).events.push(UiEvent::Minimise);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_CLOSE => {
             let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
             if !win.is_null() {
-                (*win).events.push(UiEvent::Quit);
+                // Hide rather than quit: a desktop companion that disappears
+                // when its window is closed looks like a crash. The tray menu's
+                // Quit is the explicit way out.
+                (*win).hide();
+                (*win).events.push(UiEvent::Closed);
             }
             0
         }
@@ -598,7 +631,13 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
         del_obj(font as *mut _);
     }
 
-    // Quit button, top right.
+    // Minimise and quit, top right. Hiding to the tray has to be reachable from
+    // inside the app, not only from the window's own title bar.
+    let min = Rect::new(WIN_WIDTH - 78, 8, WIN_WIDTH - 44, HEADER_H - 8);
+    win.hits.push(HitTarget {
+        rect: min,
+        action: UiAction::Minimise,
+    });
     let q = Rect::new(WIN_WIDTH - 44, 8, WIN_WIDTH - 8, HEADER_H - 8);
     win.hits.push(HitTarget {
         rect: q,
@@ -610,6 +649,15 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
         set_text_colour(buf, dc, C_MUTED);
+        draw_text(
+            buf,
+            dc,
+            "-",
+            min.left + 12,
+            min.top + 4,
+            min.width(),
+            font_height(14, false),
+        );
         draw_text(
             buf,
             dc,

@@ -310,7 +310,10 @@ fn main() {
     println!("Animation at 30 FPS");
 
     let mut tray = screenbuddy_core::SystemTray::new();
-    tray.start().ok();
+    match tray.start() {
+        Ok(()) => println!("[Tray] icon installed"),
+        Err(e) => println!("[Tray] unavailable: {e}"),
+    }
     let chat = screenbuddy_core::ChatOverlay::new();
     chat.start().ok();
     let screen = screenbuddy_core::ScreenManager::new();
@@ -706,10 +709,36 @@ fn main() {
             }
         }
 
-        // Tray events
-        if let Some(event) = tray.poll_event() {
+        // Tray events. The tray window runs on its own thread and posts through
+        // a process-wide slot, so drain everything it queued rather than taking
+        // one per frame and dropping the rest.
+        let tray_events: Vec<_> = screenbuddy_core::system_tray::take_pending_events()
+            .into_iter()
+            .chain(std::iter::from_fn(|| tray.poll_event()))
+            .collect();
+        let mut should_quit = false;
+        for event in tray_events {
             match event {
-                screenbuddy_core::TrayEvent::Quit => break,
+                screenbuddy_core::TrayEvent::OpenWindow => {
+                    main_ui.show();
+                    tray.set_visible(true);
+                    println!("[Tray] window shown");
+                }
+                screenbuddy_core::TrayEvent::MinimizeToTray => {
+                    // Only hide when there is an icon to restore from, otherwise
+                    // the app would vanish with no way back.
+                    if tray.is_installed() {
+                        main_ui.hide();
+                        tray.set_visible(false);
+                        println!("[Tray] minimised to tray");
+                    } else {
+                        println!("[Tray] no tray icon; keeping the window visible");
+                    }
+                }
+                screenbuddy_core::TrayEvent::Quit => {
+                    tray.shutdown();
+                    should_quit = true;
+                }
                 screenbuddy_core::TrayEvent::NextCreature => {
                     active_idx = (active_idx + 1) % creature_ids.len();
                     if let Some(id) = creature_ids.get(active_idx) {
@@ -744,10 +773,7 @@ fn main() {
                     settings_win.toggle();
                 }
                 screenbuddy_core::TrayEvent::About => {
-                    println!(
-                        "[About] ScreenBuddy v{} - AI Desktop Companion",
-                        env!("CARGO_PKG_VERSION")
-                    );
+                    show_about_dialog();
                 }
             }
         }
@@ -781,6 +807,16 @@ fn main() {
                             eprintln!("[UI] {e}");
                         }
                     }
+                }
+                UiEvent::Minimise => {
+                    // The window's minimise button; the tray icon keeps the app
+                    // reachable, so hiding is the right resting place.
+                    main_ui.hide();
+                    tray.set_visible(false);
+                }
+                UiEvent::Closed => {
+                    main_ui.hide();
+                    tray.set_visible(false);
                 }
                 UiEvent::ClearSession => {
                     if let Ok(mut store) = shared_sessions.lock() {
@@ -863,6 +899,10 @@ fn main() {
                     store.push(session_role, text);
                 }
             }
+        }
+
+        if should_quit {
+            break;
         }
 
         // Publish a status snapshot for `get_status` / query commands.
@@ -1040,6 +1080,40 @@ fn to_anim_state(state: screenbuddy_core::AnimStateCtl) -> AnimState {
         screenbuddy_core::AnimStateCtl::Sleep => AnimState::Sleep,
         screenbuddy_core::AnimStateCtl::Celebrate => AnimState::Celebrate,
     }
+}
+
+/// Show the About box.
+///
+/// A tray menu item that only writes to stdout is invisible to the user, so this
+/// puts the same information in a real dialog.
+fn show_about_dialog() {
+    use std::mem;
+    use std::ptr;
+    use winapi::um::winuser::*;
+
+    unsafe {
+        let message: Vec<u16> = format!(
+            "ScreenBuddy v{}\n\nAI Desktop Companion\n\nA small creature that lives on your\ndesktop and reacts to what you are doing.\n\nSessions, chat and memory are stored locally.\nNo telemetry, no accounts.",
+            env!("CARGO_PKG_VERSION")
+        )
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+
+        MessageBoxW(
+            ptr::null_mut(),
+            message.as_ptr(),
+            wide("About ScreenBuddy ").as_ptr(),
+            MB_OK | MB_ICONINFORMATION,
+        );
+        let _ = mem::size_of::<i32>();
+    }
+}
+
+/// Encode a literal as a NUL-terminated wide string.
+#[cfg(windows)]
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// Where chat sessions are persisted.
