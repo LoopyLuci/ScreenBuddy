@@ -56,7 +56,12 @@ class ScreenBuddyApp : Application() {
      * control, which is what those two switches mean.
      */
     val soundEngine: com.screenbuddy.android.service.SoundEngine by lazy {
-        com.screenbuddy.android.service.SoundEngine(this)
+        com.screenbuddy.android.service.SoundEngine(this).apply {
+            // Loaded up front: the engine existed with nothing to play, so the
+            // volume slider and the sound switches had no effect at all.
+            val loaded = loadBundled()
+            android.util.Log.i("ScreenBuddyApp", "loaded ${loaded.size} sound(s)")
+        }
     }
 
     /** Saved agents, always including the built-in presets. */

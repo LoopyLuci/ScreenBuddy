@@ -222,8 +222,24 @@ object ControlCommands {
         }
 
         ControlBus.register("play_sound") { req ->
-            val name = req.name ?: return@register ControlResponse.error("play_sound requires 'name'")
-            ControlResponse.queued("sound:$name")
+            val name = req.name
+                ?: return@register ControlResponse.error("play_sound requires 'name'")
+            val engine = app?.soundEngine
+                ?: return@register ControlResponse.error("audio is unavailable", 503)
+            val played = engine.play(name)
+            if (played) {
+                ControlResponse.ok(mapOf("played" to name))
+            } else {
+                // Distinguish "no such sound" from "sounds are off", because the
+                // fix is different for each.
+                val known = name in com.screenbuddy.android.service.SoundEngine.BUNDLED
+                ControlResponse.error(
+                    if (known) "'$name' is muted by the sound settings"
+                    else "unknown sound: '$name'; available: " +
+                        com.screenbuddy.android.service.SoundEngine.BUNDLED.keys.joinToString(),
+                    if (known) 403 else 404
+                )
+            }
         }
 
         ControlBus.register("speak") { req ->

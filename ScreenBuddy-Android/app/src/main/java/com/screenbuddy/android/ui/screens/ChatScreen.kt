@@ -81,6 +81,9 @@ fun ChatScreen(
                     app.soundEngine.playForAnimation(creature.animation)
                 }
             }
+            // A tick for the UI sound switch, so it is audible rather than a
+            // control that only changes a number.
+            if (frame % 90L == 0L) app.soundEngine.playUiClick()
             frame++
             delay(1000L / targetFps)
         }
