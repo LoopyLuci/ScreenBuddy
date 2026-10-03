@@ -125,6 +125,15 @@ object ControlBus {
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
     )
 
+    /**
+     * The creature simulation.
+     *
+     * Shared so a control command and the on-screen renderer act on the same
+     * state. Without this, `move_creature` updated a status record that nothing
+     * read, so it reported success while nothing moved.
+     */
+    val creatures = com.screenbuddy.android.data.creature.CreatureEngine()
+
     /** Run [block] off the caller's thread, without blocking the caller. */
     fun launchIo(block: suspend () -> Unit) {
         scope.launch { runCatching { block() } }

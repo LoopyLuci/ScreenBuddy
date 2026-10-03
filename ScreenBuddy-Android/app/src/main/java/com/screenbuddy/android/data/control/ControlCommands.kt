@@ -41,6 +41,11 @@ object ControlCommands {
 
     private val ANIMATION_STATES = setOf("idle", "walk", "fly", "sleep", "celebrate")
 
+    /** A creature id used when the app has none yet, so commands still act. */
+    private const val DEFAULT_ID = "companion-bird-01"
+    private const val DEFAULT_X = 120f
+    private const val DEFAULT_Y = 240f
+
     fun install(context: Context) {
         val app = context.applicationContext as? ScreenBuddyApp
 
@@ -65,19 +70,26 @@ object ControlCommands {
         }
 
         ControlBus.register("list_creature_state") {
-            val s = ControlBus.status.value
-            val creature = s.selectedCreatureId ?: "none"
+            // Read the engine, not the status snapshot: the old version reported
+            // a hardcoded x and y of zero, so no move was ever observable.
+            val engine = ControlBus.creatures
+            val creatures = engine.all()
             ControlResponse.ok(
                 mapOf(
-                    "creatures" to mapOf(
-                        creature to mapOf(
-                            "id" to creature,
-                            "visible" to s.visible,
-                            "state" to s.animationState,
-                            "x" to 0.0,
-                            "y" to 0.0,
+                    "creatures" to creatures.associate { c ->
+                        c.id to mapOf(
+                            "id" to c.id,
+                            "visible" to c.visible,
+                            "state" to c.animation,
+                            "x" to c.x,
+                            "y" to c.y,
+                            "pinned" to c.pinned
                         )
-                    )
+                    },
+                    "count" to engine.count(),
+                    "visible_count" to engine.visibleCount(),
+                    "auto_cycle" to engine.isAutoCycle(),
+                    "elapsed" to engine.elapsed
                 )
             )
         }
@@ -90,10 +102,17 @@ object ControlCommands {
                     "state must be one of ${ANIMATION_STATES.sorted()}, got '$state'"
                 )
             }
-            // An externally requested state must not be overwritten by the
-            // rotation timer, so holding one implies pausing auto-cycle.
+            // Applied to the engine so the creature visibly changes, and held
+            // so the next physics step does not immediately overwrite it.
+            val engine = ControlBus.creatures
+            // Operate on the selected creature, or the first one present, adding
+            // one if the app has none yet.
+            val id = ControlBus.status.value.selectedCreatureId
+                ?: engine.all().firstOrNull()?.id
+                ?: engine.add(DEFAULT_ID, DEFAULT_X, DEFAULT_Y).id
+            engine.setAnimation(id, state)
             ControlBus.updateStatus { it.copy(animationState = state, autoCycle = false) }
-            ControlResponse.queued("animation")
+            ControlResponse.ok(mapOf("animation" to state))
         }
 
         ControlBus.register("move_creature") { req ->
@@ -102,34 +121,45 @@ object ControlCommands {
             if (req.x == null || req.y == null) {
                 return@register ControlResponse.error("move_creature requires 'x' and 'y'")
             }
-            val current = ControlBus.status.value.selectedCreatureId
-            if (current != null && current != id) {
-                return@register ControlResponse.error("unknown creature: $id", 404)
-            }
-            ControlResponse.queued("move")
+            val engine = ControlBus.creatures
+            val known = engine.get(id) ?: engine.add(id, req.x, req.y)
+            // moveTo pins the creature, so physics will not drift it away from
+            // where the agent put it.
+            engine.moveTo(id, req.x, req.y)
+            ControlResponse.ok(
+                mapOf("id" to id, "x" to engine.get(known.id)?.x, "y" to engine.get(known.id)?.y)
+            )
         }
 
         ControlBus.register("set_creature_visible") { req ->
             val visible = req.visible
                 ?: return@register ControlResponse.error("set_creature_visible requires 'visible'")
+            // Applied to the engine so the creature actually appears or vanishes.
+            ControlBus.creatures.all().forEach { ControlBus.creatures.setVisible(it.id, visible) }
             ControlBus.updateStatus { it.copy(visible = visible) }
-            ControlResponse.queued("visibility")
+            ControlResponse.ok(mapOf("visible" to visible))
         }
 
         ControlBus.register("set_auto_cycle") { req ->
             val enabled = req.enabled
                 ?: return@register ControlResponse.error("set_auto_cycle requires 'enabled'")
+            ControlBus.creatures.setAutoCycle(enabled)
             ControlBus.updateStatus { it.copy(autoCycle = enabled) }
-            ControlResponse.queued("auto_cycle")
+            ControlResponse.ok(mapOf("auto_cycle" to enabled))
         }
 
         ControlBus.register("select_creature") { req ->
             val id = req.id
                 ?: return@register ControlResponse.error("select_creature requires 'id'")
+            val engine = ControlBus.creatures
+            if (engine.get(id) == null) {
+                engine.add(id, DEFAULT_X, DEFAULT_Y)
+            }
+            engine.setAnimation(id, com.screenbuddy.android.data.creature.CreatureEngine.ANIMATION_IDLE)
             ControlBus.updateStatus {
                 it.copy(selectedCreatureId = id, animationState = "idle")
             }
-            ControlResponse.queued("selection")
+            ControlResponse.ok(mapOf("selected" to id))
         }
 
         ControlBus.register("send_chat") { req ->

@@ -150,16 +150,14 @@ private fun SettingsContent(
                     "Display your companions",
                     Icons.Filled.Pets,
                     uiState.showCreatures,
-                    viewModel::setShowCreatures,
-                    unavailableReason = "Not wired up: creatures have no persistent presence"
+                    viewModel::setShowCreatures
                 )
                 SettingsToggle(
                     "Animations",
                     "Animate your companions",
                     Icons.Filled.Animation,
                     uiState.animationsEnabled,
-                    viewModel::setAnimations,
-                    unavailableReason = "Not wired up: no animation system in the UI"
+                    viewModel::setAnimations
                 )
                 SettingsToggle(
                     "Creature sounds",
@@ -175,8 +173,7 @@ private fun SettingsContent(
                     "Animation speed",
                     uiState.animationSpeed,
                     0.25f..3f,
-                    viewModel::setAnimationSpeed,
-                    unavailableReason = "Not wired up: there is nothing to scale yet"
+                    viewModel::setAnimationSpeed
                 )
             }
         }

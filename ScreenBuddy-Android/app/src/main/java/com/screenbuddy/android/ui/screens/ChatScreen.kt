@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -53,6 +54,28 @@ fun ChatScreen(
 
     val app = remember { context.applicationContext as ScreenBuddyApp }
     val tts = remember { app.ttsEngine }
+    val engine = remember { com.screenbuddy.android.data.control.ControlBus.creatures }
+    val settings by app.settingsRepository.settings.collectAsState(initial = null)
+
+    // Seed one creature so there is something to see, and step the simulation so
+    // it moves. Both read the settings the audit found had no consumer.
+    // A monotonically increasing frame counter, so the overlay re-reads the
+    // engine every frame. Deriving the tick from engine values instead meant it
+    // never changed, and an externally set animation never appeared.
+    var frame by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(Unit) {
+        if (engine.count() == 0) {
+            engine.add("companion-bird-01", 120f, 260f)
+        }
+        val targetFps = 30
+        while (true) {
+            val speed = settings?.animationSpeed ?: 1f
+            val enabled = settings?.animationsEnabled ?: true
+            engine.step(if (enabled) 1f / targetFps * speed.coerceIn(0.25f, 4f) else 0f)
+            frame++
+            delay(1000L / targetFps)
+        }
+    }
 
     // Restore the persisted model selection once models are known.
     LaunchedEffect(enabledModels, selectedModelId) {
@@ -131,6 +154,16 @@ fun ChatScreen(
             if (uiState.error != null) {
                 ErrorCard(uiState.error!!, viewModel::dismissError)
             }
+
+            // The creature lives above the conversation: this is what
+            // move_creature, set_animation and set_creature_visible now change.
+            com.screenbuddy.android.ui.overlay.CreatureOverlay(
+                engine = engine,
+                tick = frame,
+                showCreatures = settings?.showCreatures ?: true,
+                animationsEnabled = settings?.animationsEnabled ?: true,
+                animationSpeed = settings?.animationSpeed ?: 1f
+            )
 
             LazyColumn(
                 state = listState,
