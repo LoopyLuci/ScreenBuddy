@@ -95,13 +95,13 @@ def main() -> int:
     )
     check(
         "set and read setting",
-        ["--es", "cmd", "set_setting", "--es", "key", "volume", "--es", "value", "0.42"],
+        ["--es", "cmd", "set_setting", "--es", "key", "master_volume", "--es", "value", "0.42"],
         0,
         "queued",
     )
     check(
         "read setting back",
-        ["--es", "cmd", "get_setting", "--es", "key", "volume"],
+        ["--es", "cmd", "get_setting", "--es", "key", "master_volume"],
         0,
         "0.42",
     )

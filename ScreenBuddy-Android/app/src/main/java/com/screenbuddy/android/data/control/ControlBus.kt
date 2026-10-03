@@ -1,5 +1,7 @@
 package com.screenbuddy.android.data.control
 
+import kotlinx.coroutines.launch
+
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -111,6 +113,22 @@ object ControlBus {
 
     /** Convenience for callers that only want to fire and forget. */
     fun submit(request: ControlRequest): ControlResponse = dispatch(request)
+
+    /**
+     * Scope for handlers that must do real work.
+     *
+     * Command handlers are synchronous and return before the work is done, so
+     * anything with a side effect - sending a chat, playing a sound - needs
+     * somewhere to run. SupervisorJob keeps one failure from cancelling the rest.
+     */
+    val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+
+    /** Run [block] off the caller's thread, without blocking the caller. */
+    fun launchIo(block: suspend () -> Unit) {
+        scope.launch { runCatching { block() } }
+    }
 
     fun updateStatus(transform: (ControlStatus) -> ControlStatus) {
         _status.value = transform(_status.value)

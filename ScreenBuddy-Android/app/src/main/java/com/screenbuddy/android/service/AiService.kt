@@ -85,10 +85,35 @@ enum class ProviderRoute(
 }
 
 class AiService(
-    private val ollamaBaseUrl: String = "http://10.0.2.2:11434",
+    initialBaseUrl: String = "http://10.0.2.2:11434",
     /** Per-provider base URL overrides, used for self-hosted endpoints. */
-    private val baseUrlOverrides: Map<String, String> = emptyMap()
+    initialBaseUrlOverrides: Map<String, String> = emptyMap(),
+    initialGeneration: GenerationSettings = GenerationSettings()
 ) {
+    /**
+     * The endpoint for the local provider.
+     *
+     * Mutable and updated from settings: this was a constructor `val`, so the
+     * app's singleton was built as AiService() and the configured endpoint was
+     * never used for a request.
+     */
+    @Volatile
+    var ollamaBaseUrl: String = initialBaseUrl
+        private set
+
+    /** Per-provider overrides, refreshed when settings change. */
+    @Volatile
+    var baseUrlOverrides: Map<String, String> = initialBaseUrlOverrides
+        private set
+
+    /** Apply the configured endpoints, called when settings change. */
+    fun updateEndpoints(base: String, overrides: Map<String, String>) {
+        ollamaBaseUrl = base
+        baseUrlOverrides = overrides
+    }
+
+    /** The endpoint currently in force, for reporting in the UI. */
+    fun currentBaseUrl(): String = ollamaBaseUrl
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -96,6 +121,39 @@ class AiService(
         .build()
 
     private val gson = Gson()
+
+    /** The parameters currently in force; see [update]. */
+    private var generation: GenerationSettings = initialGeneration.sanitized()
+
+    /**
+     * The generation parameters sent with every request.
+     *
+     * A var rather than a constructor value because the service outlives any
+     * single settings emission, and [update] is how a change reaches it.
+     *
+     * Mutable by design: [update] is called when settings change, and a service
+     * instance is reused for the life of the screen. Values are validated here
+     * as well as in the repository, because a bad value must not reach an API.
+     */
+    data class GenerationSettings(
+        val temperature: Float = 0.7f,
+        val maxTokens: Int = 512,
+        val stream: Boolean = false
+    ) {
+        @Suppress("unused")
+        fun sanitized() = copy(
+            temperature = temperature.coerceIn(0.0f, 2.0f),
+            maxTokens = maxTokens.coerceIn(16, 32768)
+        )
+    }
+
+    /** Apply new settings to subsequent requests. */
+    fun update(settings: GenerationSettings) {
+        generation = settings.sanitized()
+    }
+
+    /** The parameters currently in force, for reporting in the UI. */
+    fun currentGeneration(): GenerationSettings = generation
 
     suspend fun sendMessage(
         messages: List<ChatMessage>,
@@ -108,9 +166,10 @@ class AiService(
                 IllegalArgumentException("Unknown provider '${model.providerId}'.")
             )
 
-        val baseUrl = baseUrlOverrides[route.providerId]
-            ?: route.baseUrl.takeIf { it.isNotEmpty() }
-            ?: ollamaBaseUrl
+        // A configured address must beat the built-in default. The reverse
+        // order meant a local provider always used the emulator loopback and the
+        // endpoint setting could never take effect.
+        val baseUrl = resolveBaseUrl(route)
 
         if (route.requiresKey && apiKey.isNullOrBlank()) {
             return@withContext Result.failure(
@@ -151,9 +210,10 @@ class AiService(
             ?: return@withContext Result.failure(
                 IllegalArgumentException("Unknown provider '${model.providerId}'.")
             )
-        val baseUrl = baseUrlOverrides[route.providerId]
-            ?: route.baseUrl.takeIf { it.isNotEmpty() }
-            ?: ollamaBaseUrl
+        // A configured address must beat the built-in default. The reverse
+        // order meant a local provider always used the emulator loopback and the
+        // endpoint setting could never take effect.
+        val baseUrl = resolveBaseUrl(route)
 
         if (route.requiresKey && apiKey.isNullOrBlank()) {
             return@withContext Result.failure(
@@ -193,9 +253,10 @@ class AiService(
         val json = JsonObject()
         json.addProperty("model", model.name)
         json.add("messages", buildMessagesJson(messages, systemPrompt))
-        json.addProperty("stream", false)
+        json.addProperty("stream", generation.stream)
+        json.addProperty("temperature", generation.temperature)
         if (model.maxTokens > 0) {
-            json.addProperty("max_tokens", model.maxTokens)
+            json.addProperty("max_tokens", minOf(model.maxTokens, generation.maxTokens))
         }
         if (toolSchemas.size() > 0) {
             json.add("tools", toolSchemas)
@@ -234,8 +295,25 @@ class AiService(
     }
 
     /** The endpoint [providerId] would be called on, for display in the UI. */
+    /**
+     * Resolve the endpoint for a provider.
+     *
+     * Single source of truth: this used to repeat the precedence with a
+     * different order, so the Providers screen could display an endpoint the app
+     * would never actually call.
+     */
     fun endpointFor(providerId: String): String? = ProviderRoute.resolve(providerId)?.let {
-        baseUrlOverrides[it.providerId]?.takeIf(String::isNotEmpty) ?: it.baseUrl
+        resolveBaseUrl(it)
+    }
+
+    private fun resolveBaseUrl(route: ProviderRoute): String {
+        val resolved = baseUrlOverrides[route.providerId]?.takeIf(String::isNotEmpty)
+            ?: ollamaBaseUrl.takeIf { route.providerId == "ollama" && it.isNotEmpty() }
+            ?: route.baseUrl
+        require(resolved.isNotEmpty()) {
+            "no endpoint is configured for ${route.providerId}"
+        }
+        return resolved
     }
 
     /** True when [providerId] needs a credential before it can be used. */
@@ -333,7 +411,16 @@ class AiService(
         val json = JsonObject()
         json.addProperty("model", model.name)
         json.add("messages", buildMessagesJson(messages, systemPrompt))
-        json.addProperty("stream", false)
+        json.addProperty("stream", generation.stream)
+        json.addProperty("temperature", generation.temperature)
+
+        // Ollama does not read a top-level max_tokens. The cap goes in
+        // options.num_predict, so sending max_tokens here did nothing.
+        val cap = minOf(model.maxTokens, generation.maxTokens)
+        json.add(
+            "options",
+            JsonObject().apply { addProperty("num_predict", cap) }
+        )
 
         val request = Request.Builder()
             .url("${baseUrl.trimEnd('/')}/api/chat")
@@ -367,9 +454,10 @@ class AiService(
         val json = JsonObject()
         json.addProperty("model", model.name)
         json.add("messages", buildMessagesJson(messages, systemPrompt))
-        json.addProperty("stream", false)
+        json.addProperty("stream", generation.stream)
+        json.addProperty("temperature", generation.temperature)
         if (model.maxTokens > 0) {
-            json.addProperty("max_tokens", model.maxTokens)
+            json.addProperty("max_tokens", minOf(model.maxTokens, generation.maxTokens))
         }
 
         val builder = Request.Builder()
@@ -419,7 +507,7 @@ class AiService(
     ): ChatMessage {
         val json = JsonObject()
         json.addProperty("model", model.name)
-        json.addProperty("max_tokens", model.maxTokens.coerceAtMost(4096))
+        json.addProperty("max_tokens", minOf(model.maxTokens.coerceAtMost(4096), generation.maxTokens))
         systemPrompt?.let { json.addProperty("system", it) }
 
         val userMessages = JsonArray()

@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore("settings")
@@ -89,6 +90,88 @@ class SettingsRepository(context: Context) {
 
     suspend fun setSelectedModel(modelId: String) = put(KEY_SELECTED_MODEL, modelId)
     suspend fun setOllamaBaseUrl(url: String) = put(KEY_OLLAMA_URL, url)
+
+    /**
+     * Set one setting by its wire name, as the control surface uses.
+     *
+     * The control command previously wrote to an in-memory map only, so a change
+     * made by an agent read back correctly and then vanished on restart, and
+     * never reached the AI service. Routing through [update] keeps one write
+     * path with one set of validation rules.
+     *
+     * Returns false for an unknown key or an unusable value rather than
+     * silently succeeding.
+     */
+    suspend fun setByKey(key: String, rawValue: String): Boolean {
+        fun asBoolean(): Boolean? = when (rawValue.trim().lowercase()) {
+            "true", "1", "yes", "on" -> true
+            "false", "0", "no", "off" -> false
+            else -> null
+        }
+        fun asFloat(): Float? = rawValue.trim().toFloatOrNull()
+
+        val chosen: ((AppSettings) -> AppSettings)? = when (key) {
+            "dark_mode" -> asBoolean()?.let { v -> { s: AppSettings -> s.copy(darkMode = v) } }
+            "notifications_enabled" ->
+                asBoolean()?.let { v -> { s: AppSettings -> s.copy(notificationsEnabled = v) } }
+            "sound_effects_enabled" ->
+                asBoolean()?.let { v -> { s: AppSettings -> s.copy(soundEffectsEnabled = v) } }
+            "auto_start" -> asBoolean()?.let { v -> { s: AppSettings -> s.copy(autoStart = v) } }
+            "stream_responses" ->
+                asBoolean()?.let { v -> { s: AppSettings -> s.copy(streamResponses = v) } }
+            "show_creatures" -> asBoolean()?.let { v -> { s: AppSettings -> s.copy(showCreatures = v) } }
+            "animations_enabled" ->
+                asBoolean()?.let { v -> { s: AppSettings -> s.copy(animationsEnabled = v) } }
+            "creature_sounds_enabled" ->
+                asBoolean()?.let { v -> { s: AppSettings -> s.copy(creatureSoundsEnabled = v) } }
+            "tts_enabled" -> asBoolean()?.let { v -> { s: AppSettings -> s.copy(ttsEnabled = v) } }
+            "master_volume" ->
+                asFloat()?.let { v -> { s: AppSettings -> s.copy(masterVolume = v.coerceIn(0f, 1f)) } }
+            "effects_volume" ->
+                asFloat()?.let { v -> { s: AppSettings -> s.copy(effectsVolume = v.coerceIn(0f, 1f)) } }
+            "tts_volume" ->
+                asFloat()?.let { v -> { s: AppSettings -> s.copy(ttsVolume = v.coerceIn(0f, 1f)) } }
+            "animation_speed" ->
+                asFloat()?.let { v -> { s: AppSettings -> s.copy(animationSpeed = v.coerceIn(0.1f, 4f)) } }
+            "temperature" ->
+                asFloat()?.let { v -> { s: AppSettings -> s.copy(temperature = v.coerceIn(0f, 2f)) } }
+            "response_length" -> asFloat()?.let { v ->
+                { s: AppSettings -> s.copy(responseLength = v.toInt().coerceIn(16, 32768)) }
+            }
+            "selected_model_id" -> { s: AppSettings -> s.copy(selectedModelId = rawValue.trim()) }
+            "ollama_base_url" -> { s: AppSettings -> s.copy(ollamaBaseUrl = rawValue.trim()) }
+            else -> null
+        }
+        val transform = chosen ?: return false
+
+        update(transform)
+        return true
+    }
+
+    /** The current value of a setting by its wire name, for reads over IPC. */
+    suspend fun valueOf(key: String): String? {
+        val current = settings.first()
+        return when (key) {
+            "dark_mode" -> current.darkMode.toString()
+            "notifications_enabled" -> current.notificationsEnabled.toString()
+            "sound_effects_enabled" -> current.soundEffectsEnabled.toString()
+            "auto_start" -> current.autoStart.toString()
+            "stream_responses" -> current.streamResponses.toString()
+            "show_creatures" -> current.showCreatures.toString()
+            "animations_enabled" -> current.animationsEnabled.toString()
+            "creature_sounds_enabled" -> current.creatureSoundsEnabled.toString()
+            "tts_enabled" -> current.ttsEnabled.toString()
+            "master_volume" -> current.masterVolume.toString()
+            "effects_volume" -> current.effectsVolume.toString()
+            "tts_volume" -> current.ttsVolume.toString()
+            "animation_speed" -> current.animationSpeed.toString()
+            "temperature" -> current.temperature.toString()
+            "response_length" -> current.responseLength.toString()
+            "selected_model_id" -> current.selectedModelId
+            "ollama_base_url" -> current.ollamaBaseUrl
+            else -> null
+        }
+    }
 
     /** Apply a batch of changes in one transaction. */
     suspend fun update(transform: (AppSettings) -> AppSettings) {

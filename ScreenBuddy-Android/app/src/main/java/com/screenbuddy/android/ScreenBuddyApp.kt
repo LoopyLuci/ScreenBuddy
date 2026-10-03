@@ -1,6 +1,10 @@
 package com.screenbuddy.android
 
 import android.app.Application
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import com.screenbuddy.android.data.local.AppDatabase
 import com.screenbuddy.android.data.rag.RagPipeline
 import com.screenbuddy.android.data.repository.SettingsRepository
@@ -15,6 +19,9 @@ import com.screenbuddy.android.service.TtsEngine
  * touches the platform TTS service, which must not be created during `attachBaseContext`.
  */
 class ScreenBuddyApp : Application() {
+
+    /** Outlives any one screen: settings must reach the AI service whenever they change. */
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val database: AppDatabase by lazy { AppDatabase.getDatabase(this) }
 
@@ -43,8 +50,50 @@ class ScreenBuddyApp : Application() {
         com.screenbuddy.android.data.control.ControlCommands.also { it.install(this) }
     }
 
+    /**
+     * Push current settings into the shared AI service.
+     *
+     * Called from a coroutine scope so a settings change reaches every request
+     * path at once. Without this the temperature and response-length controls
+     * only ever reached storage.
+     */
+    fun syncAiSettings(settings: com.screenbuddy.android.data.repository.AppSettings) {
+        aiService.update(
+            AiService.GenerationSettings(
+                temperature = settings.temperature,
+                maxTokens = settings.responseLength,
+                stream = settings.streamResponses
+            )
+        )
+        // The endpoint too: it was a constructor value, so the configured
+        // address never reached a request even though the UI saved it.
+        aiService.updateEndpoints(settings.ollamaBaseUrl, emptyMap())
+        android.util.Log.i(
+            "ScreenBuddyApp",
+            "settings applied: base=${settings.ollamaBaseUrl} " +
+                "temp=${settings.temperature} max=${settings.responseLength}"
+        )
+        // Master and TTS are separate sliders, so the level spoken is their
+        // product. Previously both did nothing: TTS never set a volume.
+        // Inside its own failure boundary: TtsEngine construction touches the
+        // platform speech service, and an exception here would abort the
+        // collector and leave every AI setting unapplied.
+        runCatching {
+            ttsEngine.setAudioSettings(
+                enabled = settings.ttsEnabled,
+                volume = (settings.masterVolume * settings.ttsVolume).coerceIn(0.0f, 1.0f)
+            )
+        }.onFailure { android.util.Log.w("ScreenBuddyApp", "TTS unavailable: ${it.message}") }
+    }
+
     override fun onCreate() {
         super.onCreate()
+
+        // Apply the stored settings once at startup, so the first request after
+        // launch already uses them rather than the defaults.
+        applicationScope.launch {
+            settingsRepository.settings.collect { syncAiSettings(it) }
+        }
         // Force the control handlers to register now. A broadcast can start the
         // process without the UI, and an unregistered handler would make every
         // command look accepted while doing nothing.

@@ -2,6 +2,7 @@ package com.screenbuddy.android.data.control
 
 import android.content.Context
 import com.screenbuddy.android.ScreenBuddyApp
+import java.util.UUID
 
 /**
  * Registers the control command handlers.
@@ -132,6 +133,52 @@ object ControlCommands {
                 return@register ControlResponse.error("message must not be blank")
             }
             ControlBus.updateStatus { it.copy(chatHistory = it.chatHistory + "user: $message") }
+
+            // The reply used to stop here: the message was recorded and reported
+            // as queued, but nothing called the AI service, so an agent's message
+            // never produced a reply. Send it for real, and report the outcome
+            // rather than claiming success.
+            val service = app?.aiService
+            if (service == null) {
+                return@register ControlResponse.error("the AI service is unavailable")
+            }
+            // The catalogue is the source of truth for what can be sent; the
+            // status snapshot does not carry a selected model.
+            val model = com.screenbuddy.android.data.model.ProviderData.providers
+                .flatMap { it.models }
+                .firstOrNull { it.name == req.name || it.id == req.name }
+                ?: return@register ControlResponse.error(
+                    "no such model: ${req.name ?: "(none given)"}; " +
+                        "pass one via 'name'"
+                )
+
+            android.util.Log.i(
+                "ScreenBuddyControl",
+                "send_chat model=${model.id} provider=${model.providerId} " +
+                    "base=${service.currentBaseUrl()}"
+            )
+            ControlBus.launchIo {
+                val request = com.screenbuddy.android.data.model.ChatMessage(
+                    id = UUID.randomUUID().toString(),
+                    role = "user",
+                    content = message,
+                    timestamp = System.currentTimeMillis()
+                )
+                service.sendMessage(listOf(request), model, null)
+                    .onSuccess { reply ->
+                        ControlBus.updateStatus {
+                            it.copy(chatHistory = it.chatHistory + "assistant: ${reply.content}")
+                        }
+                    }
+                    .onFailure { error ->
+                        android.util.Log.e("ScreenBuddyControl", "send_chat failed", error)
+                        // Recording the reason matters: an agent that gets
+                        // "queued" and no reply can otherwise only guess.
+                        ControlBus.updateStatus {
+                            it.copy(chatHistory = it.chatHistory + "error: ${error.message}")
+                        }
+                    }
+            }
             ControlResponse.queued("chat")
         }
 
@@ -161,12 +208,19 @@ object ControlCommands {
         }
 
         ControlBus.register("get_setting") { req ->
-            val settings = ControlBus.status.value.settings
             val key = req.key
+            val settings = ControlBus.status.value.settings
             if (key.isNullOrBlank()) {
                 ControlResponse.ok(mapOf("settings" to settings))
             } else {
-                val value = settings[key]
+                // Prefer the persisted value; the snapshot only has what was set
+                // through this surface, so it cannot answer for the rest.
+                val stored = app?.let { service ->
+                    runCatching {
+                        kotlinx.coroutines.runBlocking { service.settingsRepository.valueOf(key) }
+                    }.getOrNull()
+                }
+                val value = stored ?: settings[key]
                     ?: return@register ControlResponse.error("unknown setting: $key", 404)
                 ControlResponse.ok(mapOf("key" to key, "value" to value))
             }
@@ -177,7 +231,23 @@ object ControlCommands {
                 ?: return@register ControlResponse.error("set_setting requires 'key'")
             val value = req.value
                 ?: return@register ControlResponse.error("set_setting requires 'value'")
-            ControlBus.updateStatus { it.copy(settings = it.settings + (key to value)) }
+            val repo = app?.settingsRepository
+                ?: return@register ControlResponse.error("settings are unavailable", 503)
+
+            // The write goes to DataStore, not to the status snapshot: the old
+            // path reported success, read back the new value, and lost it on
+            // restart without ever reaching the AI service.
+            ControlBus.launchIo {
+                val applied = runCatching { repo.setByKey(key, value) }.getOrDefault(false)
+                if (applied) {
+                    ControlBus.updateStatus { it.copy(settings = it.settings + (key to value)) }
+                } else {
+                    android.util.Log.w(
+                        "ScreenBuddyControl",
+                        "set_setting rejected: $key=$value"
+                    )
+                }
+            }
             ControlResponse.queued("setting:$key")
         }
 

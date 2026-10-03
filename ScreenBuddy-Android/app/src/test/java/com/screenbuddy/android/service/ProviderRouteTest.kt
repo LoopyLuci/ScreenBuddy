@@ -108,8 +108,16 @@ class ProviderRouteTest {
     }
 
     @Test
+    fun `the configured local endpoint beats the built-in host`() {
+        // This ordering was the bug: a local provider resolved its built-in
+        // loopback first, so the endpoint setting could never take effect.
+        val service = AiService(initialBaseUrl = "http://192.168.1.9:11434")
+        assertEquals("http://192.168.1.9:11434", service.endpointFor("ollama"))
+    }
+
+    @Test
     fun `base url override wins over the built-in host`() {
-        val service = AiService(baseUrlOverrides = mapOf("llamacpp" to "http://192.168.1.5:8080"))
+        val service = AiService(initialBaseUrlOverrides = mapOf("llamacpp" to "http://192.168.1.5:8080"))
         assertEquals("http://192.168.1.5:8080", service.endpointFor("llamacpp"))
     }
 
