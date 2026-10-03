@@ -1,6 +1,7 @@
 package com.screenbuddy.android.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -67,21 +68,24 @@ private fun SettingsContent(
                     "Show notifications",
                     Icons.Filled.Notifications,
                     uiState.notificationsEnabled,
-                    viewModel::setNotifications
+                    viewModel::setNotifications,
+                    unavailableReason = "Not wired up: no notification channel exists"
                 )
                 SettingsToggle(
                     "Sound effects",
                     "Play UI sounds",
                     Icons.Filled.VolumeUp,
                     uiState.soundEffectsEnabled,
-                    viewModel::setSoundEffects
+                    viewModel::setSoundEffects,
+                    unavailableReason = "Not wired up: no UI sounds are played"
                 )
                 SettingsToggle(
                     "Auto-start",
                     "Launch ScreenBuddy on boot",
                     Icons.Filled.Power,
                     uiState.autoStart,
-                    viewModel::setAutoStart
+                    viewModel::setAutoStart,
+                    unavailableReason = "Not wired up: no boot receiver is registered"
                 )
             }
         }
@@ -146,27 +150,33 @@ private fun SettingsContent(
                     "Display your companions",
                     Icons.Filled.Pets,
                     uiState.showCreatures,
-                    viewModel::setShowCreatures
+                    viewModel::setShowCreatures,
+                    unavailableReason = "Not wired up: creatures have no persistent presence"
                 )
                 SettingsToggle(
                     "Animations",
-                    "Enable creature animations",
+                    "Animate your companions",
                     Icons.Filled.Animation,
                     uiState.animationsEnabled,
-                    viewModel::setAnimations
+                    viewModel::setAnimations,
+                    unavailableReason = "Not wired up: no animation system in the UI"
                 )
                 SettingsToggle(
                     "Creature sounds",
                     "Play creature sound effects",
                     Icons.Filled.MusicNote,
                     uiState.creatureSoundsEnabled,
-                    viewModel::setCreatureSounds
+                    viewModel::setCreatureSounds,
+                    unavailableReason = "Not wired up: there is no sound engine yet"
                 )
+                // animation_speed: the Compose UI has no animation system, so
+                // there is nothing to scale. Left visible and labelled.
                 SettingsSlider(
                     "Animation speed",
                     uiState.animationSpeed,
                     0.25f..3f,
-                    viewModel::setAnimationSpeed
+                    viewModel::setAnimationSpeed,
+                    unavailableReason = "Not wired up: there is nothing to scale yet"
                 )
             }
         }
@@ -174,7 +184,13 @@ private fun SettingsContent(
         item {
             SettingsSection("Audio") {
                 SettingsSlider("Master volume", uiState.masterVolume, 0f..1f, viewModel::setMasterVolume)
-                SettingsSlider("Effects volume", uiState.effectsVolume, 0f..1f, viewModel::setEffectsVolume)
+                SettingsSlider(
+                    "Effects volume",
+                    uiState.effectsVolume,
+                    0f..1f,
+                    viewModel::setEffectsVolume,
+                    unavailableReason = "Not wired up: TTS is the only audio output"
+                )
                 SettingsSlider("TTS volume", uiState.ttsVolume, 0f..1f, viewModel::setTtsVolume)
                 SettingsToggle(
                     "Text-to-speech",
@@ -362,23 +378,51 @@ fun SettingsToggle(
     description: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     state: Boolean,
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    /**
+     * Why this control does nothing yet, or null when it works.
+     *
+     * Nine switches on this screen stored a value nothing read. A control that
+     * looks live and silently does nothing is the worst outcome, so they are
+     * disabled and say so. See tools/android_surface_audit.py, which is what
+     * found them.
+     */
+    unavailableReason: String? = null
 ) {
+    val enabled = unavailableReason == null
     Row(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .then(
+                if (enabled) Modifier
+                else Modifier.alpha(0.5f)
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (enabled) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(
-                description,
+                // When unavailable the reason replaces the description, so the
+                // user is never left guessing.
+                unavailableReason ?: description,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.error
             )
         }
-        Switch(checked = state, onCheckedChange = onToggle)
+        Switch(
+            checked = state,
+            onCheckedChange = onToggle,
+            enabled = enabled
+        )
     }
 }
 
@@ -387,9 +431,17 @@ fun SettingsSlider(
     title: String,
     value: Float,
     valueRange: ClosedFloatingPointRange<Float>,
-    onValueChange: (Float) -> Unit
+    onValueChange: (Float) -> Unit,
+    /** Why this control does nothing yet, or null when it works. */
+    unavailableReason: String? = null
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+    val enabled = unavailableReason == null
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .then(if (enabled) Modifier else Modifier.alpha(0.5f))
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
             Text(
@@ -398,10 +450,18 @@ fun SettingsSlider(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+        if (unavailableReason != null) {
+            Text(
+                unavailableReason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
         Slider(
             value = value.coerceIn(valueRange),
             onValueChange = onValueChange,
-            valueRange = valueRange
+            valueRange = valueRange,
+            enabled = enabled
         )
     }
 }
