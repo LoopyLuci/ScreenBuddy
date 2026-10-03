@@ -38,9 +38,34 @@ private fun rememberSettingsViewModel(versionName: String): SettingsViewModel {
 fun SettingsScreen(versionName: String) {
     val viewModel = rememberSettingsViewModel(versionName)
     val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val notifier = remember(context) {
+        com.screenbuddy.android.service.Notifier(context)
+    }
+
+    // Android 13+ needs a runtime permission. Without this the notifier failed
+    // silently and the switch looked enabled while nothing was ever posted.
+    var permissionGranted by remember { mutableStateOf(notifier.areNotificationsEnabled()) }
+    RequestNotificationPermissionIfNeeded(
+        enabled = uiState.notificationsEnabled,
+        onResult = { granted ->
+            permissionGranted = granted
+            // If the user declines, turn the setting off rather than leaving it
+            // claiming to be on. A toggle that lies is the defect this whole
+            // project has been removing.
+            if (!granted) {
+                viewModel.setNotifications(false)
+            }
+        }
+    )
 
     Scaffold(topBar = { TopAppBar(title = { Text("Settings") }) }) { padding ->
-        SettingsContent(uiState, Modifier.padding(padding), viewModel)
+        SettingsContent(
+            uiState = uiState,
+            modifier = Modifier.padding(padding),
+            viewModel = viewModel,
+            notificationsBlocked = uiState.notificationsEnabled && !permissionGranted
+        )
     }
 }
 
@@ -48,7 +73,13 @@ fun SettingsScreen(versionName: String) {
 private fun SettingsContent(
     uiState: SettingsUiState,
     modifier: Modifier = Modifier,
-    viewModel: SettingsViewModel
+    viewModel: SettingsViewModel,
+    /**
+     * The user has notifications on in the app but Android is blocking them.
+     * Shown rather than swallowed, because the alternative is a switch that
+     * reads as working and never posts.
+     */
+    notificationsBlocked: Boolean = false
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -63,6 +94,15 @@ private fun SettingsContent(
                     uiState.darkMode,
                     viewModel::setDarkMode
                 )
+                if (notificationsBlocked) {
+                    Text(
+                        "Notifications are blocked for ScreenBuddy in Android settings, so nothing " +
+                            "can be posted. Turn the app's notifications back on in Android settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
                 SettingsToggle(
                     "Notifications",
                     "Show notifications",
