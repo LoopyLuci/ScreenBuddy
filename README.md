@@ -173,6 +173,43 @@ the user's credential.
 ScreenBuddy opens a main window at startup: sessions on the left, the
 conversation on the right, and a message box along the bottom.
 
+## Platform support
+
+Being explicit about what works where, because the boundary is real:
+
+| Component | Windows | Linux | macOS | Android |
+| --- | --- | --- | --- | --- |
+| Desktop GUI, tray, Direct2D renderer | Yes | No | No | n/a |
+| `screenbuddy-core` (AI, RAG, IPC, sessions, hardware) | Yes | Yes | Yes | n/a |
+| Android app | n/a | n/a | n/a | Yes |
+
+**The desktop app is Windows-only.** It is Win32/Direct2D throughout and there is
+no working implementation for other operating systems. `crates/screenbuddy-core/src/platform/`
+contains a `Platform` trait and per-OS stubs, but those are **not implemented** --
+they return null handles and do nothing. `create_window` now returns an error
+rather than a handle that cannot be used, and `platform::windows_available()`
+reports the truth, so nothing mistakes a stub for a window. Real cross-platform
+support would mean adopting winit or wgpu surfaces; that has not been done.
+
+The portable core crate is checked on Linux and macOS in CI, which is what
+catches a `cfg(windows)` leak or an unguarded x86-only intrinsic.
+
+### Hardware detection
+
+`hardware_profile()` reports the real machine: CPU with architecture and AVX2 /
+AVX512 / NEON support, GPUs via wgpu, memory, NUMA node count and OS details.
+Two deliberate honesty rules apply:
+
+- **Unmeasured values are reported as unknown, not estimated.** wgpu exposes no
+  VRAM figure, so `vram_mb` is 0 with `vram_known: false`. CPU cache sizes are 0
+  because the current `sysinfo` version has no accessor. The previous code
+  returned a plausible-looking 32/256/8192 KB that was wrong on every machine.
+- **CPU architecture is the architecture, not the OS.** It used to report
+  `"windows"`.
+
+ISA detection is gated per architecture, so the core builds on aarch64; an
+unguarded `is_x86_feature_detected!` does not compile there.
+
 ### 9Router
 
 [9Router](https://github.com/decolua/9router) is an OpenAI-compatible router that

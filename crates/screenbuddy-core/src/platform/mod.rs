@@ -1,4 +1,21 @@
-//! Cross-platform windowing and transparency support
+//! Cross-platform windowing and transparency support.
+//!
+//! # Status
+//!
+//! **The platform backends here are stubs and are not used by the application.**
+//! Each [`Platform`] implementation's `create_window` returns a null handle and
+//! every other method is a no-op, so this trait currently provides type shapes
+//! rather than working windows. Nothing in the workspace calls
+//! [`create_window`], [`poll_events`] or [`swap_buffers`] -- the desktop app is
+//! Win32-only (`crates/screenbuddy/src/*.rs`).
+//!
+//! They are kept because the trait documents the intended cross-platform shape,
+//! but nothing should treat a call into this module as actually creating a
+//! window. Implementing these for real requires winit or wgpu's surface API;
+//! until then, prefer the native Win32 path in the binary crate.
+//!
+//! Each backend reports whether it is implemented, so a caller can fail loudly
+//! instead of silently getting a window that does nothing.
 
 use crate::error::Result;
 use glam::Vec2;
@@ -70,6 +87,12 @@ impl WindowHandle {
 
 /// Platform abstraction trait
 pub trait Platform {
+    /// Whether this backend actually creates working windows.
+    ///
+    /// False for every backend today. Reported explicitly so a caller cannot
+    /// mistake a null handle for a real window.
+    const IMPLEMENTED: bool = false;
+
     fn init() -> Result<()>
     where
         Self: Sized;
@@ -96,8 +119,38 @@ pub mod macos;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
-/// Create a platform-appropriate window
+/// Whether any real window backend exists on this platform.
+pub const fn windows_available() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        <windows::WindowsPlatform as Platform>::IMPLEMENTED
+    }
+    #[cfg(target_os = "macos")]
+    {
+        <macos::MacPlatform as Platform>::IMPLEMENTED
+    }
+    #[cfg(target_os = "linux")]
+    {
+        <linux::LinuxPlatform as Platform>::IMPLEMENTED
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+/// Create a platform-appropriate window.
+///
+/// Returns an error rather than a null handle on platforms whose backend is not
+/// implemented, so a caller cannot mistake a stub for a working window.
 pub fn create_window(config: &WindowConfig) -> Result<WindowHandle> {
+    if !windows_available() {
+        return Err(crate::error::Error::InvalidConfig(
+            "no window backend is implemented on this platform; the desktop app \
+             uses the native Win32 path"
+                .into(),
+        ));
+    }
     #[cfg(target_os = "windows")]
     return windows::WindowsPlatform::create_window(config);
 

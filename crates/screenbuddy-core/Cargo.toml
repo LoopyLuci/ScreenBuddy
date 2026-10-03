@@ -53,7 +53,7 @@ rodio = "0.17"
 winapi = { version = "0.3", features = [
     "winuser", "wingdi", "windef", "minwindef",
     "libloaderapi", "shellapi", "processthreadsapi",
-    "handleapi", "sysinfoapi", "winnt", "d3d11", "dxgi",
+    "handleapi", "sysinfoapi", "winbase", "winnt", "d3d11", "dxgi",
 ] }
 
 [dev-dependencies]

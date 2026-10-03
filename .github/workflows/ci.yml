@@ -56,6 +56,23 @@ jobs:
       - name: Test core crate
         run: cargo test --package screenbuddy-core
 
+  # A second non-Windows target, for the same reason as the Linux job: an
+  # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.
+  # macOS also differs in ways that matter here -- Metal instead of Vulkan, and
+  # no /sys/devices/system/node for NUMA detection.
+  build-core-macos:
+    name: Check core on macOS
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check core crate
+        run: cargo check --package screenbuddy-core --all-targets
+      - name: Test core crate
+        run: cargo test --package screenbuddy-core
+
   build:
     name: Build Release
     runs-on: windows-latest
