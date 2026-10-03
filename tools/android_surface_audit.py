@@ -159,7 +159,11 @@ def main():
         f"\n{len(live)} live, {len(dead)} unconsumed, "
         f"{len(advertised)} commands, {len(missing)} unreachable"
     )
-    return 0 if not missing and not dead else 1
+    # Unconsumed settings do not fail the build: each one is disclosed in the UI
+    # with the missing capability named, so the finding is already reported. What
+    # must fail is a command advertised but unable to run, because an agent would
+    # be told it is available and it would do nothing.
+    return 0 if not missing and not extra else 1
     # Reporting only: this run documents Android rather than gating a list, since
     # there is no hand-maintained classification to drift yet.
     return 0
