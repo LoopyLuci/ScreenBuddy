@@ -69,6 +69,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Verify the settings window's live/read-only/inert lists
         run: python tools/dead_settings_scan.py
+      - name: Verify every MCP tool and IPC command is reachable
+        run: python tools/mcp_ipc_audit.py
 
   # A second non-Windows target, for the same reason as the Linux job: an
   # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.
