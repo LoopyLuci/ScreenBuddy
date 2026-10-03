@@ -56,9 +56,46 @@ pub const INERT_SETTINGS: &[&str] = &[
     "volume_music",
 ];
 
-/// Whether a setting actually changes behaviour.
+/// Settings the app writes but never reads.
+///
+/// A third state, distinct from both "honoured" and "inert": the app reflects
+/// real state into them at startup, so the window is showing the truth, but
+/// changing one does nothing. Labelling these "not wired up yet" was wrong --
+/// they are not unwired, they are read-only.
+pub const MIRRORED_SETTINGS: &[&str] = &[
+    "collision_avoidance",
+    "creature_count",
+    "cursor_interaction",
+];
+
+/// Why a setting cannot be changed from the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    /// The app reads it, so changing it takes effect.
+    Live,
+    /// The app writes it but never reads it: a read-only mirror of real state.
+    ReadOnly,
+    /// Nothing on either end.
+    Inert,
+}
+
+/// Whether a setting actually changes behaviour when changed.
+#[cfg(test)]
 pub fn setting_is_live(name: &str) -> bool {
-    !INERT_SETTINGS.contains(&name)
+    availability(name) == Availability::Live
+}
+
+/// Classify a setting, so the window says why a control is disabled.
+pub fn availability(name: &str) -> Availability {
+    // Mirrored is checked first: these names are deliberately absent from
+    // INERT_SETTINGS, so a live-first ordering would classify them as Live.
+    if MIRRORED_SETTINGS.contains(&name) {
+        Availability::ReadOnly
+    } else if INERT_SETTINGS.contains(&name) {
+        Availability::Inert
+    } else {
+        Availability::Live
+    }
 }
 
 /// A category tab.
@@ -153,7 +190,10 @@ struct Row {
     value: SettingValue,
     min: Option<f64>,
     max: Option<f64>,
+    /// Whether changing it takes effect.
     live: bool,
+    /// Why not, when it cannot be changed.
+    state: Availability,
 }
 
 /// The window's state.
@@ -212,8 +252,10 @@ impl SettingsView {
                 .unwrap_or_else(|| def.default.clone());
             let min = def.min.as_ref().map(numeric);
             let max = def.max.as_ref().map(numeric);
+            let state = availability(&name);
             self.rows.push(Row {
-                live: setting_is_live(&name),
+                live: state == Availability::Live,
+                state,
                 name,
                 description: def.description.clone(),
                 value,
@@ -238,7 +280,7 @@ impl SettingsView {
             return;
         };
         if !row.live {
-            self.notice = Some(format!("'{}' is not wired up yet.", row.name));
+            self.notice = Some(format!("'{}' {}.", row.name, refusal_reason(row.state)));
             return;
         }
         self.apply(index, next_value(&row.value));
@@ -249,7 +291,7 @@ impl SettingsView {
             return;
         };
         if !row.live {
-            self.notice = Some(format!("'{}' is not wired up yet.", row.name));
+            self.notice = Some(format!("'{}' {}.", row.name, refusal_reason(row.state)));
             return;
         }
         self.apply(index, stepped_value(&row.value, row.min, row.max, up));
@@ -511,14 +553,18 @@ impl SettingsView {
                 label_w,
                 font_height(11, false),
             );
-            // Say plainly when a setting does nothing, rather than letting the
-            // user discover it.
+            // Say plainly why a setting cannot be changed, rather than letting
+            // the user discover it.
             if !row.live {
                 set_text_colour(dc, 0x00E0A060);
+                let note = match row.state {
+                    Availability::ReadOnly => "set by the app - read only",
+                    _ => "not wired up yet",
+                };
                 draw_text(
                     buf,
                     dc,
-                    "not wired up yet",
+                    note,
                     PADDING,
                     y + 30,
                     label_w,
@@ -796,6 +842,15 @@ impl SettingsView {
             DeleteDC(mem_dc);
             EndPaint(hwnd, &ps);
         }
+    }
+}
+
+/// Why a control refused a change, in words.
+fn refusal_reason(state: Availability) -> &'static str {
+    match state {
+        Availability::Live => "can be changed",
+        Availability::ReadOnly => "is set by the app and is read only",
+        Availability::Inert => "is not wired up yet",
     }
 }
 
@@ -1141,6 +1196,52 @@ mod tests {
     }
 
     #[test]
+    fn mirrored_settings_are_read_only_not_inert() {
+        // These are written by the app at startup, so calling them "not wired
+        // up" was wrong: they are read-only mirrors of real state.
+        for name in MIRRORED_SETTINGS {
+            assert_eq!(
+                availability(name),
+                Availability::ReadOnly,
+                "'{name}' should be read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn every_mirrored_name_is_a_real_setting() {
+        let store = SettingsUI::in_memory();
+        let known = store.known_keys();
+        for name in MIRRORED_SETTINGS {
+            assert!(
+                known.iter().any(|k| k == name),
+                "'{name}' is listed as mirrored but is not a real setting"
+            );
+        }
+    }
+
+    #[test]
+    fn the_three_states_partition_every_known_setting() {
+        // Nothing may be both inert and read-only, and everything is one of them.
+        let store = SettingsUI::in_memory();
+        for name in store.known_keys() {
+            let state = availability(&name);
+            assert!(
+                matches!(
+                    state,
+                    Availability::Live | Availability::ReadOnly | Availability::Inert
+                ),
+                "'{name}' has no state"
+            );
+            assert_eq!(
+                state == Availability::Inert,
+                INERT_SETTINGS.contains(&name.as_str()),
+                "'{name}' is classified inconsistently"
+            );
+        }
+    }
+
+    #[test]
     fn settings_the_app_honours_are_classified_live() {
         // fps_target and volume_master are read by the app, so must not be listed.
         assert!(setting_is_live("fps_target"));
@@ -1164,14 +1265,19 @@ mod tests {
 
     #[test]
     fn classification_is_consistent_for_every_known_setting() {
+        // Mirrored and inert are mutually exclusive, and between them they cover
+        // every setting the app does not honour.
         let store = SettingsUI::in_memory();
         for name in store.known_keys() {
-            let listed = INERT_SETTINGS.contains(&name.as_str());
-            assert_eq!(
-                listed,
-                !setting_is_live(&name),
-                "'{name}' is classified inconsistently"
-            );
+            let inert = INERT_SETTINGS.contains(&name.as_str());
+            let mirrored = MIRRORED_SETTINGS.contains(&name.as_str());
+            assert!(!(inert && mirrored), "'{name}' is both inert and read-only");
+            let expected = match availability(&name) {
+                Availability::Inert => true,
+                Availability::ReadOnly => false,
+                Availability::Live => false,
+            };
+            assert_eq!(inert, expected, "'{name}' is classified inconsistently");
         }
     }
 

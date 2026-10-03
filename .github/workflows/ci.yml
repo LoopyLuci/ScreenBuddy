@@ -56,6 +56,20 @@ jobs:
       - name: Test core crate
         run: cargo test --package screenbuddy-core
 
+  # Three separate defects here were the same shape: a list of settings in the UI
+  # that had drifted away from what the app actually reads. This fails when it
+  # drifts again, rather than relying on someone noticing.
+  settings-audit:
+    name: Audit settings against the app
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify the settings window's live/read-only/inert lists
+        run: python tools/dead_settings_scan.py
+
   # A second non-Windows target, for the same reason as the Linux job: an
   # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.
   # macOS also differs in ways that matter here -- Metal instead of Vulkan, and

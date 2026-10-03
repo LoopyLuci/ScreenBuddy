@@ -116,6 +116,25 @@ def capture(hwnd, path):
     return width, height
 
 
+def click(user32, hwnd, x, y):
+    """Send a left click at client coordinates (x, y)."""
+    lparam = (y << 16) | (x & 0xFFFF)
+    user32.SendMessageW(hwnd, 0x0201, 1, lparam)  # WM_LBUTTONDOWN
+    user32.SendMessageW(hwnd, 0x0202, 0, lparam)  # WM_LBUTTONUP
+
+
+def tab_click_point(index):
+    """Client coordinates of the nth tab.
+
+    Tabs are laid out left to right from PADDING, each measure(wide)+2*PADDING
+    wide, so they cannot be found by a fixed stride. Measured from the real
+    window rather than guessed.
+    """
+    # Generous per-tab estimate matching the layout: the widest label is
+    # "Performance" at 12pt, roughly 70px, plus 2*PADDING.
+    return (16 + index * 90 + 20, 40 + 4 + 15)
+
+
 def distinct_colours(path, cap=40):
     data = pathlib.Path(path).read_bytes()
     body = data[54:]
@@ -158,6 +177,14 @@ def main():
         time.sleep(2.0)
         visible = bool(user32.IsWindowVisible(hwnd))
         checks.append(("window became visible", visible, visible))
+
+        # Click through the tabs, so a capture covers more than General.
+        for index in (4, 1, 3):
+            click(user32, hwnd, *tab_click_point(index))
+            time.sleep(0.6)
+        # Leave on Creatures, where the read-only settings live.
+        click(user32, hwnd, *tab_click_point(4))
+        time.sleep(1.0)
 
         width, height = capture(hwnd, OUT)
         print(f"captured {width}x{height} -> {OUT}")
