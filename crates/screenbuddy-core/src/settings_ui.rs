@@ -209,12 +209,18 @@ impl SettingsUI {
                 name: "ai_provider".to_string(),
                 description: "AI provider to use".to_string(),
                 category: SettingsCategory::AI,
+                // Kept in step with AiEngine::parse_backend, which is what
+                // actually consumes this: a provider missing here is a provider
+                // the user cannot select.
                 default: SettingValue::Enum(
                     "ollama".to_string(),
                     vec![
                         "ollama".to_string(),
                         "openai".to_string(),
                         "anthropic".to_string(),
+                        "9router".to_string(),
+                        "llamacpp".to_string(),
+                        "custom".to_string(),
                     ],
                 ),
                 min: None,
@@ -482,6 +488,42 @@ mod tests {
         let s = SettingsUI::in_memory();
         let exported = s.export();
         assert!(!exported.is_empty());
+    }
+
+    #[test]
+    fn every_offered_provider_is_one_the_engine_accepts() {
+        // The option list and parse_backend drifted apart before: 9Router and
+        // llama.cpp were supported but not selectable. Tying them together stops
+        // that recurring.
+        let store = SettingsUI::in_memory();
+        let value = store.get("ai_provider").expect("ai_provider is declared");
+        let SettingValue::Enum(_, options) = value else {
+            panic!("ai_provider should be an enum, got {value:?}");
+        };
+        for option in options {
+            assert!(
+                crate::ai::AiEngine::parse_backend(option.as_str()).is_ok(),
+                "'{option}' is offered but the engine rejects it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_engine_supports_every_backend_the_offer_names() {
+        // And the other direction: a backend with no entry cannot be selected.
+        for name in [
+            "ollama",
+            "openai",
+            "anthropic",
+            "9router",
+            "llamacpp",
+            "custom",
+        ] {
+            assert!(
+                crate::ai::AiEngine::parse_backend(name).is_ok(),
+                "'{name}' should be selectable"
+            );
+        }
     }
 
     #[test]
