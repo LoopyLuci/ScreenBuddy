@@ -168,6 +168,22 @@ needed. `ProviderRouteTest` guards the routing table specifically: an unknown
 provider must never fall through to another vendor's endpoint, which would leak
 the user's credential.
 
+## Using the app
+
+ScreenBuddy opens a main window at startup: sessions on the left, the
+conversation on the right, and a message box along the bottom.
+
+- **Enter** sends the message; **Backspace** edits it; **Esc** hides the window.
+- The sidebar lists every session with its message count and an updated title
+  derived from the first thing you asked. Click a session to switch to it, or
+  use `+ New chat` and the per-row `-` to delete.
+- **Clear conversation** empties the current session without deleting it.
+- Sessions persist to `%APPDATA%\ScreenBuddy\sessions.json`, so closing the app
+  does not lose the conversation.
+
+The window re-reads the session store every frame, so messages added by the AI
+or by an agent over the control API appear without a refresh.
+
 ## Controlling ScreenBuddy from an agent
 
 The running app exposes a control port, and `mcp/server.py` bridges it to the

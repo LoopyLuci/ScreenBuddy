@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 mod animation;
 mod chat_window;
 mod composite_renderer;
+mod main_window;
 mod settings_window;
 
 use animation::SpriteAnimator;
 use chat_window::{ChatWindow, ChatWindowEvent};
 use composite_renderer::{CompositeRenderer, RenderableCreature};
+use main_window::{create_main_window, MainWindow, UiEvent};
 use screenbuddy_core::chat_overlay::MessageRole;
 use screenbuddy_core::session::{Role, SessionStore};
 use settings_window::SettingsWindow;
@@ -518,6 +520,15 @@ fn main() {
     // Chat Window
     // Chat sessions persist across restarts; the window renders a view of the
     // current session rather than owning the conversation.
+    // The main window is the place a person actually talks to the app. The old
+    // chat overlay remains for the tray/menu path, but this is the real UI.
+    let mut main_ui = MainWindow::new();
+    let main_hwnd = create_main_window(&mut main_ui);
+    match main_hwnd {
+        Ok(_) => main_ui.show(),
+        Err(e) => eprintln!("[UI] could not create main window: {e}"),
+    }
+
     let mut chat_win = ChatWindow::new();
     let initial_history: Vec<(String, String)> = shared_sessions
         .lock()
@@ -741,6 +752,53 @@ fn main() {
             }
         }
 
+        // Drive the main window: apply its events, then re-read the store so
+        // anything an agent changed over IPC shows up.
+        while let Some(event) = main_ui.poll_event() {
+            match event {
+                UiEvent::SendMessage(text) => {
+                    println!("[Chat] You: {}", text);
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        store.push(Role::User, text.clone());
+                    }
+                    bridge_for_input.send_message(&text);
+                }
+                UiEvent::NewSession => {
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        store.new_session("New chat");
+                    }
+                }
+                UiEvent::SelectSession(id) => {
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        if let Err(e) = store.select(&id) {
+                            eprintln!("[UI] {e}");
+                        }
+                    }
+                }
+                UiEvent::DeleteSession(id) => {
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        if let Err(e) = store.delete(&id) {
+                            eprintln!("[UI] {e}");
+                        }
+                    }
+                }
+                UiEvent::ClearSession => {
+                    if let Ok(mut store) = shared_sessions.lock() {
+                        store.clear_current();
+                    }
+                }
+                UiEvent::Quit => {
+                    println!("[UI] quit requested");
+                    std::process::exit(0);
+                }
+            }
+        }
+
+        // Keep the window's view in step with the store and the AI.
+        if let Ok(store) = shared_sessions.lock() {
+            main_ui.refresh_from(&store);
+        }
+
         // Process pet window messages
         pet_window_message_loop();
 
@@ -794,10 +852,15 @@ fn main() {
                 .unwrap_or_default();
             for (role, text) in fresh {
                 chat_win.add_message(&role, &text);
-                if role == "assistant" {
-                    if let Ok(mut store) = shared_sessions.lock() {
-                        store.push(Role::Assistant, text);
-                    }
+                // The main window re-reads the store each frame, so recording the
+                // reply here is what makes it appear there.
+                if let Ok(mut store) = shared_sessions.lock() {
+                    let session_role = match role.as_str() {
+                        "user" => Role::User,
+                        "assistant" => Role::Assistant,
+                        _ => Role::System,
+                    };
+                    store.push(session_role, text);
                 }
             }
         }
