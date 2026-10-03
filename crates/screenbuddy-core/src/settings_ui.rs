@@ -44,6 +44,9 @@ pub struct SettingsUI {
     settings: Arc<Mutex<HashMap<String, SettingValue>>>,
     definitions: Vec<SettingDef>,
     changed: bool,
+    /// Where settings are written. Empty means "in memory only", which is what
+    /// tests use so they never touch the real file.
+    path: std::path::PathBuf,
 }
 
 impl Default for SettingsUI {
@@ -58,9 +61,82 @@ impl SettingsUI {
             settings: Arc::new(Mutex::new(HashMap::new())),
             definitions: Vec::new(),
             changed: false,
+            path: crate::paths::data_file("settings.json"),
+        };
+        s.register_defaults();
+        // Restore what the user last chose; the defaults above remain the fallback.
+        s.load();
+        s
+    }
+
+    /// A store that never touches disk, for tests.
+    pub fn in_memory() -> Self {
+        let mut s = Self {
+            settings: Arc::new(Mutex::new(HashMap::new())),
+            definitions: Vec::new(),
+            changed: false,
+            path: std::path::PathBuf::new(),
         };
         s.register_defaults();
         s
+    }
+
+    /// A shareable read-only handle.
+    ///
+    /// The value map is already behind an `Arc<Mutex<_>>`, so this is a cheap
+    /// clone that can be handed to the IPC layer while the render loop keeps
+    /// mutating the owner.
+    pub fn reader(&self) -> SettingsReader {
+        SettingsReader {
+            settings: Arc::clone(&self.settings),
+        }
+    }
+
+    /// Write the current settings to disk.
+    ///
+    /// Best-effort by design: a settings file that cannot be written must not stop
+    /// the app from running.
+    pub fn save(&self) -> Result<(), String> {
+        if self.path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let snapshot: HashMap<String, SettingValue> = self
+            .settings
+            .lock()
+            .map_err(|_| "settings lock poisoned".to_string())?
+            .clone();
+        let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+        std::fs::write(&self.path, json).map_err(|e| e.to_string())
+    }
+
+    /// Read settings back, ignoring anything unrecognised.
+    ///
+    /// Only keys this build defines are accepted, so a stale or hand-edited file
+    /// cannot inject settings the app would then honour.
+    fn load(&mut self) {
+        if self.path.as_os_str().is_empty() {
+            return;
+        }
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return;
+        };
+        let Ok(stored) = serde_json::from_str::<HashMap<String, SettingValue>>(&text) else {
+            // A corrupt file should not stop the app; defaults remain in force.
+            return;
+        };
+        let known: std::collections::HashSet<String> =
+            self.definitions.iter().map(|d| d.name.clone()).collect();
+        let Ok(mut settings) = self.settings.lock() else {
+            return;
+        };
+        for (key, value) in stored {
+            if known.contains(&key) {
+                settings.insert(key, value);
+            }
+        }
     }
 
     fn register_defaults(&mut self) {
@@ -230,10 +306,33 @@ impl SettingsUI {
             }
             settings.insert(name.to_string(), value);
             self.changed = true;
+            // Persist immediately. The user will not press "save", and a setting
+            // that only lives in memory is indistinguishable from one that does
+            // not work.
+            drop(settings);
+            let _ = self.save();
             Ok(())
         } else {
             Err(format!("Unknown setting: {}", name))
         }
+    }
+
+    /// Read a setting as a number, whatever its stored representation.
+    ///
+    /// `SettingValue` is a tagged enum and a "bool" holds a float, so callers that
+    /// only want the magnitude should not repeat that match.
+    pub fn number(&self, name: &str) -> Option<f64> {
+        match self.get(name)? {
+            SettingValue::Bool(v) | SettingValue::Float(v) => Some(v),
+            SettingValue::Int(v) => Some(v as f64),
+            _ => None,
+        }
+    }
+
+    /// All definitions, for a settings window that iterates rather than
+    /// hardcoding a list.
+    pub fn all_definitions(&self) -> &[SettingDef] {
+        &self.definitions
     }
 
     pub fn get_category(&self, category: SettingsCategory) -> Vec<(&str, &SettingDef)> {
@@ -257,6 +356,11 @@ impl SettingsUI {
         self.changed = false;
     }
 
+    /// Every setting key this build knows about.
+    pub fn known_keys(&self) -> Vec<String> {
+        self.definitions.iter().map(|d| d.name.clone()).collect()
+    }
+
     pub fn export(&self) -> HashMap<String, SettingValue> {
         self.settings.lock().unwrap().clone()
     }
@@ -268,13 +372,13 @@ mod tests {
 
     #[test]
     fn test_settings_new() {
-        let s = SettingsUI::new();
+        let s = SettingsUI::in_memory();
         assert!(s.get("fps_target").is_some());
     }
 
     #[test]
     fn test_settings_get() {
-        let s = SettingsUI::new();
+        let s = SettingsUI::in_memory();
         match s.get("fps_target").unwrap() {
             SettingValue::Int(v) => assert_eq!(v, 30),
             _ => panic!("Expected Int"),
@@ -283,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_settings_set() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         s.set("fps_target", SettingValue::Int(60)).unwrap();
         match s.get("fps_target").unwrap() {
             SettingValue::Int(v) => assert_eq!(v, 60),
@@ -293,21 +397,21 @@ mod tests {
 
     #[test]
     fn test_settings_validation() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         let result = s.set("fps_target", SettingValue::Int(999));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_settings_unknown() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         let result = s.set("nonexistent", SettingValue::Int(1));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_settings_changed() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         assert!(!s.changed());
         s.set("fps_target", SettingValue::Int(60)).unwrap();
         assert!(s.changed());
@@ -315,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_settings_reset() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         s.set("fps_target", SettingValue::Int(60)).unwrap();
         s.reset();
         match s.get("fps_target").unwrap() {
@@ -326,22 +430,56 @@ mod tests {
 
     #[test]
     fn test_settings_category() {
-        let s = SettingsUI::new();
+        let s = SettingsUI::in_memory();
         let audio = s.get_category(SettingsCategory::Audio);
         assert_eq!(audio.len(), 3);
     }
 
     #[test]
     fn test_settings_export() {
-        let s = SettingsUI::new();
+        let s = SettingsUI::in_memory();
         let exported = s.export();
         assert!(!exported.is_empty());
     }
 
     #[test]
     fn test_float_validation() {
-        let mut s = SettingsUI::new();
+        let mut s = SettingsUI::in_memory();
         assert!(s.set("volume_master", SettingValue::Float(0.5)).is_ok());
         assert!(s.set("volume_master", SettingValue::Float(1.5)).is_err());
+    }
+}
+
+/// A read-only view of the settings, shareable across threads.
+///
+/// The value map is already behind an `Arc<Mutex<_>>`, so this is a cheap clone
+/// that can be handed to the IPC layer while the render loop keeps mutating the
+/// owner.
+#[derive(Clone)]
+pub struct SettingsReader {
+    settings: Arc<Mutex<HashMap<String, SettingValue>>>,
+}
+
+impl SettingsReader {
+    /// The current value of a setting, or `None` when unset or unknown.
+    pub fn get(&self, name: &str) -> Option<SettingValue> {
+        self.settings.lock().ok().and_then(|s| s.get(name).cloned())
+    }
+
+    /// Every setting, for a UI that lists them.
+    pub fn snapshot(&self) -> HashMap<String, SettingValue> {
+        self.settings.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Read a setting as a number, whatever its stored representation.
+    ///
+    /// `SettingValue` is a tagged enum and a "bool" holds a float, so callers that
+    /// only want the magnitude should not have to repeat this match.
+    pub fn number(&self, name: &str) -> Option<f64> {
+        match self.get(name)? {
+            SettingValue::Bool(v) | SettingValue::Float(v) => Some(v),
+            SettingValue::Int(v) => Some(v as f64),
+            _ => None,
+        }
     }
 }

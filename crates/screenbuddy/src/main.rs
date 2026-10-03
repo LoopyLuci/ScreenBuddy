@@ -307,9 +307,7 @@ fn main() {
     };
 
     let mut renderer = CompositeRenderer::new(hwnd as *mut core::ffi::c_void, 800, 600);
-    let frame_duration = Duration::from_millis(1000 / 30);
     let start_time = Instant::now();
-    println!("Animation at 30 FPS");
 
     let mut tray = screenbuddy_core::SystemTray::new();
     match tray.start() {
@@ -498,6 +496,22 @@ fn main() {
 
     // Settings UI
     let mut settings = screenbuddy_core::SettingsUI::new();
+
+    // fps_target was a setting nothing read; the loop was pinned at 30. Clamped so
+    // a zero or absurd value cannot stall or melt the CPU.
+    let read_target_fps = |settings: &screenbuddy_core::SettingsUI| -> u32 {
+        // Clamped so a zero or absurd value cannot stall or melt the CPU.
+        settings
+            .number("fps_target")
+            .map(|v| v as i32)
+            .unwrap_or(30)
+            .clamp(5, 120) as u32
+    };
+    let target_fps = read_target_fps(&settings);
+    println!("Animation at {target_fps} FPS");
+
+    // Shareable read handle, handed to the IPC layer.
+    let settings_reader = settings.reader();
     settings
         .set(
             "creature_count",
@@ -655,6 +669,7 @@ fn main() {
             agent_store,
             &mut agent_win,
             agent.as_ref(),
+            settings_reader.clone(),
         );
 
         // Collect positions for collision avoidance
@@ -992,7 +1007,11 @@ fn main() {
             (agent.tool_count(), rag.chunk_count()),
         );
 
-        std::thread::sleep(frame_duration);
+        // Recomputed each frame so changing the target takes effect immediately,
+        // rather than only on the next launch.
+        std::thread::sleep(Duration::from_millis(
+            1000 / u64::from(read_target_fps(&settings)),
+        ));
     }
 
     // Stop any in-flight speech before exit.
@@ -1024,10 +1043,21 @@ fn apply_control_requests(
     agent_store: &std::sync::Arc<screenbuddy_core::AgentStore>,
     agent_win: &mut agent_editor::AgentEditor,
     agent_runtime: &screenbuddy_core::AgentRuntime,
+    // Re-read per batch so a settings change takes effect without a restart.
+    // A reader handle rather than `&SettingsUI`, because the render loop keeps a
+    // mutable borrow of the owner while draining control requests.
+    settings_ui: screenbuddy_core::SettingsReader,
 ) {
     let Some(rx) = control_rx.as_mut() else {
         return;
     };
+
+    // rag_enabled was inert; read it per batch so the toggle is live.
+    // A "Bool" here carries a number (1.0 = on), hence number().
+    let rag_enabled = settings_ui
+        .number("rag_enabled")
+        .map(|v| v != 0.0)
+        .unwrap_or(true);
 
     // Bound the batch so a flood of requests cannot starve the render loop.
     for _ in 0..64 {
@@ -1252,13 +1282,22 @@ fn apply_control_requests(
                 );
             }
             Ok(screenbuddy_core::ControlRequest::MemoryIngest { source, content }) => {
+                // rag_enabled was a setting nothing read; both paths honour it now.
+                if !rag_enabled {
+                    println!("[IPC] Memory is disabled in settings; ingest ignored");
+                    continue;
+                }
                 match rag.ingest_str(&source, &content) {
                     Ok(n) => println!("[IPC] Ingested {} chunk(s) from {}", n, source),
                     Err(e) => eprintln!("[IPC] Ingest failed: {}", e),
                 }
             }
             Ok(screenbuddy_core::ControlRequest::MemorySearch { query, limit }) => {
-                let hits = rag.search(&query, limit);
+                let hits = if rag_enabled {
+                    rag.search(&query, limit)
+                } else {
+                    Vec::new()
+                };
                 println!("[IPC] Memory search '{}' -> {} hit(s)", query, hits.len());
                 if let Ok(mut snapshot) = status.lock() {
                     snapshot.search_results = serde_json::Value::Array(

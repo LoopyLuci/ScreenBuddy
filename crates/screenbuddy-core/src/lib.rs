@@ -51,7 +51,7 @@ pub use rag::RagPipeline;
 pub use render::renderer::Renderer;
 pub use scheduler::{TaskPriority, ThreadPool};
 pub use screen_physics::{CreaturePersonality, CreaturePhysics, Monitor, ScreenManager};
-pub use settings_ui::{SettingValue, SettingsCategory, SettingsUI};
+pub use settings_ui::{SettingValue, SettingsCategory, SettingsReader, SettingsUI};
 pub use state::{AppConfig, AppState, CreatureStateMachine, State};
 pub use system_integration::{SystemEvent, SystemEventType, SystemIntegration, SystemMonitor};
 pub use system_tray::{SystemTray, TrayEvent, TrayHwnd};
