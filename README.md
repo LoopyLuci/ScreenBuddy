@@ -210,6 +210,38 @@ Two deliberate honesty rules apply:
 ISA detection is gated per architecture, so the core builds on aarch64; an
 unguarded `is_x86_feature_detected!` does not compile there.
 
+### Agents
+
+Open **Agents** from the tray menu. An *agent* bundles everything that makes one
+companion feel like itself: the model that answers, the character on screen, and
+how it behaves and speaks.
+
+The editor has three tabs rather than one long form, because a single scrolling
+list of twenty fields is how settings screens become unusable:
+
+- **Identity** -- name, character, persona, and a role/instructions box. The
+  instructions box is the escape hatch: anything not covered by the fields above
+  goes there.
+- **Model** -- provider and model, plus temperature, tool steps and timeout.
+  Leaving the model on *Automatic* uses whatever your settings already provide.
+- **Behaviour** -- movement, whether tools are enabled, and one-click presets.
+
+Five built-in presets ship with the app: **Assistant**, **Coder**, **Study Buddy**,
+**Quick Ask** and **Companion**. Presets are read-only, so **Duplicate** makes an
+editable copy rather than changing the default for everyone. Your agents persist to
+`%APPDATA%\ScreenBuddy\agents.json`.
+
+From Hermes:
+
+    screenbuddy_list_agents()                 # includes the presets
+    screenbuddy_save_agent({...})             # partial profiles are fine
+    screenbuddy_duplicate_agent("builtin-coder")
+    screenbuddy_delete_agent("my-agent")
+
+Values are validated and clamped on the way in, so `max_iterations: 0` becomes 1
+and `temperature: 99` becomes 2.0 rather than producing an agent that never
+answers.
+
 ### 9Router
 
 [9Router](https://github.com/decolua/9router) is an OpenAI-compatible router that

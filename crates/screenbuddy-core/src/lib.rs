@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod agent_profile;
 pub mod ai;
 pub mod ai_bridge;
 pub mod animation;
@@ -7,10 +8,12 @@ pub mod chat_overlay;
 pub mod chat_ui;
 pub mod config;
 pub mod creature;
+pub mod creature_catalogue;
 pub mod error;
 pub mod hardware;
 pub mod ipc;
 pub mod nine_router;
+pub mod paths;
 pub mod per_pet_window;
 pub mod platform;
 pub mod providers;
@@ -26,6 +29,7 @@ pub mod system_tray;
 pub mod tts;
 
 pub use agent::{default_tools, AgentConfig, AgentEvent, AgentRuntime, Tool};
+pub use agent_profile::{AgentProfile, AgentProvider, AgentStore, Persona};
 pub use ai::{
     AiConfig, AiEngine, AiRequest, AiResponse, Backend, Message, MessageRole, ModelInfo, ModelTier,
 };
@@ -34,6 +38,7 @@ pub use audio::{AudioConfig, AudioEvent, AudioSystem, SoundCategory};
 pub use chat_overlay::{ChatMessage, ChatOverlay, ChatOverlayEvent, MessageRole as ChatMsgRole};
 pub use config::{ConfigManager, ScreenBuddyConfig, Theme};
 pub use creature::{load_creature_from_file, Creature};
+pub use creature_catalogue::{creature_catalogue, CreatureInfo};
 pub use error::{Error, Result};
 pub use hardware::{hardware_profile, CpuInfo, GpuInfo, HardwareProfile};
 pub use ipc::{

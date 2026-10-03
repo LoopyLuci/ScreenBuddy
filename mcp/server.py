@@ -399,6 +399,63 @@ def screenbuddy_nine_router_status(
 
 
 @mcp.tool()
+def screenbuddy_list_agents() -> dict[str, Any]:
+    """List the saved agents, including the built-in presets.
+
+    Each entry carries the provider, model, character, personality, persona and
+    tool settings, so an agent's whole configuration is visible in one call.
+    """
+    call({"cmd": "list_agents"})
+    # Results are published into the status snapshot; read them back.
+    listed = call({"cmd": "get_setting", "key": "agents.list"})
+    return listed
+
+
+@mcp.tool()
+def screenbuddy_save_agent(profile: dict[str, Any]) -> dict[str, Any]:
+    """Create or update an agent.
+
+    Args:
+        profile: The agent. Requires `id` and `name`; everything else defaults.
+            Useful keys: `provider` ("auto", "ollama", "openai", "anthropic",
+            "nine_router", "custom"), `model`, `creature` (e.g. "robo-cat-01"),
+            `personality` ("Curious", "Shy", "Lazy", "Energetic", "Neutral"),
+            `persona` ("assistant", "friendly", "terse", "explainer", "wry",
+            "professional"), `system_prompt`, `tools_enabled`, `max_iterations`,
+            `timeout_secs`, `temperature`.
+
+    Values are validated and clamped, so an out-of-range setting is corrected
+    rather than stored.
+    """
+    call({"cmd": "save_agent", "profile": profile})
+    return call({"cmd": "get_setting", "key": "agents.saved"})
+
+
+@mcp.tool()
+def screenbuddy_duplicate_agent(agent_id: str) -> dict[str, Any]:
+    """Duplicate an agent into an editable copy.
+
+    Built-in presets cannot be edited in place, so this is how you customise one.
+
+    Args:
+        agent_id: The agent to copy, e.g. "builtin-coder".
+    """
+    call({"cmd": "duplicate_agent", "id": agent_id})
+    return call({"cmd": "get_setting", "key": "agents.saved"})
+
+
+@mcp.tool()
+def screenbuddy_delete_agent(agent_id: str) -> str:
+    """Delete a user agent. Built-in presets are kept.
+
+    Args:
+        agent_id: The agent to delete.
+    """
+    call({"cmd": "delete_agent", "id": agent_id})
+    return f"delete {agent_id}"
+
+
+@mcp.tool()
 def screenbuddy_memory_ingest(source: str, content: str) -> str:
     """Add a document to the app's RAG memory so it can be recalled later.
 

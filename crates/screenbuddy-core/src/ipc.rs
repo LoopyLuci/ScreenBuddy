@@ -122,11 +122,34 @@ pub enum GodotCommand {
     GetSetting {
         key: Option<String>,
     },
+    /// List saved agent profiles.
+    ListAgents,
+    /// Create or update an agent profile.
+    SaveAgent {
+        /// The profile as a JSON object.
+        profile: serde_json::Value,
+    },
+    /// Duplicate a built-in or saved agent into an editable copy.
+    DuplicateAgent {
+        id: String,
+    },
+    /// Delete a user agent. Built-ins are refused.
+    DeleteAgent {
+        id: String,
+    },
     /// Report which 9Router is configured and which models it can reach.
     NineRouterStatus {
         endpoint: Option<String>,
         api_key: Option<String>,
     },
+    /// List saved agent profiles.
+    /// Create or update an agent profile.
+    /// Duplicate an agent into an editable copy.
+    /// Delete a user agent.
+    /// List saved agent profiles.
+    /// Create or update an agent profile.
+    /// Duplicate an agent into an editable copy.
+    /// Delete a user agent. Built-ins are refused.
     /// Enable or disable the automatic animation state rotation.
     SetAutoCycle {
         enabled: bool,
@@ -186,6 +209,20 @@ pub enum ControlRequest {
         endpoint: Option<String>,
         /// Optional bearer token, for a router running with auth.
         api_key: Option<String>,
+    },
+    /// List saved agent profiles.
+    ListAgents,
+    /// Create or update an agent profile.
+    SaveAgent {
+        profile: serde_json::Value,
+    },
+    /// Duplicate an agent into an editable copy.
+    DuplicateAgent {
+        id: String,
+    },
+    /// Delete a user agent. Built-ins are refused.
+    DeleteAgent {
+        id: String,
     },
     SetAnimation {
         id: Option<String>,
@@ -523,6 +560,12 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
             endpoint: endpoint.clone(),
             api_key: api_key.clone(),
         },
+        GodotCommand::ListAgents => ControlRequest::ListAgents,
+        GodotCommand::SaveAgent { profile } => ControlRequest::SaveAgent {
+            profile: profile.clone(),
+        },
+        GodotCommand::DuplicateAgent { id } => ControlRequest::DuplicateAgent { id: id.clone() },
+        GodotCommand::DeleteAgent { id } => ControlRequest::DeleteAgent { id: id.clone() },
         GodotCommand::SetSetting { key, value } => ControlRequest::SetSetting {
             key: key.clone(),
             value: value.clone(),

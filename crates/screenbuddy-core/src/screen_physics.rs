@@ -1,6 +1,7 @@
 //! Screen Physics for ScreenBuddy
 use glam::Vec2;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct Monitor {
@@ -117,7 +118,7 @@ pub struct CreaturePhysics {
     pub personality: CreaturePersonality,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum CreaturePersonality {
     Curious,   // Follows cursor
     Shy,       // Flees from cursor

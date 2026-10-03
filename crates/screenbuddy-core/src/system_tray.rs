@@ -18,6 +18,8 @@ pub enum TrayEvent {
     OpenChat,
     NextCreature,
     OpenSettings,
+    /// Open the agent editor.
+    OpenAgents,
     Quit,
     About,
 }
@@ -34,6 +36,7 @@ mod cmd {
     pub const MINIMIZE: u32 = 1002;
     pub const SHOW_CREATURE: u32 = 1003;
     pub const HIDE_CREATURE: u32 = 1004;
+    pub const OPEN_AGENTS: u32 = 1010;
     pub const OPEN_CHAT: u32 = 1005;
     pub const NEXT_CREATURE: u32 = 1006;
     pub const OPEN_SETTINGS: u32 = 1007;
@@ -51,6 +54,7 @@ fn event_for_command(command: u32) -> Option<TrayEvent> {
         cmd::HIDE_CREATURE => TrayEvent::HideCreature,
         cmd::OPEN_CHAT => TrayEvent::OpenChat,
         cmd::NEXT_CREATURE => TrayEvent::NextCreature,
+        cmd::OPEN_AGENTS => TrayEvent::OpenAgents,
         cmd::OPEN_SETTINGS => TrayEvent::OpenSettings,
         cmd::ABOUT => TrayEvent::About,
         cmd::QUIT => TrayEvent::Quit,
@@ -382,6 +386,7 @@ unsafe fn show_context_menu(hwnd: winapi::shared::windef::HWND) -> u32 {
     let tail = [
         (cmd::SHOW_CREATURE, "Show creature"),
         (cmd::HIDE_CREATURE, "Hide creature"),
+        (cmd::OPEN_AGENTS, "Agents"),
         (cmd::OPEN_CHAT, "Open chat"),
         (cmd::NEXT_CREATURE, "Next creature"),
         (cmd::OPEN_SETTINGS, "Settings"),

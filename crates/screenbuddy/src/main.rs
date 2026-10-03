@@ -7,9 +7,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod agent_editor;
 mod animation;
 mod chat_window;
 mod composite_renderer;
+mod gdi;
 mod main_window;
 mod settings_window;
 
@@ -531,6 +533,11 @@ fn main() {
     // current session rather than owning the conversation.
     // The main window is the place a person actually talks to the app. The old
     // chat overlay remains for the tray/menu path, but this is the real UI.
+    // Agent editor, backed by the persistent profile store.
+    let agent_store = screenbuddy_core::agent_profile::agent_store();
+    let mut agent_win = agent_editor::AgentEditor::new(agent_store, None);
+    agent_editor::create_editor_window(&mut agent_win);
+
     let mut main_ui = MainWindow::new();
     let main_hwnd = create_main_window(&mut main_ui);
     match main_hwnd {
@@ -635,6 +642,8 @@ fn main() {
             &mut auto_cycle,
             &status,
             &mut pinned,
+            agent_store,
+            &mut agent_win,
         );
 
         // Collect positions for collision avoidance
@@ -774,6 +783,10 @@ fn main() {
                     println!("[Chat] Toggling chat window");
                     chat_win.toggle();
                 }
+                screenbuddy_core::TrayEvent::OpenAgents => {
+                    agent_editor::show_editor(&mut agent_win);
+                    println!("[Agents] Editor opened");
+                }
                 screenbuddy_core::TrayEvent::OpenSettings => {
                     println!("[Settings] Toggling settings window");
                     settings_win.toggle();
@@ -783,6 +796,42 @@ fn main() {
                 }
             }
         }
+
+        // Drain the agent editor. Saves and deletes are applied here because the
+        // store is the app's, not the window's -- so the same agents are visible
+        // to IPC and MCP afterwards.
+        for event in agent_win.take_events() {
+            match event {
+                agent_editor::EditorEvent::Saved(profile) => {
+                    match agent_store.save(profile.clone()) {
+                        Ok(saved) => println!("[Agents] Saved '{}' ({})", saved.name, saved.id),
+                        Err(e) => eprintln!("[Agents] Save failed: {e}"),
+                    }
+                    agent_win.reload(agent_store);
+                }
+                agent_editor::EditorEvent::Deleted(id) => {
+                    match agent_store.delete(&id) {
+                        Ok(true) => println!("[Agents] Deleted '{id}'"),
+                        Ok(false) => println!("[Agents] '{id}' is a preset and was kept"),
+                        Err(e) => eprintln!("[Agents] Delete failed: {e}"),
+                    }
+                    agent_win.reload(agent_store);
+                }
+                agent_editor::EditorEvent::Activated(id) => {
+                    // "Duplicate" on a preset: make an editable copy and open it.
+                    match agent_store.duplicate(&id, None) {
+                        Ok(copy) => {
+                            println!("[Agents] Duplicated '{}' as '{}'", id, copy.name);
+                            agent_win.reload(agent_store);
+                            agent_win.select(&copy.id);
+                        }
+                        Err(e) => eprintln!("[Agents] Duplicate failed: {e}"),
+                    }
+                }
+                agent_editor::EditorEvent::Closed => agent_editor::hide_editor(&mut agent_win),
+            }
+        }
+        agent_win.refresh();
 
         // Drive the main window: apply its events, then re-read the store so
         // anything an agent changed over IPC shows up.
@@ -949,6 +998,10 @@ fn apply_control_requests(
     auto_cycle: &mut bool,
     status: &std::sync::Arc<std::sync::Mutex<screenbuddy_core::RuntimeStatus>>,
     pinned: &mut HashMap<String, glam::Vec2>,
+    // The agent store and the editor, so an agent changed over IPC shows up in
+    // the GUI immediately rather than on next launch.
+    agent_store: &std::sync::Arc<screenbuddy_core::AgentStore>,
+    agent_win: &mut agent_editor::AgentEditor,
 ) {
     let Some(rx) = control_rx.as_mut() else {
         return;
@@ -1019,6 +1072,65 @@ fn apply_control_requests(
                 } else if let Err(e) = engine.speak(&text) {
                     eprintln!("[IPC] TTS failed: {}", e);
                 }
+            }
+            Ok(screenbuddy_core::ControlRequest::ListAgents) => {
+                // Published into the status snapshot so `get_setting` can read it
+                // back: the control channel has no reply path, and inventing one
+                // here would mean plumbing a response channel through the loop.
+                let agents: Vec<serde_json::Value> = agent_store
+                    .list()
+                    .iter()
+                    .map(|a| serde_json::to_value(a).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                println!("[Agents] {} profile(s) available", agents.len());
+                if let Ok(mut snapshot) = status.lock() {
+                    snapshot
+                        .settings
+                        .insert("agents.list".into(), serde_json::json!(agents));
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::SaveAgent { profile }) => {
+                // Deserialise into the typed profile so a malformed or hostile
+                // payload is validated and clamped rather than stored raw.
+                match serde_json::from_value::<screenbuddy_core::AgentProfile>(profile) {
+                    Ok(parsed) => match agent_store.save(parsed) {
+                        Ok(saved) => {
+                            println!("[Agents] Saved '{}' over IPC", saved.name);
+                            if let Ok(mut snapshot) = status.lock() {
+                                snapshot.settings.insert(
+                                    "agents.saved".into(),
+                                    serde_json::to_value(&saved).unwrap_or(serde_json::Value::Null),
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("[Agents] Save rejected: {e}"),
+                    },
+                    Err(e) => eprintln!("[Agents] Malformed agent profile: {e}"),
+                }
+                agent_win.reload(agent_store);
+            }
+            Ok(screenbuddy_core::ControlRequest::DuplicateAgent { id }) => {
+                match agent_store.duplicate(&id, None) {
+                    Ok(copy) => {
+                        println!("[Agents] Duplicated '{}' as '{}'", id, copy.name);
+                        if let Ok(mut snapshot) = status.lock() {
+                            snapshot.settings.insert(
+                                "agents.saved".into(),
+                                serde_json::to_value(&copy).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("[Agents] Duplicate failed: {e}"),
+                }
+                agent_win.reload(agent_store);
+            }
+            Ok(screenbuddy_core::ControlRequest::DeleteAgent { id }) => {
+                match agent_store.delete(&id) {
+                    Ok(true) => println!("[Agents] Deleted '{id}'"),
+                    Ok(false) => println!("[Agents] '{id}' is a preset or unknown; kept"),
+                    Err(e) => eprintln!("[Agents] Delete failed: {e}"),
+                }
+                agent_win.reload(agent_store);
             }
             Ok(screenbuddy_core::ControlRequest::NineRouterStatus { endpoint, api_key }) => {
                 // Discovery is the useful part: it tells the user whether 9Router
