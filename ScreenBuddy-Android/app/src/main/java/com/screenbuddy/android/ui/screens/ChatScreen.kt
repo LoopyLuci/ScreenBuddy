@@ -63,6 +63,7 @@ fun ChatScreen(
     // engine every frame. Deriving the tick from engine values instead meant it
     // never changed, and an externally set animation never appeared.
     var frame by remember { mutableLongStateOf(0L) }
+    var lastAnimation by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         if (engine.count() == 0) {
             engine.add("companion-bird-01", 120f, 260f)
@@ -72,6 +73,14 @@ fun ChatScreen(
             val speed = settings?.animationSpeed ?: 1f
             val enabled = settings?.animationsEnabled ?: true
             engine.step(if (enabled) 1f / targetFps * speed.coerceIn(0.25f, 4f) else 0f)
+            // A sound on each state change: this is what the creature sound
+            // switch and the effects volume actually control.
+            engine.all().firstOrNull()?.let { creature ->
+                if (lastAnimation != creature.animation) {
+                    lastAnimation = creature.animation
+                    app.soundEngine.playForAnimation(creature.animation)
+                }
+            }
             frame++
             delay(1000L / targetFps)
         }
@@ -90,6 +99,23 @@ fun ChatScreen(
     LaunchedEffect(uiState.messages.size) {
         if (uiState.messages.isNotEmpty()) {
             listState.animateScrollToItem(uiState.messages.size - 1)
+        }
+    }
+
+    // Notify when a reply arrives and the user is not looking at it. The
+    // notifications setting gates this, and the notifier reports whether it
+    // actually posted, so a blocked notification is visible rather than silent.
+    var notifiedCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(uiState.messages.size, notifiedCount) {
+        val messages = uiState.messages
+        val newest = messages.lastOrNull { it.role == "assistant" } ?: return@LaunchedEffect
+        if (messages.size <= notifiedCount) return@LaunchedEffect
+        notifiedCount = messages.size
+        if (settings?.notificationsEnabled != true) return@LaunchedEffect
+        val activity = context as? android.app.Activity
+        val foreground = activity != null && activity.hasWindowFocus()
+        if (!foreground) {
+            app.notifier.notify("ScreenBuddy", newest.content.take(140))
         }
     }
 

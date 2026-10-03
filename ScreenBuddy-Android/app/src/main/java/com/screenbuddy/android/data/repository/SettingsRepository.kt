@@ -148,6 +148,19 @@ class SettingsRepository(context: Context) {
         return true
     }
 
+    /**
+     * Read [autoStart] from a blocking context.
+     *
+     * A BroadcastReceiver cannot suspend and has roughly ten seconds, so the
+     * suspending `settings` flow is not usable there. runBlocking is confined to
+     * this method rather than used across the app.
+     */
+    fun autoStartEnabledBlocking(): Boolean = kotlinx.coroutines.runBlocking {
+        // store.data yields Preferences, so map it through the same reader the
+        // settings flow uses rather than reading a field it does not have.
+        settings.first().autoStart
+    }
+
     /** The current value of a setting by its wire name, for reads over IPC. */
     suspend fun valueOf(key: String): String? {
         val current = settings.first()

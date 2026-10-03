@@ -32,7 +32,6 @@ object ControlCommands {
         "memory_ingest",
         "memory_search",
         "list_agents",
-        "get_agent_info",
         "activate_agent",
         "save_agent",
         "duplicate_agent",
@@ -222,16 +221,6 @@ object ControlCommands {
             ControlResponse.ok(mapOf("messages" to ControlBus.status.value.chatHistory))
         }
 
-        ControlBus.register("get_agent_info") {
-            val tools = app?.let { listOf("list_creatures", "read_memory", "play_sound") } ?: emptyList()
-            ControlResponse.ok(
-                mapOf(
-                    "tool_count" to tools.size,
-                    "tools" to tools,
-                )
-            )
-        }
-
         ControlBus.register("play_sound") { req ->
             val name = req.name ?: return@register ControlResponse.error("play_sound requires 'name'")
             ControlResponse.queued("sound:$name")
@@ -311,8 +300,17 @@ object ControlCommands {
                 ?: return@register ControlResponse.error("agents are unavailable", 503)
             // Reports what the active agent is actually configured with, so a
             // caller can confirm activation changed something rather than taking
-            // "queued" as proof.
-            ControlResponse.ok(runtime.describe())
+            // "queued" as proof. The tool list is included because an agent
+            // deciding what to call needs it.
+            val tools = app?.let {
+                listOf("list_creatures", "read_memory", "play_sound")
+            } ?: emptyList()
+            ControlResponse.ok(
+                runtime.describe() + mapOf(
+                    "tool_count" to tools.size,
+                    "tools" to tools
+                )
+            )
         }
 
         ControlBus.register("activate_agent") { req ->

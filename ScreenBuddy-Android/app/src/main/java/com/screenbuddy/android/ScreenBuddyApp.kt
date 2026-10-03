@@ -39,6 +39,26 @@ class ScreenBuddyApp : Application() {
 
     val ttsEngine: TtsEngine by lazy { TtsEngine(this) }
 
+    /**
+     * Notifications for replies and finished tasks.
+     *
+     * The channel was never created, so the notifications setting controlled
+     * nothing; this is what makes it capable of doing anything.
+     */
+    val notifier: com.screenbuddy.android.service.Notifier by lazy {
+        com.screenbuddy.android.service.Notifier(this)
+    }
+
+    /**
+     * Creature and UI sounds.
+     *
+     * Separate from TTS so the effects settings have their own output to
+     * control, which is what those two switches mean.
+     */
+    val soundEngine: com.screenbuddy.android.service.SoundEngine by lazy {
+        com.screenbuddy.android.service.SoundEngine(this)
+    }
+
     /** Saved agents, always including the built-in presets. */
     val agentProfiles: com.screenbuddy.android.data.agent.AgentProfileStore by lazy {
         com.screenbuddy.android.data.agent.AgentProfileStore.inAppFiles(this)
@@ -88,6 +108,11 @@ class ScreenBuddyApp : Application() {
             "settings applied: base=${settings.ollamaBaseUrl} " +
                 "temp=${settings.temperature} max=${settings.responseLength}"
         )
+        // The three audio switches, which had no consumer at all.
+        soundEngine.uiSoundsEnabled = settings.soundEffectsEnabled
+        soundEngine.creatureSoundsEnabled = settings.creatureSoundsEnabled
+        soundEngine.volume =
+            (settings.masterVolume * settings.effectsVolume).coerceIn(0f, 1f)
         // Master and TTS are separate sliders, so the level spoken is their
         // product. Previously both did nothing: TTS never set a volume.
         // Inside its own failure boundary: TtsEngine construction touches the

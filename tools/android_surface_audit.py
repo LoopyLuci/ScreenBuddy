@@ -65,17 +65,27 @@ PLUMBING = (
 )
 
 
+
 def read_sites(field):
-    """Files outside the settings plumbing that read a field."""
+    """Files outside the settings plumbing that read a field.
+
+    Matches the field name or an accessor derived from it, because a consumer
+    may go through a helper: BootReceiver reads autoStart through
+    autoStartEnabledBlocking(), which a literal search would miss and wrongly
+    report as unconsumed.
+    """
     hits = []
+    accessor = re.compile(rf"\b{field}[A-Z]\w*\s*\(")
     pattern = re.compile(rf"\b{field}\b")
     for path in kotlin_files():
         rel = path.relative_to(COM).as_posix()
+        # Everything outside the settings plumbing counts, including receivers:
+        # BootReceiver is what makes autoStart real.
         if path == REPO or rel in PLUMBING:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for n, line in enumerate(text.splitlines(), 1):
-            if pattern.search(line):
+            if pattern.search(line) or accessor.search(line):
                 hits.append(f"{rel}:{n}")
     return hits
 
@@ -96,13 +106,27 @@ def written_by_ui(field):
 
 
 def control_commands():
-    """Commands advertised in ControlCommands.SUPPORTED."""
+    """Commands advertised in ControlCommands.SUPPORTED, as listed."""
     path = COM / "data" / "control" / "ControlCommands.kt"
     text = path.read_text(encoding="utf-8")
     m = re.search(r"val SUPPORTED = listOf\((.*?)\n    \)", text, re.S)
     if not m:
         raise SystemExit("could not find ControlCommands.SUPPORTED")
     return re.findall(r'"([a-z_]+)"', m.group(1))
+
+
+def duplicate_commands(listed):
+    """Names appearing more than once in SUPPORTED.
+
+    Harmless at runtime, but it makes the advertised and registered counts
+    disagree, which is exactly the drift this audit is for.
+    """
+    seen, dupes = set(), set()
+    for name in listed:
+        if name in seen:
+            dupes.add(name)
+        seen.add(name)
+    return dupes
 
 
 def control_registered():
@@ -143,7 +167,10 @@ def main():
     missing = set(advertised) - registered
     extra = registered - set(advertised)
 
-    print(f"\nCommands advertised ({len(advertised)}), registered ({len(registered)}):")
+    dupes = duplicate_commands(advertised)
+    print(f"\nCommands advertised ({len(set(advertised))}), registered ({len(registered)}):")
+    if dupes:
+        print(f"  listed more than once ({len(dupes)}): {', '.join(sorted(dupes))}")
     print(f"  advertised but never registered ({len(missing)}):")
     for name in sorted(missing):
         print(f"    {name}")
@@ -163,7 +190,7 @@ def main():
     # with the missing capability named, so the finding is already reported. What
     # must fail is a command advertised but unable to run, because an agent would
     # be told it is available and it would do nothing.
-    return 0 if not missing and not extra else 1
+    return 0 if not missing and not extra and not dupes else 1
     # Reporting only: this run documents Android rather than gating a list, since
     # there is no hand-maintained classification to drift yet.
     return 0

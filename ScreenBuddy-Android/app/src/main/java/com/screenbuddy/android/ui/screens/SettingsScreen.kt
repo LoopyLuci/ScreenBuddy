@@ -68,24 +68,21 @@ private fun SettingsContent(
                     "Show notifications",
                     Icons.Filled.Notifications,
                     uiState.notificationsEnabled,
-                    viewModel::setNotifications,
-                    unavailableReason = "Not wired up: no notification channel exists"
+                    viewModel::setNotifications
                 )
                 SettingsToggle(
                     "Sound effects",
                     "Play UI sounds",
                     Icons.Filled.VolumeUp,
                     uiState.soundEffectsEnabled,
-                    viewModel::setSoundEffects,
-                    unavailableReason = "Not wired up: no UI sounds are played"
+                    viewModel::setSoundEffects
                 )
                 SettingsToggle(
                     "Auto-start",
                     "Launch ScreenBuddy on boot",
                     Icons.Filled.Power,
                     uiState.autoStart,
-                    viewModel::setAutoStart,
-                    unavailableReason = "Not wired up: no boot receiver is registered"
+                    viewModel::setAutoStart
                 )
             }
         }
@@ -164,8 +161,7 @@ private fun SettingsContent(
                     "Play creature sound effects",
                     Icons.Filled.MusicNote,
                     uiState.creatureSoundsEnabled,
-                    viewModel::setCreatureSounds,
-                    unavailableReason = "Not wired up: there is no sound engine yet"
+                    viewModel::setCreatureSounds
                 )
                 // animation_speed: the Compose UI has no animation system, so
                 // there is nothing to scale. Left visible and labelled.
@@ -185,8 +181,7 @@ private fun SettingsContent(
                     "Effects volume",
                     uiState.effectsVolume,
                     0f..1f,
-                    viewModel::setEffectsVolume,
-                    unavailableReason = "Not wired up: TTS is the only audio output"
+                    viewModel::setEffectsVolume
                 )
                 SettingsSlider("TTS volume", uiState.ttsVolume, 0f..1f, viewModel::setTtsVolume)
                 SettingsToggle(

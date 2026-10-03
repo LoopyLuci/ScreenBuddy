@@ -8,6 +8,13 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!--
+      Posting notifications is a runtime permission from Android 13, so it has to
+      be declared as well as requested. Without this the notifications setting
+      cannot do anything on a modern device.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
       Package visibility (Android 11 / API 30+): without these, the platform
       reports zero TTS engines and TextToSpeech fails to initialise, so
       speech never works. TTS is looked up by intent action.
@@ -48,6 +55,22 @@
             android:enabled="true">
             <intent-filter>
                 <action android:name="com.screenbuddy.android.CONTROL" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Makes the "Launch on boot" setting real: the permission was declared
+          with no receiver, so the toggle did nothing. Not exported beyond the
+          system broadcast it listens for, and it restores state rather than
+          stealing focus at boot.
+        -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
     </application>
