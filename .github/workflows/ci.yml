@@ -67,6 +67,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The probes below launch the app and talk to it over IPC, so a binary
+      # has to exist. Without this the job failed on "app did not start", which
+      # said nothing about the audit.
+      - name: Build the app for the live checks
+        run: cargo build --package screenbuddy --bin screenbuddy
       - name: Verify the settings window's live/read-only/inert lists
         run: python tools/dead_settings_scan.py
       - name: Verify every MCP tool and IPC command is reachable

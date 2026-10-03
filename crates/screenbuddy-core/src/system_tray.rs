@@ -5,7 +5,11 @@
 //! callers get a working (if inert) tray on other platforms rather than a build
 //! failure — `hwnd()` is `None` and `start()` reports that no tray is available.
 
-use std::sync::mpsc::{self, channel, Receiver, Sender};
+// mpsc::channel is only called from the Windows tray thread; naming `self` on
+// every platform left an unused-import warning off Windows.
+#[cfg(windows)]
+use std::sync::mpsc;
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
@@ -537,6 +541,10 @@ mod tests {
 
     /// The queue the tray window thread writes to must survive being read from
     /// the render thread, and must not wedge when a reader panics.
+    ///
+    /// Windows-only: deliver() is part of the Win32 tray implementation, and the
+    /// portable stub has no tray thread to deliver from.
+    #[cfg(windows)]
     #[test]
     fn pending_events_cross_threads_without_loss() {
         let writer = std::thread::spawn(|| {
@@ -553,6 +561,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn pending_events_are_drained_exactly_once() {
         deliver(TrayEvent::Quit);

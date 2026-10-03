@@ -10,7 +10,7 @@ impl Platform for MacPlatform {
         Ok(())
     }
 
-    fn create_window(config: &WindowConfig) -> Result<WindowHandle> {
+    fn create_window(_config: &WindowConfig) -> Result<WindowHandle> {
         Ok(WindowHandle::new(std::ptr::null_mut(), 1))
     }
 
