@@ -21,7 +21,6 @@ use composite_renderer::{CompositeRenderer, RenderableCreature};
 use main_window::{create_main_window, MainWindow, UiEvent};
 use screenbuddy_core::chat_overlay::MessageRole;
 use screenbuddy_core::session::{Role, SessionStore};
-use settings_window::SettingsWindow;
 
 const BIRD_IDLE: &[u8] = include_bytes!("../assets/generated/bird_idle.png");
 const BIRD_WALK: &[u8] = include_bytes!("../assets/generated/bird_walk.png");
@@ -510,8 +509,10 @@ fn main() {
     let target_fps = read_target_fps(&settings);
     println!("Animation at {target_fps} FPS");
 
-    // Shareable read handle, handed to the IPC layer.
+    // Shareable read handles. Cloned before the settings window takes a mutable
+    // borrow of the store, since that borrow lasts as long as the window does.
     let settings_reader = settings.reader();
+    let ipc_settings_reader = settings_reader.clone();
     settings
         .set(
             "creature_count",
@@ -584,10 +585,20 @@ fn main() {
     }
 
     // Settings Window
-    let mut settings_win = SettingsWindow::new();
-    let settings_hwnd = settings_window::create_settings_window().unwrap_or(0);
-    if settings_hwnd != 0 {
-        println!("[Settings] Window created: 0x{:x}", settings_hwnd);
+    // The settings window borrows the store the render loop owns, so it is
+    // created after it and given a raw pointer plus a reader handle.
+    // The window borrows the store the render loop owns. The reader was cloned
+    // above, before this mutable borrow begins.
+    let mut settings_win =
+        Box::new(unsafe { settings_window::SettingsView::new(settings_reader, &mut settings) });
+    unsafe {
+        settings_window::create_settings_window(settings_win.as_mut());
+    }
+    // Created hidden: the tray menu opens it on request, so it should not
+    // appear unasked at startup.
+    if let Some(hwnd) = settings_win.hwnd() {
+        println!("[Settings] Window created: 0x{:x}", hwnd as usize);
+        settings_win.hide();
     }
 
     // Create per-pet windows
@@ -669,7 +680,7 @@ fn main() {
             agent_store,
             &mut agent_win,
             agent.as_ref(),
-            settings_reader.clone(),
+            ipc_settings_reader.clone(),
         );
 
         // Collect positions for collision avoidance
@@ -814,8 +825,16 @@ fn main() {
                     println!("[Agents] Editor opened");
                 }
                 screenbuddy_core::TrayEvent::OpenSettings => {
-                    println!("[Settings] Toggling settings window");
-                    settings_win.toggle();
+                    println!("[Settings] Opening settings window");
+                    if settings_win.is_visible() {
+                        settings_win.hide();
+                    } else {
+                        // Reuses the create-or-show path, so a window closed with
+                        // the X button comes back.
+                        unsafe {
+                            settings_window::show_settings_window(settings_win.as_mut());
+                        }
+                    }
                 }
                 screenbuddy_core::TrayEvent::About => {
                     show_about_dialog();
@@ -826,6 +845,13 @@ fn main() {
         // Drain the agent editor. Saves and deletes are applied here because the
         // store is the app's, not the window's -- so the same agents are visible
         // to IPC and MCP afterwards.
+        // Keep the settings window current: it re-reads values and repaints, so a
+        // change made over IPC appears while the window is open.
+        if settings_win.is_visible() {
+            settings_win.sync();
+            settings_win.refresh();
+        }
+
         for event in agent_win.take_events() {
             match event {
                 agent_editor::EditorEvent::Saved(profile) => {

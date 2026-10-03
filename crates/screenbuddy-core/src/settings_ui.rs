@@ -18,7 +18,7 @@ pub enum SettingsCategory {
 }
 
 /// A single setting value
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SettingValue {
     Bool(f64),
     Int(i64),
@@ -348,12 +348,54 @@ impl SettingsUI {
     }
 
     pub fn reset(&mut self) {
-        let mut settings = self.settings.lock().unwrap();
-        settings.clear();
-        for def in &self.definitions {
-            settings.insert(def.name.clone(), def.default.clone());
+        {
+            let mut settings = self.settings.lock().unwrap_or_else(|e| e.into_inner());
+            settings.clear();
+            for def in &self.definitions {
+                settings.insert(def.name.clone(), def.default.clone());
+            }
         }
-        self.changed = false;
+        self.changed = true;
+        // Persist, or the next launch restores the old values and the reset
+        // appears to have done nothing.
+        let _ = self.save();
+    }
+
+    /// Register an extra setting.
+    ///
+    /// Exists so the settings window's tests can exercise each value shape. Not
+    /// part of the user-facing API: the shipped set is fixed, and a caller adding
+    /// one at runtime would be changing the contract.
+    #[doc(hidden)]
+    pub fn register_for_test(
+        &mut self,
+        name: &'static str,
+        default: SettingValue,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) {
+        // The bounds carry the *numbers*, not a copy of the default: cloning the
+        // default produced a range of [default, default] and clamped every
+        // change away.
+        let (lo, hi) = match &default {
+            SettingValue::Int(_) => (
+                min.map(|v| SettingValue::Int(v as i64)),
+                max.map(|v| SettingValue::Int(v as i64)),
+            ),
+            SettingValue::Bool(_) | SettingValue::Float(_) => {
+                (min.map(SettingValue::Float), max.map(SettingValue::Float))
+            }
+            // Strings and enums have no numeric range to express.
+            _ => (None, None),
+        };
+        self.definitions.push(SettingDef {
+            name: name.to_string(),
+            description: format!("test setting {name}"),
+            category: SettingsCategory::General,
+            default,
+            min: lo,
+            max: hi,
+        });
     }
 
     /// Every setting key this build knows about.
