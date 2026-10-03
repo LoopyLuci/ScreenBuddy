@@ -38,10 +38,12 @@ jobs:
       # anything is compiled. The wrapper JAR is committed and the build below
       # exercises it directly, which is the check that actually matters here.
       - name: Check the wrapper JAR is a real archive
+        shell: bash
         run: |
-          cd ScreenBuddy-Android
-          file gradle/wrapper/gradle-wrapper.jar || true
-          unzip -l gradle/wrapper/gradle-wrapper.jar | head -5
+          # jar comes from the JDK set up above; a truncated or HTML-bodied JAR
+          # (which happened here once) fails this immediately. The job's
+          # working-directory is already ScreenBuddy-Android.
+          jar tf gradle/wrapper/gradle-wrapper.jar | head -5
 
       - name: Unit tests
         run: ./gradlew testDebugUnitTest
