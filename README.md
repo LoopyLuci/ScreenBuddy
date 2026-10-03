@@ -296,6 +296,47 @@ can never be hidden with no way back to it.
 The window re-reads the session store every frame, so messages added by the AI
 or by an agent over the control API appear without a refresh.
 
+### Settings
+
+Six tabs, and every setting is either live, read-only, or visibly disabled. The
+distinction is not cosmetic: a control that looks editable and does nothing is
+worse than one that admits it.
+
+- **Live** (10): `animation_speed`, `fps_target`, `rag_enabled`, `volume_master`,
+  `volume_effects`, `volume_music`, `ai_provider`, `ai_model`,
+  `window_transparency`, `always_on_top`.
+- **Set by the app - read only** (3): `collision_avoidance`, `creature_count`,
+  `cursor_interaction`. These mirror real runtime state, so they show the truth
+  but are not editable.
+- **Not wired up yet** (2): `multi_gpu`, `thread_pool_size`. Both say why in the
+  source, and both are honest:
+  - The desktop app renders through GDI. `MultiGpuRenderer` enumerates real wgpu
+    adapters but is never constructed and no code path creates a device, so there
+    is no second GPU for the setting to select.
+  - `ThreadPool::new()` takes no size and the render loop is single-threaded, so
+    a worker count has nothing to configure.
+
+  Wiring either properly means writing a wgpu renderer or parallelising the loop,
+  not flipping a flag.
+
+`fps_target` is read per frame and clamped to 5..120; `rag_enabled` gates both
+memory ingest and search; `window_transparency` sets per-window alpha with a
+floor so a creature cannot be made invisible; `always_on_top` is applied at
+window creation and re-applied live via `SetWindowPos`; the two volume settings
+drive separate audio buses, with each sound played through the bus for its
+category.
+
+Settings persist on every change, with no save button. Out-of-range values are
+refused with a reason and the previous value is kept.
+
+Three CI checks keep this honest, and each has caught a real drift:
+
+| Check | Catches |
+| --- | --- |
+| `dead_settings_scan.py` | a setting the window lists as inert but the app honours, or the reverse |
+| `mcp_ipc_audit.py` | a tool or IPC command that is declared but unreachable |
+| `wired_settings_probe.py` | a setting that reads back but never reaches runtime state |
+
 ## Controlling ScreenBuddy from an agent
 
 The running app exposes a control port, and `mcp/server.py` bridges it to the
