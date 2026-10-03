@@ -78,6 +78,10 @@ jobs:
         run: python tools/mcp_ipc_audit.py
       - name: Verify the rewired settings reach runtime state
         run: python tools/wired_settings_probe.py
+      # Static, so it needs no device: this is what caught 13 inert Android
+      # settings, and what stops the list drifting again.
+      - name: Audit the Android settings and control surface
+        run: python tools/android_surface_audit.py
 
   # A second non-Windows target, for the same reason as the Linux job: an
   # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.

@@ -32,7 +32,8 @@ private fun rememberChatViewModel(): ChatViewModel {
             aiService = app.aiService,
             apiKeyDao = app.database.apiKeyDao(),
             modelDao = app.database.modelDao(),
-            rag = app.ragPipeline
+            rag = app.ragPipeline,
+            agentRuntime = app.agentRuntime
         )
     }
 }

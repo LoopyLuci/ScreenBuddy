@@ -123,6 +123,42 @@ def main() -> int:
         "feline",
     )
 
+    # Agent profiles: activation must change what get_agent_info reports, not
+    # just be accepted. That is the desktop defect this feature existed to fix.
+    _, agents = send(serial, ["--es", "cmd", "list_agents"])
+    check(
+        "list agents",
+        ["--es", "cmd", "list_agents"],
+        0,
+        "assistant",
+    )
+    send(serial, ["--es", "cmd", "activate_agent", "--es", "id", "coder"])
+    time.sleep(0.5)
+    _, info = send(serial, ["--es", "cmd", "get_agent_info"])
+    checks.append(
+        (
+            "activating an agent changes the runtime",
+            '"id":"coder"' in info,
+            "" if '"id":"coder"' in info else f"info={info[:110]}",
+        )
+    )
+    _, bad = send(serial, ["--es", "cmd", "activate_agent", "--es", "id", "nope"])
+    checks.append(
+        (
+            "an unknown agent is refused",
+            "error" in bad and "unknown agent" in bad,
+            "" if "unknown agent" in bad else f"got={bad[:110]}",
+        )
+    )
+    _, guard = send(serial, ["--es", "cmd", "delete_agent", "--es", "id", "assistant"])
+    checks.append(
+        (
+            "a built-in agent cannot be deleted",
+            "built in" in guard,
+            "" if "built in" in guard else f"got={guard[:110]}",
+        )
+    )
+
     # Confirm the mutations actually landed rather than merely being accepted.
     _, status = send(serial, ["--es", "cmd", "get_status"])
     checks.append(

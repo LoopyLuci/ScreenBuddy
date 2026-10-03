@@ -31,6 +31,12 @@ object ControlCommands {
         "set_setting",
         "memory_ingest",
         "memory_search",
+        "list_agents",
+        "get_agent_info",
+        "activate_agent",
+        "save_agent",
+        "duplicate_agent",
+        "delete_agent",
     )
 
     private val ANIMATION_STATES = setOf("idle", "walk", "fly", "sleep", "celebrate")
@@ -249,6 +255,99 @@ object ControlCommands {
                 }
             }
             ControlResponse.queued("setting:$key")
+        }
+
+        ControlBus.register("list_agents") {
+            val profiles = app?.agentProfiles
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            ControlResponse.ok(
+                mapOf(
+                    "agents" to profiles.summaries().map { summary ->
+                        mapOf(
+                            "id" to summary.id,
+                            "name" to summary.name,
+                            "persona" to summary.persona,
+                            "creature" to summary.creature,
+                            "builtin" to summary.builtin,
+                            "active" to summary.active
+                        )
+                    }
+                )
+            )
+        }
+
+        ControlBus.register("get_agent_info") {
+            val runtime = app?.agentRuntime
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            // Reports what the active agent is actually configured with, so a
+            // caller can confirm activation changed something rather than taking
+            // "queued" as proof.
+            ControlResponse.ok(runtime.describe())
+        }
+
+        ControlBus.register("activate_agent") { req ->
+            val runtime = app?.agentRuntime
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            val id = req.id
+                ?: return@register ControlResponse.error("activate_agent requires 'id'")
+            if (runtime.activate(id)) {
+                ControlResponse.ok(
+                    mapOf("active" to runtime.describe())
+                )
+            } else {
+                ControlResponse.error("unknown agent: $id", 404)
+            }
+        }
+
+        ControlBus.register("save_agent") { req ->
+            val profiles = app?.agentProfiles
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            val name = req.name
+                ?: return@register ControlResponse.error("save_agent requires 'name'")
+            val existing = req.id?.let { profiles.get(it) }
+            val saved = profiles.save(
+                com.screenbuddy.android.data.agent.AgentProfile(
+                    id = req.id ?: "",
+                    name = name,
+                    model = req.state.orEmpty().ifBlank { existing?.model.orEmpty() },
+                    systemPrompt = req.content.orEmpty()
+                        .ifBlank { existing?.systemPrompt.orEmpty() },
+                    persona = com.screenbuddy.android.data.agent.Persona
+                        .fromId(existing?.persona?.id)
+                )
+            )
+            // A save must reach the runtime too, or the edit would not apply
+            // until the next launch.
+            app?.agentRuntime?.reload()
+            ControlResponse.ok(mapOf("agent" to saved.sanitized().toMap()))
+        }
+
+        ControlBus.register("duplicate_agent") { req ->
+            val profiles = app?.agentProfiles
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            val id = req.id
+                ?: return@register ControlResponse.error("duplicate_agent requires 'id'")
+            val copy = profiles.duplicate(id)
+                ?: return@register ControlResponse.error("unknown agent: $id", 404)
+            ControlResponse.ok(mapOf("agent" to copy.name))
+        }
+
+        ControlBus.register("delete_agent") { req ->
+            val profiles = app?.agentProfiles
+                ?: return@register ControlResponse.error("agents are unavailable", 503)
+            val id = req.id
+                ?: return@register ControlResponse.error("delete_agent requires 'id'")
+            val target = profiles.get(id)
+                ?: return@register ControlResponse.error("unknown agent: $id", 404)
+            if (target.builtin) {
+                return@register ControlResponse.error(
+                    "'${target.name}' is built in and cannot be deleted; duplicate it instead",
+                    403
+                )
+            }
+            profiles.delete(id)
+            app?.agentRuntime?.reload()
+            ControlResponse.ok(mapOf("deleted" to id))
         }
 
         ControlBus.register("memory_ingest") { req ->

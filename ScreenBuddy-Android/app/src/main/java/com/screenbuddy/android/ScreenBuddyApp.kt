@@ -39,6 +39,21 @@ class ScreenBuddyApp : Application() {
 
     val ttsEngine: TtsEngine by lazy { TtsEngine(this) }
 
+    /** Saved agents, always including the built-in presets. */
+    val agentProfiles: com.screenbuddy.android.data.agent.AgentProfileStore by lazy {
+        com.screenbuddy.android.data.agent.AgentProfileStore.inAppFiles(this)
+    }
+
+    /**
+     * The agent in force.
+     *
+     * Process-scoped because an agent's persona and tool budget must apply to
+     * every request path, not just the one that happened to be open.
+     */
+    val agentRuntime: com.screenbuddy.android.data.agent.AgentRuntime by lazy {
+        com.screenbuddy.android.data.agent.AgentRuntime(agentProfiles)
+    }
+
     /**
      * Control command handlers, installed once so agents can drive the app.
      *

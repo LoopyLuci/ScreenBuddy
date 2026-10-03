@@ -39,8 +39,24 @@ class ChatViewModel(
     private val apiKeyDao: ApiKeyDao,
     modelDao: ModelDao? = null,
     private val rag: RagPipeline? = null,
-    private val agentTools: List<com.screenbuddy.android.data.agent.Tool> = AgentLoop.defaultTools()
+    private val agentTools: List<com.screenbuddy.android.data.agent.Tool> = AgentLoop.defaultTools(),
+    /**
+     * The agent in force. Optional so unit tests can run without a store; with
+     * none, the defaults below apply and the behaviour is unchanged.
+     */
+    private val agentRuntime: com.screenbuddy.android.data.agent.AgentRuntime? = null
 ) : ViewModel() {
+
+    /** The system prompt for the next request, from the active agent. */
+    private fun systemPrompt(): String =
+        agentRuntime?.systemPrompt() ?: SYSTEM_PROMPT
+
+    /** The tool-call budget for the next request, from the active agent. */
+    private fun maxIterations(): Int =
+        agentRuntime?.maxIterations() ?: MAX_ITERATIONS
+
+    /** Whether the active agent may use tools. */
+    private fun toolsEnabled(): Boolean = agentRuntime?.toolsEnabled() ?: true
 
     /**
      * Keys are read through the repository so they are decrypted; going straight
@@ -105,6 +121,13 @@ class ChatViewModel(
 
         viewModelScope.launch {
             val apiKey = apiKeyFor(model.providerId)
+            // A profile that pins a temperature overrides the app setting; one
+            // that did not choose one leaves the user's own slider in force.
+            agentRuntime?.temperatureOverride()?.let { pinned ->
+                aiService.update(
+                    aiService.currentGeneration().copy(temperature = pinned)
+                )
+            }
             val result = runAgent(outgoing, model, apiKey)
             result.fold(
                 onSuccess = { response ->
@@ -134,7 +157,12 @@ class ChatViewModel(
         model: AiModel,
         apiKey: String?
     ): Result<ChatMessage> {
-        val loop = AgentLoop(maxIterations = MAX_ITERATIONS, tools = agentTools)
+        // An agent with tools disabled advertises none, rather than offering
+        // schemas it may not use.
+        val loop = AgentLoop(
+            maxIterations = maxIterations(),
+            tools = if (toolsEnabled()) agentTools else emptyList()
+        )
         var agentOutput: String? = null
 
         val turn = loop.run(
@@ -145,7 +173,7 @@ class ChatViewModel(
                     model = model,
                     apiKey = apiKey,
                     toolSchemas = schemas,
-                    systemPrompt = SYSTEM_PROMPT
+                    systemPrompt = systemPrompt()
                 )
                 result.getOrElse { throw it }
             },
