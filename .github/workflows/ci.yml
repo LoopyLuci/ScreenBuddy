@@ -99,17 +99,27 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Ollama and a small model
+        shell: pwsh
         run: |
-          curl -fsSL https://ollama.com/install.ps1 | powershell -ExecutionPolicy Bypass -Command -
+          Invoke-WebRequest -Uri https://ollama.com/install.ps1 -OutFile install.ps1
+          ./install.ps1
           # A small model keeps the run quick; the assertions are about the
           # request/response path, not the quality of the answer.
           ollama pull qwen2.5:0.5b
-          ollama serve &
-          # Wait for the server rather than sleeping a fixed amount.
-          for i in $(seq 1 60); do
-            if curl -fsS http://localhost:11434/api/tags > /dev/null; then break; fi
-            Start-Sleep -Seconds 2
-          done
+          # Start the server and wait for it to answer, rather than sleeping a
+          # fixed amount and hoping.
+          Start-Process -FilePath ollama -ArgumentList 'serve' -WindowStyle Hidden
+          $ready = $false
+          foreach ($attempt in 1..60) {
+            try {
+              Invoke-WebRequest -Uri http://localhost:11434/api/tags -UseBasicParsing | Out-Null
+              $ready = $true
+              break
+            } catch {
+              Start-Sleep -Seconds 2
+            }
+          }
+          if (-not $ready) { throw 'Ollama did not start' }
       - name: Build the app
         run: cargo build --release --package screenbuddy --bin screenbuddy
       - name: The desktop completes a real conversation

@@ -102,10 +102,12 @@ def wait_for_port(seconds: int = 60) -> bool:
 
 
 def binary() -> Path | None:
-    candidates = [
-        ROOT / "target" / "release" / "screenbuddy.exe",
-        ROOT / "target" / "debug" / "screenbuddy.exe",
-    ]
+    # Prefer release, since that is what CI builds and what ships. Fall back to
+    # debug only when release is absent, so a stale debug binary is never chosen
+    # over the real build.
+    release = ROOT / "target" / "release" / "screenbuddy.exe"
+    debug = ROOT / "target" / "debug" / "screenbuddy.exe"
+    candidates = [release] if release.exists() else [debug, release]
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
