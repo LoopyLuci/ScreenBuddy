@@ -121,6 +121,26 @@ class ProviderRouteTest {
         assertEquals("http://192.168.1.5:8080", service.endpointFor("llamacpp"))
     }
 
+    @Test
+    fun `a model the provider serves is usable even if the catalogue lacks it`() {
+        // send_chat resolved names against the built-in catalogue only, so a
+        // model pulled from Ollama - "qwen2.5:0.5b" - was rejected as unknown
+        // and the app could never talk to a real provider. The catalogue is a
+        // convenience list, not the set of callable models.
+        val resolved = com.screenbuddy.android.data.control.ControlCommands
+            .resolveModelForTest("qwen2.5:0.5b")
+        assertEquals("qwen2.5:0.5b", resolved.name)
+        assertEquals("ollama", resolved.providerId)
+        assertTrue("a local model is free", resolved.isFree)
+    }
+
+    @Test
+    fun `a catalogue model keeps its own provider`() {
+        val resolved = com.screenbuddy.android.data.control.ControlCommands
+            .resolveModelForTest("openai-gpt-4o")
+        assertEquals("openai", resolved.providerId)
+    }
+
     private fun catalogueProviders(): List<Pair<String, ProviderRoute>> = ProviderRoute.entries
         .map { it.providerId to it }
 }

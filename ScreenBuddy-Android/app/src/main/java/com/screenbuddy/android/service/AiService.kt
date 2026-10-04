@@ -433,15 +433,39 @@ class AiService(
                 throw IOException("Ollama error (${response.code}): ${parseErrorResponse(errorBody)}")
             }
             val body = response.body?.string() ?: throw IOException("Empty response from Ollama")
-            try {
-                val parsed = gson.fromJson(body, JsonObject::class.java)
-                val content = parsed.getAsJsonObject("message")?.get("content")?.asString
-                    ?: throw IOException("Unexpected response format from Ollama")
-                return assistantMessage(content, model)
+            // Ollama replies with newline-delimited JSON whenever stream is on,
+            // which the settings permit. Parsing the whole body as one object
+            // threw, so every streamed request failed outright. Both shapes are
+            // handled: a single object, or one per line whose content is joined.
+            val content = try {
+                parseOllamaBody(body)
             } catch (e: JsonSyntaxException) {
                 throw IOException("Failed to parse Ollama response: ${e.message}")
             }
+            return assistantMessage(content, model)
         }
+    }
+
+    /**
+     * Extract the reply text from an Ollama body.
+     *
+     * Handles the two shapes Ollama can return: a single JSON object when
+     * stream is off, and one JSON object per line when it is on. A stream is
+     * reassembled by joining the content of each line in order.
+     */
+    private fun parseOllamaBody(body: String): String {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty()) throw IOException("Empty response from Ollama")
+
+        val parts = mutableListOf<String>()
+        for (line in trimmed.lines()) {
+            val candidate = line.trim()
+            if (candidate.isEmpty()) continue
+            val obj = gson.fromJson(candidate, JsonObject::class.java)
+            obj.getAsJsonObject("message")?.get("content")?.asString?.let(parts::add)
+        }
+        if (parts.isEmpty()) throw IOException("Unexpected response format from Ollama")
+        return parts.joinToString("")
     }
 
     private fun callOpenAiCompatible(

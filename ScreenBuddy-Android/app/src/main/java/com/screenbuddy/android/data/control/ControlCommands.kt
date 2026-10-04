@@ -38,6 +38,30 @@ object ControlCommands {
         "delete_agent",
     )
 
+    /**
+     * Resolve a model name to something callable.
+     *
+     * Prefers a catalogue entry, because it carries the provider and any key.
+     * Otherwise synthesises a local model: the catalogue is a convenience list,
+     * not the set of models that can be called, and anything the user pulled
+     * into their own provider is absent from it. Restricting resolution to the
+     * catalogue meant no model fetched from Ollama could ever be used.
+     */
+    internal fun resolveModelForTest(
+        requested: String
+    ): com.screenbuddy.android.data.model.AiModel =
+        com.screenbuddy.android.data.model.ProviderData.providers
+            .flatMap { it.models }
+            .firstOrNull { it.name == requested || it.id == requested }
+            ?: com.screenbuddy.android.data.model.AiModel(
+                id = requested,
+                name = requested,
+                providerId = "ollama",
+                displayName = requested,
+                isFree = true,
+                isEnabled = true
+            )
+
     private val ANIMATION_STATES = setOf("idle", "walk", "fly", "sleep", "celebrate")
 
     /** A creature id used when the app has none yet, so commands still act. */
@@ -179,19 +203,14 @@ object ControlCommands {
             }
             // The catalogue is the source of truth for what can be sent; the
             // status snapshot does not carry a selected model.
-            val model = com.screenbuddy.android.data.model.ProviderData.providers
-                .flatMap { it.models }
-                .firstOrNull { it.name == req.name || it.id == req.name }
+            val requested = req.name
+                ?: ControlBus.status.value.settings["selected_model_id"]?.takeIf { it.isNotBlank() }
                 ?: return@register ControlResponse.error(
-                    "no such model: ${req.name ?: "(none given)"}; " +
-                        "pass one via 'name'"
+                    "send_chat requires 'name', or a model to be selected first"
                 )
 
-            android.util.Log.i(
-                "ScreenBuddyControl",
-                "send_chat model=${model.id} provider=${model.providerId} " +
-                    "base=${service.currentBaseUrl()}"
-            )
+            val model = resolveModelForTest(requested)
+
             ControlBus.launchIo {
                 val request = com.screenbuddy.android.data.model.ChatMessage(
                     id = UUID.randomUUID().toString(),
