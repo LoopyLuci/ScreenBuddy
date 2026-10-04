@@ -230,7 +230,10 @@ impl SettingsUI {
                 name: "ai_model".to_string(),
                 description: "AI model name".to_string(),
                 category: SettingsCategory::AI,
-                default: SettingValue::String("llama3".to_string()),
+                // A real catalogue entry. The previous default, "llama3", matches
+                // no model the engine knows about, so every request 404'd and the
+                // user was shown a canned fallback rather than an error.
+                default: SettingValue::String("llama3.2".to_string()),
                 min: None,
                 max: None,
             },

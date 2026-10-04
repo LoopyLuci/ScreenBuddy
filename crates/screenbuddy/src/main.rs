@@ -166,7 +166,9 @@ fn main() {
     let mut audio = screenbuddy_core::AudioSystem::new();
     audio.load_default_sounds();
     let ai_config = config.get().ai.clone();
-    let mut ai = screenbuddy_core::AiEngine::new(ai_config);
+    // Shared with the chat bridge: a clone would be a separate engine, and
+    // settings applied here would never reach the one that sends requests.
+    let ai = std::sync::Arc::new(screenbuddy_core::AiEngine::new(ai_config));
     println!(
         "AI engine: {} models available",
         ai.available_models().len()
@@ -330,9 +332,13 @@ fn main() {
     let mut state_idx: usize = 0;
 
     // AI Chat - with console input
-    let ai_clone = screenbuddy_core::AiEngine::new(config.get().ai.clone());
+    // The same engine the settings are applied to below, not a second one built
+    // here. Two engines meant the pinned model, the provider filter and the
+    // restored model list all reached an engine that never sent a request,
+    // while the bridge's own engine kept the hardcoded catalogue and used one
+    // of its names whether or not it was installed.
     let chat_clone = screenbuddy_core::ChatOverlay::new();
-    let _ai_bridge = screenbuddy_core::AiChatBridge::new(ai_clone, chat_clone);
+    let _ai_bridge = screenbuddy_core::AiChatBridge::with_engine(ai.clone(), chat_clone);
     _ai_bridge.start().ok();
 
     // Spawn stdin reader for chat input
@@ -410,9 +416,9 @@ fn main() {
     let mut agent_win = agent_editor::AgentEditor::new(agent_store, None);
     agent_editor::create_editor_window(&mut agent_win);
 
-    let agent = std::sync::Arc::new(screenbuddy_core::AgentRuntime::new(std::sync::Arc::new(
-        ai.clone(),
-    )));
+    // Share the one engine, as the chat bridge does. Wrapping ai again here
+    // built a second engine whose settings were never applied.
+    let agent = std::sync::Arc::new(screenbuddy_core::AgentRuntime::new(ai.clone()));
     for tool in screenbuddy_core::default_tools() {
         agent.register_tool(&tool.name.clone(), tool);
     }
@@ -1069,31 +1075,28 @@ fn main() {
         //
         // The bridge writes replies to its ChatOverlay; this drains them. Without
         // this, replies were only printed to stdout and never appeared in the UI.
-        let rendered = chat_win.messages().len();
+        // The offset comes from the bridge's own cursor, not the window's
+        // message count: the window also receives messages by other paths, so
+        // using its count made the drain skip past replies and lose them.
+        let consumed = bridge_for_input.consumed();
         let overlay_messages = bridge_for_input
             .overlay()
             .lock()
             .map(|o| o.messages().len())
             .unwrap_or(0);
-        if overlay_messages > rendered {
+        if overlay_messages > consumed {
             let fresh: Vec<(String, String)> = bridge_for_input
-                .overlay()
-                .lock()
-                .map(|o| {
-                    o.messages()
-                        .iter()
-                        .skip(rendered)
-                        .map(|m| {
-                            let role = match m.role {
-                                MessageRole::User => "user".to_string(),
-                                MessageRole::Assistant => "assistant".to_string(),
-                                MessageRole::System => "system".to_string(),
-                            };
-                            (role, m.content.clone())
-                        })
-                        .collect()
+                .take_unconsumed()
+                .into_iter()
+                .map(|(role, text)| {
+                    let role = match role {
+                        MessageRole::User => "user".to_string(),
+                        MessageRole::Assistant => "assistant".to_string(),
+                        MessageRole::System => "system".to_string(),
+                    };
+                    (role, text)
                 })
-                .unwrap_or_default();
+                .collect();
             for (role, text) in fresh {
                 chat_win.add_message(&role, &text);
                 // The main window re-reads the store each frame, so recording the
@@ -1107,6 +1110,7 @@ fn main() {
                     store.push(session_role, text);
                 }
             }
+            // take_unconsumed already advanced the bridge's cursor.
         }
 
         if should_quit {

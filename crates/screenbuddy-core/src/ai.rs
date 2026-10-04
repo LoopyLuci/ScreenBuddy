@@ -184,10 +184,18 @@ pub struct ModelInfo {
 #[derive(Clone)]
 pub struct AiEngine {
     config: AiConfig,
-    models: Vec<ModelInfo>,
+    /// The known models, narrowed at startup by restrict_to_backend.
+    ///
+    /// Behind a lock because the engine is shared and narrowing needs &self.
+    models: std::sync::Arc<std::sync::RwLock<Vec<ModelInfo>>>,
     client: reqwest::Client,
     /// Model used when a request names none, set from ai_model.
-    pinned_model: Option<String>,
+    ///
+    /// Interior mutability: the engine is shared with the chat bridge behind an
+    /// Arc, so a settings change reaches the object that actually sends
+    /// requests. A clone would be a separate engine and the change would land on
+    /// one that never did.
+    pinned_model: std::sync::Arc<std::sync::RwLock<Option<String>>>,
 }
 
 impl AiEngine {
@@ -199,17 +207,97 @@ impl AiEngine {
             .expect("HTTP client");
         Self {
             config,
-            models,
+            models: std::sync::Arc::new(std::sync::RwLock::new(models)),
             client,
-            pinned_model: None,
+            pinned_model: std::sync::Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    /// Build a ModelInfo for a name the provider serves but the catalogue does
+    /// not list.
+    fn resolved_local(&self, name: String) -> ModelInfo {
+        ModelInfo {
+            tier: ModelTier::LocalMedium,
+            backend: Backend::Ollama,
+            name,
+            max_context: 8192,
+            cost: 0.0,
+        }
+    }
+
+    /// Ask Ollama which models are installed.
+    ///
+    /// The catalogue was a fixed list naming four Llama models, none of which
+    /// are guaranteed to be present. On a machine running anything else every
+    /// request 404'd, and because a failure fell back to a canned reply the user
+    /// saw a plausible conversation with no model behind it. Discovery means the
+    /// app uses what the provider actually serves.
+    pub async fn discover_ollama_models(&self) -> Result<Vec<String>> {
+        let endpoint = self.config.ollama_endpoint.clone().ok_or_else(|| {
+            crate::error::Error::InvalidConfig("no Ollama endpoint is configured".into())
+        })?;
+        let url = format!("{}/api/tags", endpoint.trim_end_matches('/'));
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            crate::error::Error::Network(format!("could not reach Ollama at {url}: {e}"))
+        })?;
+        if !response.status().is_success() {
+            return Err(crate::error::Error::Network(format!(
+                "Ollama returned {} for {url}",
+                response.status()
+            )));
+        }
+        let json: serde_json::Value = response.json().await.map_err(|e| {
+            crate::error::Error::Network(format!("could not read the model list: {e}"))
+        })?;
+
+        let mut names = Vec::new();
+        if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
+            for model in models {
+                if let Some(name) = model.get("name").and_then(|n| n.as_str()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    /// Whether [name] is one the local provider actually serves.
+    ///
+    /// Used to fall back to a model that exists rather than 404ing on one that
+    /// does not.
+    pub async fn resolve_local_model(&self, name: &str) -> Result<String> {
+        if self.find_model_by_name(name).is_ok() {
+            return Ok(name.to_string());
+        }
+        let available = self.discover_ollama_models().await?;
+        if available.iter().any(|m| m == name) {
+            return Ok(name.to_string());
+        }
+        match available.len() {
+            0 => Err(crate::error::Error::InvalidConfig(
+                "the local provider has no models installed".into(),
+            )),
+            1 => Ok(available[0].clone()),
+            _ => {
+                // Prefer the smallest, which is most likely to be the default the
+                // user intended rather than a large one they never asked for.
+                let mut sorted = available.clone();
+                sorted.sort_by_key(|m| m.len());
+                Ok(sorted.remove(0))
+            }
         }
     }
 
     pub async fn generate(&self, req: AiRequest) -> Result<AiResponse> {
         // A named model wins over the tier: that is the whole point of a profile
         // being able to pin one.
-        let model = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
-            Some(name) => self.find_model_by_name(name)?,
+        // A named model may be one the provider was never told to serve, so ask
+        // it what it has rather than 404ing on a catalogue name.
+        let model: ModelInfo = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
+            Some(name) => match self.find_model_by_name(name) {
+                Ok(info) => info,
+                Err(_) => self.resolved_local(self.resolve_local_model(name).await?),
+            },
             None => {
                 let tier = req
                     .force_tier
@@ -217,6 +305,7 @@ impl AiEngine {
                 self.select_model(tier)?
             }
         };
+        let model = &model;
         match model.backend {
             Backend::Ollama => self.gen_ollama(&req, model).await,
             Backend::LlamaCpp => self.gen_llama(&req, model).await,
@@ -264,6 +353,8 @@ impl AiEngine {
 
     fn has_local(&self) -> bool {
         self.models
+            .read()
+            .unwrap()
             .iter()
             .any(|m| matches!(m.backend, Backend::Ollama | Backend::LlamaCpp))
     }
@@ -273,23 +364,31 @@ impl AiEngine {
     /// Falls back to a case-insensitive match so a name typed by hand still
     /// resolves, and reports what is available when it does not -- a silent
     /// fallback to a different model would be worse than an error.
-    pub fn find_model_by_name(&self, name: &str) -> Result<&ModelInfo> {
-        if let Some(model) = self.models.iter().find(|m| m.name == name) {
-            return Ok(model);
-        }
+    pub fn find_model_by_name(&self, name: &str) -> Result<ModelInfo> {
+        // One lock scope: a read guard cannot outlive the lock, so every lookup
+        // has to finish before it is dropped.
+        let models = self.models.read().unwrap();
         let lowered = name.trim().to_ascii_lowercase();
-        if let Some(model) = self
-            .models
+        let found = models
             .iter()
-            .find(|m| m.name.to_ascii_lowercase() == lowered)
-        {
-            return Ok(model);
+            .find(|m| m.name == name)
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|m| m.name.to_ascii_lowercase() == lowered)
+            })
+            .cloned();
+        match found {
+            Some(model) => Ok(model),
+            None => Err(crate::error::Error::InvalidConfig(format!(
+                "no configured model named '{name}'; available: {}",
+                models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
         }
-        let available: Vec<&str> = self.models.iter().map(|m| m.name.as_str()).collect();
-        Err(crate::error::Error::InvalidConfig(format!(
-            "no configured model named '{name}'; available: {}",
-            available.join(", ")
-        )))
     }
 
     /// Whether a model name resolves, for validating a profile before use.
@@ -297,11 +396,14 @@ impl AiEngine {
         self.find_model_by_name(name).is_ok()
     }
 
-    fn select_model(&self, tier: ModelTier) -> Result<&ModelInfo> {
-        self.models
+    fn select_model(&self, tier: ModelTier) -> Result<ModelInfo> {
+        // One lock scope, as in find_model_by_name.
+        let models = self.models.read().unwrap();
+        models
             .iter()
             .find(|m| m.tier == tier)
-            .or_else(|| self.models.first())
+            .or_else(|| models.first())
+            .cloned()
             .ok_or_else(|| crate::error::Error::InvalidConfig("No models".into()))
     }
 
@@ -885,24 +987,6 @@ impl AiEngine {
         })
     }
 
-    pub fn simple(&self, prompt: &str) -> String {
-        let p = prompt.to_lowercase();
-        if p.contains("hello") || p.contains("hi ") {
-            "Hello! I'm your ScreenBuddy companion. How can I help?".into()
-        } else if p.contains("help") {
-            "I can: chat, answer questions, control your buddy, and more! Try clicking the tray icon.".into()
-        } else if p.contains("joke") {
-            "Why do programmers prefer dark mode? Because light attracts bugs! 🐛".into()
-        } else if p.contains("name") {
-            "I'm ScreenBuddy, your AI desktop companion! 🐦".into()
-        } else {
-            format!(
-                "I heard: '{}'. Connect a real AI model (Ollama, OpenAI, etc.) for full responses!",
-                prompt
-            )
-        }
-    }
-
     pub fn config(&self) -> &AiConfig {
         &self.config
     }
@@ -927,38 +1011,55 @@ impl AiEngine {
     /// The backend is recorded per model rather than on the config, so choosing
     /// a provider means keeping only that provider's models. This is what
     /// ai_provider selects, and what ai_model then chooses within.
-    pub fn restrict_to_backend(&mut self, backend: Backend) -> usize {
-        self.models.retain(|m| m.backend == backend);
-        self.models.len()
+    pub fn restrict_to_backend(&self, backend: Backend) -> usize {
+        self.models
+            .write()
+            .unwrap()
+            .retain(|m| m.backend == backend);
+        self.models.read().unwrap().len()
     }
 
     /// Pin the model used when a request names none.
     ///
     /// Errors naming what is available when the model is unknown, rather than
     /// silently using a different one, which is the defect this replaces.
-    pub fn set_default_model(&mut self, name: &str) -> Result<&mut Self> {
-        if !self.has_model(name) {
-            return Err(crate::error::Error::InvalidConfig(format!(
-                "unknown model '{name}'; available: {}",
-                self.available_model_names().join(", ")
-            )));
+    pub fn set_default_model(&self, name: &str) -> Result<&Self> {
+        // Accept any non-blank name. The catalogue is a fixed list, but the
+        // provider may serve models absent from it, and rejecting here meant a
+        // valid choice could never be pinned. Whether it resolves is answered
+        // per request, where the provider can actually be asked.
+        if name.trim().is_empty() {
+            return Err(crate::error::Error::InvalidConfig(
+                "a model name must not be blank".into(),
+            ));
         }
-        self.pinned_model = Some(name.to_string());
+        *self.pinned_model.write().unwrap() = Some(name.to_string());
         Ok(self)
     }
 
     /// Every model name currently selectable, for error messages and pickers.
     pub fn available_model_names(&self) -> Vec<String> {
-        self.models.iter().map(|m| m.name.clone()).collect()
+        self.models
+            .read()
+            .unwrap()
+            .iter()
+            .map(|m| m.name.clone())
+            .collect()
     }
 
     /// The model a request would use now, for reporting in the UI.
-    pub fn effective_model(&self) -> Option<&str> {
-        self.pinned_model.as_deref()
+    pub fn effective_model(&self) -> Option<String> {
+        self.pinned_model.read().unwrap().clone()
     }
 
-    pub fn available_models(&self) -> &[ModelInfo] {
-        &self.models
+    /// The pinned model, if one is set. Used by the bridge so a configured
+    /// model actually reaches the request rather than being dropped.
+    pub fn pinned_model(&self) -> Option<String> {
+        self.pinned_model.read().unwrap().clone()
+    }
+
+    pub fn available_models(&self) -> Vec<ModelInfo> {
+        self.models.read().unwrap().clone()
     }
 }
 
@@ -1177,18 +1278,29 @@ mod tests {
     }
 
     #[test]
-    fn pinning_an_unknown_model_lists_what_is_available() {
-        // This is the defect the audit found: a profile naming a model the app
-        // did not have silently used a different one.
-        let mut engine = AiEngine::new(AiConfig::default());
-        let err = match engine.set_default_model("gpt-nonexistent") {
-            Ok(_) => panic!("an unknown model should be rejected"),
-            Err(e) => e.to_string(),
-        };
-        assert!(err.contains("gpt-nonexistent"), "got: {err}");
+    fn pinning_accepts_a_model_outside_the_catalogue() {
+        // Rejecting unknown names was the defect: the catalogue is a fixed list,
+        // so a model the provider genuinely serves could never be pinned, and
+        // the request silently used a catalogue entry instead. Pinning accepts
+        // the name; whether it resolves is answered per request.
+        let engine = AiEngine::new(AiConfig::default());
+        engine
+            .set_default_model("qwen2.5:0.5b")
+            .expect("a model outside the catalogue should still be pinnable");
+        assert_eq!(
+            engine.effective_model().as_deref(),
+            Some("qwen2.5:0.5b"),
+            "the pinned name should be reported as effective"
+        );
+    }
+
+    #[test]
+    fn pinning_a_blank_model_is_rejected() {
+        // The one name that is always wrong: nothing to resolve against.
+        let engine = AiEngine::new(AiConfig::default());
         assert!(
-            err.contains("available"),
-            "the error should say what is available: {err}"
+            engine.set_default_model("   ").is_err(),
+            "a blank model name should be rejected"
         );
     }
 
@@ -1199,7 +1311,7 @@ mod tests {
         if let Err(e) = engine.set_default_model(&name) {
             panic!("{name} is in the list but was rejected: {e}");
         }
-        assert_eq!(engine.effective_model(), Some(name.as_str()));
+        assert_eq!(engine.effective_model().as_deref(), Some(name.as_str()));
     }
 
     #[test]
