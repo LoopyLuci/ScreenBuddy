@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +65,19 @@ fun ChatScreen(
     // never changed, and an externally set animation never appeared.
     var frame by remember { mutableLongStateOf(0L) }
     var lastAnimation by remember { mutableStateOf<String?>(null) }
+
+    // Each creature's species and colour, from the catalogue. Built once: the
+    // catalogue is static, and resolving it per frame would be wasted work.
+    val appearance = remember {
+        com.screenbuddy.android.data.model.CreatureDefaults.creatures.associate { creature ->
+            creature.id to com.screenbuddy.android.ui.overlay.Appearance(
+                species = creature.species,
+                color = runCatching {
+                    Color(android.graphics.Color.parseColor(creature.colorHex))
+                }.getOrElse { com.screenbuddy.android.ui.overlay.Appearance.DEFAULT.color }
+            )
+        }
+    }
     LaunchedEffect(Unit) {
         if (engine.count() == 0) {
             engine.add("companion-bird-01", 120f, 260f)
@@ -189,6 +203,7 @@ fun ChatScreen(
             com.screenbuddy.android.ui.overlay.CreatureOverlay(
                 engine = engine,
                 tick = frame,
+                appearance = appearance,
                 showCreatures = settings?.showCreatures ?: true,
                 animationsEnabled = settings?.animationsEnabled ?: true,
                 animationSpeed = settings?.animationSpeed ?: 1f

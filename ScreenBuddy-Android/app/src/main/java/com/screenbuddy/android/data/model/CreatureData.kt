@@ -3,7 +3,15 @@ package com.screenbuddy.android.data.model
 import java.util.UUID
 
 data class CreatureData(
-    val id: String = UUID.randomUUID().toString(),
+    /**
+     * Stable identifier, used by agent profiles and by the control surface.
+     *
+     * This was a random UUID, which meant the ids the rest of the app uses -
+     * "companion-bird-01" and friends - matched no catalogue entry, and every
+     * lookup fell back silently. A defaulting parameter would repeat that; ids
+     * are required so a catalogue entry cannot be anonymous.
+     */
+    val id: String,
     val name: String,
     val species: String,
     val personality: String,
@@ -23,6 +31,7 @@ data class AnimationState(
 object CreatureDefaults {
     val creatures = listOf(
         CreatureData(
+            id = "companion-dog-01",
             name = "Buddy",
             species = "Dog",
             personality = "Loyal, cheerful, always ready to help",
@@ -36,6 +45,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "robo-cat-01",
             name = "Whiskers",
             species = "Cat",
             personality = "Curious, independent, loves to explore",
@@ -49,6 +59,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "companion-bird-01",
             name = "Hoot",
             species = "Owl",
             personality = "Wise, thoughtful, answers questions",
@@ -62,6 +73,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "pixel-wizard-01",
             name = "Spike",
             species = "Dinosaur",
             personality = "Energetic, playful, loves adventure",
@@ -75,6 +87,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "cosmic-jellyfish-01",
             name = "Bubbles",
             species = "Fish",
             personality = "Calm, soothing, peaceful presence",
@@ -88,6 +101,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "slime-king-01",
             name = "Flutter",
             species = "Butterfly",
             personality = "Colorful, graceful, brings joy",
@@ -101,6 +115,7 @@ object CreatureDefaults {
             )
         ),
         CreatureData(
+            id = "ghost-01",
             name = "Shadow",
             species = "Raven",
             personality = "Mysterious, clever, deep thinker",

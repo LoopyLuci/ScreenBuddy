@@ -53,7 +53,11 @@ fun CreatureOverlay(
     /** Honours the animations_enabled and animation_speed settings. */
     animationsEnabled: Boolean = true,
     animationSpeed: Float = 1.0f,
-    creatureEmoji: String = "🐦"
+    /**
+     * Species and colour per creature id, taken from the creature catalogue.
+     * Drawn rather than an emoji so the data actually shows.
+     */
+    appearance: Map<String, Appearance> = emptyMap()
 ) {
     if (!showCreatures) return
 
@@ -65,14 +69,28 @@ fun CreatureOverlay(
     Box(modifier = modifier) {
         for (creature in snapshot) {
             if (creature.visible) {
+                val look = appearance[creature.id] ?: Appearance.DEFAULT
                 CreatureView(
                     creature = creature,
                     animationsEnabled = animationsEnabled,
                     animationSpeed = animationSpeed,
-                    emoji = creatureEmoji
+                    species = look.species,
+                    color = look.color
                 )
             }
         }
+    }
+}
+
+/**
+ * How a creature looks: which species, in which colour.
+ *
+ * Resolved from the catalogue by id, with a neutral fallback so an unknown id
+ * still draws rather than disappearing.
+ */
+data class Appearance(val species: String, val color: Color) {
+    companion object {
+        val DEFAULT = Appearance("bird", Color(0xFF7FB3D5))
     }
 }
 
@@ -81,7 +99,8 @@ private fun CreatureView(
     creature: CreatureState,
     animationsEnabled: Boolean,
     animationSpeed: Float,
-    emoji: String
+    species: String,
+    color: Color
 ) {
     val transition = rememberInfiniteTransition(label = "creature-${creature.id}")
     // Speed scales the period, and is clamped so a wild value cannot make the
@@ -128,14 +147,19 @@ private fun CreatureView(
                 .background(Color.White.copy(alpha = 0.25f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = emoji,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Normal,
+            // The sprite animates its own limbs, so only a light whole-body
+            // breath is applied here; a stronger scale would read as a bounce
+            // fighting the walk cycle.
+            CreatureSprite(
+                animation = creature.animation,
+                color = color,
+                species = species,
+                animationsEnabled = animationsEnabled,
+                animationSpeed = animationSpeed,
                 modifier = Modifier
-                    .scale(1f + lift / 40f)
-                    .rotate(tilt)
-                    .alpha(0.9f)
+                    .scale(1f + lift / 120f)
+                    .rotate(tilt * 0.4f)
+                    .alpha(0.95f)
             )
         }
         Text(
