@@ -216,6 +216,25 @@ def main() -> int:
                 text[:80],
             )
             check("the reply is substantial", len(text) > 3, f"{len(text)} chars")
+            # The important assertion: the text came from the model. A failure
+            # report is also a non-empty, non-echo string, so shape checks alone
+            # will happily pass on an app that never reached a model at all.
+            lowered = text.lower()
+            failure_markers = [
+                "could not reach",
+                "i'm sorry",
+                "i am sorry",
+                "as an ai",
+                "error",
+                "not available",
+                "screenbuddy companion",
+            ]
+            found = [m for m in failure_markers if m in lowered]
+            check(
+                "the reply came from the model, not a fallback",
+                not found,
+                f"failure text in the reply: {found}" if found else text[:70],
+            )
     finally:
         app.terminate()
         try:

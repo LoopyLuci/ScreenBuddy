@@ -83,6 +83,38 @@ jobs:
       - name: Audit the Android settings and control surface
         run: python tools/android_surface_audit.py
 
+  # The only check that runs the shipped binary against an actual model.
+  #
+  # Four defects reached a green build this way: a failure returned a
+  # keyword-matched canned reply, the default model name was not a real model,
+  # the app held two AI engines so settings reached one that never sent a
+  # request, and the transcript drain skipped every assistant reply. A stub
+  # cannot find any of them - it returns whatever the code expects.
+  live-model:
+    name: Talk to a real model
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Ollama and a small model
+        run: |
+          curl -fsSL https://ollama.com/install.ps1 | powershell -ExecutionPolicy Bypass -Command -
+          # A small model keeps the run quick; the assertions are about the
+          # request/response path, not the quality of the answer.
+          ollama pull qwen2.5:0.5b
+          ollama serve &
+          # Wait for the server rather than sleeping a fixed amount.
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:11434/api/tags > /dev/null; then break; fi
+            Start-Sleep -Seconds 2
+          done
+      - name: Build the app
+        run: cargo build --release --package screenbuddy --bin screenbuddy
+      - name: The desktop completes a real conversation
+        run: python tools/live_desktop_check.py
+
   # A second non-Windows target, for the same reason as the Linux job: an
   # unguarded x86-only intrinsic or Win32 type is invisible on a Windows build.
   # macOS also differs in ways that matter here -- Metal instead of Vulkan, and

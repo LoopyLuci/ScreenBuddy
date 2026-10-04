@@ -74,6 +74,51 @@ def main():
 
     checks = []
 
+    # Capture what we are about to change, and put it back whatever happens.
+    # These settings persist, so a run that exits early would otherwise leave
+    # rag_enabled=0 on disk and make the MCP suite's memory search fail for a
+    # reason that has nothing to do with it.
+    original = {}
+    app = start()
+    try:
+        for key in ("fps_target", "volume_master", "rag_enabled"):
+            got = send({"cmd": "get_setting", "key": key})
+            value = got.get("data", {}).get("value")
+            if value is not None:
+                original[key] = value
+    finally:
+        stop(app)
+
+    try:
+        checks.extend(_exercise(original))
+    finally:
+        _restore(original)
+
+    passed = sum(1 for _, ok, _ in checks if ok)
+    print()
+    for name, ok, detail in checks:
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f": {detail}" if detail else ""))
+    print(f"\n{passed}/{len(checks)} checks passed")
+    return 0 if passed == len(checks) else 1
+
+
+def _restore(original):
+    """Put the captured settings back, best effort."""
+    if not original:
+        return
+    app = start()
+    try:
+        for key, value in original.items():
+            send({"cmd": "set_setting", "key": key, "value": value})
+        time.sleep(0.8)
+    finally:
+        stop(app)
+
+
+def _exercise(original):
+    """Change the settings, restart, and verify they took effect."""
+    checks = []
+
     # First run: change three settings with real consumers.
     app = start()
     try:
@@ -110,23 +155,7 @@ def main():
                    "45 FPS" in log2,
                    [l for l in log2.splitlines() if "FPS" in l][:1]))
 
-    # Restore the defaults so the run leaves nothing behind.
-    app = start()
-    try:
-        send({"cmd": "set_setting", "key": "fps_target", "value": 30})
-        send({"cmd": "set_setting", "key": "volume_master", "value": 1.0})
-        send({"cmd": "set_setting", "key": "rag_enabled", "value": 1.0})
-    finally:
-        stop(app)
-
-    print()
-    failures = 0
-    for name, ok, detail in checks:
-        print(f"  {'PASS' if ok else 'FAIL'}  {name}: {str(detail)[:100]}")
-        if not ok:
-            failures += 1
-    print(f"\n{len(checks) - failures}/{len(checks)} checks passed")
-    return 1 if failures else 0
+    return checks
 
 
 if __name__ == "__main__":

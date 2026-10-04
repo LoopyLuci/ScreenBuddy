@@ -215,7 +215,6 @@ impl Clone for AiChatBridge {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn taking_unconsumed_does_not_skip_a_reply_after_a_user_turn() {

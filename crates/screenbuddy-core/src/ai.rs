@@ -307,7 +307,25 @@ impl AiEngine {
         };
         let model = &model;
         match model.backend {
-            Backend::Ollama => self.gen_ollama(&req, model).await,
+            // A name from the fixed catalogue can resolve and still 404, because
+            // the catalogue says nothing about what is installed. On that, ask
+            // the provider what it serves and retry once with a real model.
+            Backend::Ollama => match self.gen_ollama(&req, model).await {
+                Err(e) if Self::is_missing_model(&e) => {
+                    let available = self.discover_ollama_models().await?;
+                    if let Some(replacement) = available.first() {
+                        if replacement != &model.name {
+                            let resolved = self.resolved_local(replacement.clone());
+                            self.gen_ollama(&req, &resolved).await
+                        } else {
+                            Err(e)
+                        }
+                    } else {
+                        Err(e)
+                    }
+                }
+                other => other,
+            },
             Backend::LlamaCpp => self.gen_llama(&req, model).await,
             Backend::OpenAi => self.gen_openai(&req, model).await,
             Backend::Anthropic => self.gen_anthropic(&req, model).await,
@@ -659,6 +677,17 @@ impl AiEngine {
         serde_json::json!({"role":role,"content":content})
     }
 
+    /// Whether an error says the provider does not have the requested model.
+    ///
+    /// A missing model is recoverable - another installed one can be used - while
+    /// a connection or auth failure is not, and retrying the latter would hide
+    /// the real problem.
+    fn is_missing_model(error: &crate::error::Error) -> bool {
+        let text = error.to_string().to_ascii_lowercase();
+        (text.contains("404") || text.contains("not found"))
+            && (text.contains("model") || text.contains("no such"))
+    }
+
     // ============ OLLAMA ============
     async fn gen_ollama(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
         let ep = self.config.ollama_endpoint.as_ref().unwrap();
@@ -682,10 +711,22 @@ impl AiEngine {
             .send()
             .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            // Name the model and include the body: a bare status is ambiguous,
+            // and the missing-model recovery below depends on knowing a 404 meant
+            // the model rather than the endpoint.
+            let body = resp.text().await.unwrap_or_default();
+            let detail = body.chars().take(200).collect::<String>();
             return Err(crate::error::Error::Network(format!(
-                "Ollama error: {}",
-                resp.status()
+                "Ollama error: {} requesting model {:?}{}",
+                status,
+                model.name,
+                if detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
             )));
         }
         let json: serde_json::Value = resp
@@ -1306,7 +1347,7 @@ mod tests {
 
     #[test]
     fn pinning_a_known_model_reports_it_as_effective() {
-        let mut engine = AiEngine::new(AiConfig::default());
+        let engine = AiEngine::new(AiConfig::default());
         let name = engine.available_model_names().first().cloned().unwrap();
         if let Err(e) = engine.set_default_model(&name) {
             panic!("{name} is in the list but was rejected: {e}");
@@ -1315,8 +1356,45 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_model_is_recoverable_but_other_failures_are_not() {
+        // Retry-on-404 is what lets a fresh install work: the default model name
+        // comes from a fixed catalogue and is usually not installed. A connection
+        // or auth failure must not be retried, or the real problem is hidden.
+        let missing = crate::error::Error::Network(
+            "Ollama error: 404 Not Found requesting model \"llama3.2\"".to_string(),
+        );
+        assert!(
+            AiEngine::is_missing_model(&missing),
+            "a 404 naming a model should trigger rediscovery"
+        );
+
+        for not_recoverable in [
+            "Ollama error: 500 Internal Server Error",
+            "could not reach Ollama at http://localhost:11434/api/tags: refused",
+            "Ollama error: 401 Unauthorized",
+        ] {
+            let e = crate::error::Error::Network(not_recoverable.to_string());
+            assert!(
+                !AiEngine::is_missing_model(&e),
+                "should not retry on: {not_recoverable}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_404_without_a_model_named_is_not_treated_as_a_missing_model() {
+        // The bare status "Ollama error: 404 Not Found" is ambiguous - it could be
+        // the endpoint. Only a message that names a model counts.
+        let ambiguous = crate::error::Error::Network("Ollama error: 404 Not Found".to_string());
+        assert!(
+            !AiEngine::is_missing_model(&ambiguous),
+            "an ambiguous 404 should not be retried as a missing model"
+        );
+    }
+
+    #[test]
     fn restricting_a_provider_keeps_only_its_models() {
-        let mut engine = AiEngine::new(AiConfig::default());
+        let engine = AiEngine::new(AiConfig::default());
         let total = engine.available_models().len();
         let kept = engine.restrict_to_backend(Backend::Ollama);
         assert!(kept < total, "restricting removed nothing: {kept}/{total}");

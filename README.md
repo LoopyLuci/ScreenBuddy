@@ -149,7 +149,7 @@ toolkit/godot-project/    # Godot creature editor
 ## Testing
 
 ```bash
-# Desktop: 137 tests
+# Desktop
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
@@ -161,7 +161,22 @@ cd ScreenBuddy-Android && ./gradlew testDebugUnitTest
 python tools/ipc_probe.py           # desktop IPC protocol (app must be running)
 python mcp/test_mcp.py              # MCP handshake, discovery, tool calls
 python tools/android_control_probe.py --serial <device>   # Android control surface
+
+# Real model, both platforms. Needs Ollama running with a model pulled.
+python tools/live_desktop_check.py  # desktop binary completes a real conversation
+python tools/live_model_check.py    # Android app completes a real conversation
 ```
+
+Both live checks skip rather than fail when no provider is reachable, so a red
+result always means something. They are the checks that matter most: every defect
+they were written for passed 390 unit tests first. Specifically, a failed request
+returned a keyword-matched canned reply, the default model name matched no
+installed model, the app held two AI engines so settings reached one that never
+sent a request, and the transcript drain skipped every assistant reply. None of
+those are visible to a stub, which returns whatever the code expects.
+
+The desktop check also asserts the reply is not failure text, so an app that
+reports an honest error cannot pass it.
 
 Android unit tests run on the JVM against in-memory fake DAOs, so no emulator is
 needed. `ProviderRouteTest` guards the routing table specifically: an unknown
