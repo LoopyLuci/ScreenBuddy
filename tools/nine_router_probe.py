@@ -16,6 +16,10 @@ import pathlib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ADDR = ("127.0.0.1", 34567)
 
+# Load .env for API keys and configuration
+from dotenv import load_dotenv
+load_dotenv(ROOT / ".env")
+
 
 def free_port():
     s = socket.socket()

@@ -56,3 +56,4 @@ logs/
 # Temporary
 *.tmp
 *.bak
+.env
