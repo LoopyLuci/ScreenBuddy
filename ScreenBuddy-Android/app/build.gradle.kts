@@ -41,8 +41,13 @@ android {
             // Resolve relative to the root project: keystore.properties and the
             // keystore it points at live beside each other, not under app/.
             val store = storePath?.let { p ->
-                val direct = file(p)
-                if (direct.exists()) direct else rootProject.file(p)
+                val f = file(p)
+                val rf = rootProject.file(p)
+                when {
+                    f.exists() -> f
+                    rf.exists() -> rf
+                    else -> null
+                }
             }
             if (store != null && store.exists()) {
                 storeFile = store
