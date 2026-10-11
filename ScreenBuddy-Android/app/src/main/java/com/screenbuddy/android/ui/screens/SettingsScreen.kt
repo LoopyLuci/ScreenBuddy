@@ -246,6 +246,30 @@ private fun SettingsContent(
         }
 
         item {
+            SettingsSection("9Router") {
+                SettingsToggle(
+                    "Enable 9Router",
+                    "Route AI requests through a local 9Router proxy",
+                    Icons.Filled.Router,
+                    uiState.ninerouterEnabled,
+                    viewModel::setNinerouterEnabled
+                )
+                SettingsItem(
+                    title = "9Router endpoint",
+                    description = uiState.ninerouterBaseUrl,
+                    icon = Icons.Filled.Dns,
+                    onClick = { /* handled by SettingsViewModel */ }
+                )
+                SettingsItem(
+                    title = "9Router API key",
+                    description = if (uiState.ninerouterApiKey.isNotBlank()) "Configured" else "Not set",
+                    icon = Icons.Filled.Key,
+                    onClick = { /* handled by SettingsViewModel */ }
+                )
+            }
+        }
+
+        item {
             SettingsSection("About") {
                 SettingsItem(
                     title = "Version",

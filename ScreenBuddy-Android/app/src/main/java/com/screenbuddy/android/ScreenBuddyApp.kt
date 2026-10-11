@@ -34,6 +34,11 @@ class ScreenBuddyApp : Application() {
      */
     val aiService: AiService by lazy { AiService() }
 
+    /** 9Router management service for local proxy control. */
+    val nineRouterService: com.screenbuddy.android.service.NineRouterService by lazy {
+        com.screenbuddy.android.service.NineRouterService()
+    }
+
     /** RAG memory, mirroring the desktop pipeline. Empty until documents are ingested. */
     val ragPipeline: RagPipeline by lazy { RagPipeline() }
 

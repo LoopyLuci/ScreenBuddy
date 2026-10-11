@@ -30,6 +30,9 @@ data class SettingsUiState(
     val temperature: Float = 0.7f,
     val responseLength: Int = 512,
     val ollamaBaseUrl: String = "http://10.0.2.2:11434",
+    val ninerouterEnabled: Boolean = false,
+    val ninerouterBaseUrl: String = "http://localhost:20128/v1",
+    val ninerouterApiKey: String = "",
     val enabledModels: List<AiModel> = emptyList(),
     val selectedModelId: String = "",
     val providersWithKeys: Set<String> = emptySet(),
@@ -89,6 +92,9 @@ class SettingsViewModel(
                     temperature = s.temperature,
                     responseLength = s.responseLength,
                     ollamaBaseUrl = s.ollamaBaseUrl,
+                    ninerouterEnabled = s.ninerouterEnabled,
+                    ninerouterBaseUrl = s.ninerouterBaseUrl,
+                    ninerouterApiKey = s.ninerouterApiKey,
                     selectedModelId = s.selectedModelId.ifEmpty { _uiState.value.selectedModel?.id ?: "" }
                 )
             }
@@ -112,6 +118,9 @@ class SettingsViewModel(
     fun setResponseLength(v: Int) = mutate { settingsRepository.setResponseLength(v) }
     fun setSelectedModel(v: String) = mutate { settingsRepository.setSelectedModel(v) }
     fun setOllamaBaseUrl(v: String) = mutate { settingsRepository.setOllamaBaseUrl(v.trim()) }
+    fun setNinerouterEnabled(v: Boolean) = mutate { settingsRepository.setNinerouterEnabled(v) }
+    fun setNinerouterBaseUrl(v: String) = mutate { settingsRepository.setNinerouterBaseUrl(v.trim()) }
+    fun setNinerouterApiKey(v: String) = mutate { settingsRepository.setNinerouterApiKey(v.trim()) }
 
     fun clearAllApiKeys() = mutate { providerRepository.clearAllApiKeys() }
 

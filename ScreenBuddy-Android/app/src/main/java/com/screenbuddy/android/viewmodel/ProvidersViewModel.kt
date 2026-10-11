@@ -29,7 +29,8 @@ data class ProvidersUiState(
 class ProvidersViewModel(
     private val apiKeyDao: ApiKeyDao,
     modelDao: ModelDao,
-    private val aiService: AiService = AiService()
+    private val aiService: AiService = AiService(),
+    private val nineRouterService: com.screenbuddy.android.service.NineRouterService = com.screenbuddy.android.service.NineRouterService()
 ) : ViewModel() {
 
     private val repository = ProviderRepository(apiKeyDao, modelDao)
@@ -98,6 +99,42 @@ class ProvidersViewModel(
 
     fun removeApiKey(providerId: String) = mutate {
         repository.removeApiKey(providerId)
+    }
+
+    fun toggleNineRouter(enabled: Boolean) = mutate {
+        nineRouterService.configure(nineRouterService.baseUrl, nineRouterService.apiKey)
+    }
+
+    fun setNineRouterUrl(url: String) = mutate {
+        nineRouterService.configure(url, nineRouterService.apiKey)
+    }
+
+    fun setNineRouterKey(key: String) = mutate {
+        nineRouterService.configure(nineRouterService.baseUrl, key)
+    }
+
+    fun refreshNineRouterModels() {
+        viewModelScope.launch {
+            nineRouterService.getModels()
+        }
+    }
+
+    fun testNineRouterConnection() {
+        viewModelScope.launch {
+            nineRouterService.testConnection()
+        }
+    }
+
+    fun startNineRouter() {
+        viewModelScope.launch {
+            nineRouterService.start()
+        }
+    }
+
+    fun stopNineRouter() {
+        viewModelScope.launch {
+            nineRouterService.stop()
+        }
     }
 
     /**

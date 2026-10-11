@@ -32,7 +32,10 @@ data class AppSettings(
     val temperature: Float = 0.7f,
     val responseLength: Int = 512,
     val selectedModelId: String = "",
-    val ollamaBaseUrl: String = "http://10.0.2.2:11434"
+    val ollamaBaseUrl: String = "http://10.0.2.2:11434",
+    val ninerouterEnabled: Boolean = false,
+    val ninerouterBaseUrl: String = "http://localhost:20128/v1",
+    val ninerouterApiKey: String = "",
 ) {
     /** Effective generation temperature, validated before it reaches an API. */
     val safeTemperature: Float get() = temperature.coerceIn(0.0f, 2.0f)
@@ -67,7 +70,10 @@ class SettingsRepository(context: Context) {
             temperature = prefs[KEY_TEMPERATURE] ?: 0.7f,
             responseLength = (prefs[KEY_RESPONSE_LENGTH] ?: 512f).toInt(),
             selectedModelId = prefs[KEY_SELECTED_MODEL] ?: "",
-            ollamaBaseUrl = prefs[KEY_OLLAMA_URL] ?: "http://10.0.2.2:11434"
+            ollamaBaseUrl = prefs[KEY_OLLAMA_URL] ?: "http://10.0.2.2:11434",
+            ninerouterEnabled = prefs[KEY_NINEROUTER_ENABLED] ?: false,
+            ninerouterBaseUrl = prefs[KEY_NINEROUTER_URL] ?: "http://localhost:20128/v1",
+            ninerouterApiKey = prefs[KEY_NINEROUTER_KEY] ?: ""
         )
     }
 
@@ -90,6 +96,9 @@ class SettingsRepository(context: Context) {
 
     suspend fun setSelectedModel(modelId: String) = put(KEY_SELECTED_MODEL, modelId)
     suspend fun setOllamaBaseUrl(url: String) = put(KEY_OLLAMA_URL, url)
+    suspend fun setNinerouterEnabled(value: Boolean) = put(KEY_NINEROUTER_ENABLED, value)
+    suspend fun setNinerouterBaseUrl(url: String) = put(KEY_NINEROUTER_URL, url)
+    suspend fun setNinerouterApiKey(key: String) = put(KEY_NINEROUTER_KEY, key)
 
     /**
      * Set one setting by its wire name, as the control surface uses.
@@ -140,6 +149,9 @@ class SettingsRepository(context: Context) {
             }
             "selected_model_id" -> { s: AppSettings -> s.copy(selectedModelId = rawValue.trim()) }
             "ollama_base_url" -> { s: AppSettings -> s.copy(ollamaBaseUrl = rawValue.trim()) }
+            "ninerouter_enabled" -> asBoolean()?.let { v -> { s: AppSettings -> s.copy(ninerouterEnabled = v) } }
+            "ninerouter_base_url" -> { s: AppSettings -> s.copy(ninerouterBaseUrl = rawValue.trim()) }
+            "ninerouter_api_key" -> { s: AppSettings -> s.copy(ninerouterApiKey = rawValue.trim()) }
             else -> null
         }
         val transform = chosen ?: return false
@@ -182,6 +194,9 @@ class SettingsRepository(context: Context) {
             "response_length" -> current.responseLength.toString()
             "selected_model_id" -> current.selectedModelId
             "ollama_base_url" -> current.ollamaBaseUrl
+            "ninerouter_enabled" -> current.ninerouterEnabled.toString()
+            "ninerouter_base_url" -> current.ninerouterBaseUrl
+            "ninerouter_api_key" -> current.ninerouterApiKey
             else -> null
         }
     }
@@ -226,6 +241,9 @@ class SettingsRepository(context: Context) {
             prefs[KEY_RESPONSE_LENGTH] = next.responseLength.toFloat()
             prefs[KEY_SELECTED_MODEL] = next.selectedModelId
             prefs[KEY_OLLAMA_URL] = next.ollamaBaseUrl
+            prefs[KEY_NINEROUTER_ENABLED] = next.ninerouterEnabled
+            prefs[KEY_NINEROUTER_URL] = next.ninerouterBaseUrl
+            prefs[KEY_NINEROUTER_KEY] = next.ninerouterApiKey
         }
     }
 
@@ -259,5 +277,8 @@ class SettingsRepository(context: Context) {
         val KEY_RESPONSE_LENGTH = floatPreferencesKey("response_length")
         val KEY_SELECTED_MODEL = stringPreferencesKey("selected_model")
         val KEY_OLLAMA_URL = stringPreferencesKey("ollama_base_url")
+        val KEY_NINEROUTER_ENABLED = booleanPreferencesKey("ninerouter_enabled")
+        val KEY_NINEROUTER_URL = stringPreferencesKey("ninerouter_base_url")
+        val KEY_NINEROUTER_KEY = stringPreferencesKey("ninerouter_api_key")
     }
 }

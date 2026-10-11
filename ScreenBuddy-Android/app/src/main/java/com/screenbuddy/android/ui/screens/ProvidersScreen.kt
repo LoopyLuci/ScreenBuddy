@@ -22,7 +22,8 @@ private fun rememberProvidersViewModel(): ProvidersViewModel {
     return remember {
         ProvidersViewModel(
             apiKeyDao = app.database.apiKeyDao(),
-            modelDao = app.database.modelDao()
+            modelDao = app.database.modelDao(),
+            nineRouterService = app.nineRouterService
         )
     }
 }
@@ -43,8 +44,40 @@ fun ProvidersScreen(viewModel: ProvidersViewModel = rememberProvidersViewModel()
             onRemoveApiKey = viewModel::removeApiKey,
             onEnableAll = viewModel::enableAllModels,
             onDisableAll = viewModel::disableAllModels,
-            onErrorShown = viewModel::clearError
+            onErrorShown = viewModel::clearError,
+            onNineRouterTest = viewModel::testNineRouterConnection,
+            onNineRouterRefresh = viewModel::refreshNineRouterModels,
+            onNineRouterStart = viewModel::startNineRouter,
+            onNineRouterStop = viewModel::stopNineRouter
         )
+    }
+}
+
+@Composable
+private fun NineRouterManagementCard(
+    onTestConnection: () -> Unit,
+    onRefreshModels: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit
+) {
+    Card(shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.padding(16.dp)) {
+            Text("9Router", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "Smart AI router with 60+ providers",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            Row {
+                TextButton(onClick = onTestConnection) { Text("Test") }
+                TextButton(onClick = onRefreshModels) { Text("Refresh models") }
+            }
+            Row {
+                TextButton(onClick = onStart) { Text("Start") }
+                TextButton(onClick = onStop) { Text("Stop") }
+            }
+        }
     }
 }
 
@@ -57,7 +90,11 @@ internal fun ProvidersContent(
     onRemoveApiKey: (String) -> Unit,
     onEnableAll: (String) -> Unit,
     onDisableAll: (String) -> Unit,
-    onErrorShown: () -> Unit
+    onErrorShown: () -> Unit,
+    onNineRouterTest: () -> Unit = {},
+    onNineRouterRefresh: () -> Unit = {},
+    onNineRouterStart: () -> Unit = {},
+    onNineRouterStop: () -> Unit = {}
 ) {
     Column(modifier = modifier.fillMaxSize()) {
         if (uiState.error != null) {
@@ -81,6 +118,15 @@ internal fun ProvidersContent(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(8.dp))
+            }
+            item {
+                NineRouterManagementCard(
+                    onTestConnection = onNineRouterTest,
+                    onRefreshModels = onNineRouterRefresh,
+                    onStart = onNineRouterStart,
+                    onStop = onNineRouterStop
+                )
+                Spacer(Modifier.height(12.dp))
             }
             items(uiState.providers, key = { it.id }) { provider ->
                 ProviderCard(

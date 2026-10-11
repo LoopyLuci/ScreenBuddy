@@ -433,6 +433,83 @@ object ControlCommands {
             ControlResponse.ok(mapOf("chunks" to chunks))
         }
 
+        ControlBus.register("nine_router_status") {
+            val service = app?.nineRouterService
+                ?: return@register ControlResponse.error("9Router is unavailable", 503)
+            ControlBus.launchIo {
+                val status = service.getStatus()
+                ControlResponse.ok(
+                    mapOf(
+                        "running" to status.running,
+                        "provider_count" to status.providerCount,
+                        "model_count" to status.modelCount,
+                        "active_provider" to status.activeProvider,
+                        "base_url" to status.baseUrl
+                    )
+                )
+            }
+            ControlResponse.queued("nine_router_status")
+        }
+
+        ControlBus.register("nine_router_start") {
+            val service = app?.nineRouterService
+                ?: return@register ControlResponse.error("9Router is unavailable", 503)
+            ControlBus.launchIo {
+                val started = service.start()
+                if (started) {
+                    ControlResponse.ok(mapOf("started" to true))
+                } else {
+                    ControlResponse.error("Failed to start 9Router", 500)
+                }
+            }
+            ControlResponse.queued("nine_router_start")
+        }
+
+        ControlBus.register("nine_router_stop") {
+            val service = app?.nineRouterService
+                ?: return@register ControlResponse.error("9Router is unavailable", 503)
+            ControlBus.launchIo {
+                service.stop()
+                ControlResponse.ok(mapOf("stopped" to true))
+            }
+            ControlResponse.queued("nine_router_stop")
+        }
+
+        ControlBus.register("nine_router_models") {
+            val service = app?.nineRouterService
+                ?: return@register ControlResponse.error("9Router is unavailable", 503)
+            ControlBus.launchIo {
+                val models = service.getModels()
+                ControlResponse.ok(
+                    mapOf(
+                        "models" to models.map { m ->
+                            mapOf(
+                                "id" to m.id,
+                                "name" to m.name,
+                                "provider" to m.provider,
+                                "is_free" to m.isFree
+                            )
+                        }
+                    )
+                )
+            }
+            ControlResponse.queued("nine_router_models")
+        }
+
+        ControlBus.register("nine_router_test") {
+            val service = app?.nineRouterService
+                ?: return@register ControlResponse.error("9Router is unavailable", 503)
+            ControlBus.launchIo {
+                val reachable = service.testConnection()
+                if (reachable) {
+                    ControlResponse.ok(mapOf("connected" to true, "base_url" to service.baseUrl))
+                } else {
+                    ControlResponse.error("9Router is not reachable at ${service.baseUrl}", 500)
+                }
+            }
+            ControlResponse.queued("nine_router_test")
+        }
+
         ControlBus.register("memory_search") { req ->
             val query = req.query
                 ?: return@register ControlResponse.error("memory_search requires 'query'")
