@@ -64,7 +64,10 @@ enum class ProviderRoute(
     VLLM("vllm", "", ApiStyle.OPENAI_COMPATIBLE, requiresKey = false),
     KOBOLDCPP("koboldcpp", "", ApiStyle.OPENAI_COMPATIBLE, requiresKey = false),
     TEXTGEN("textgen", "", ApiStyle.OPENAI_COMPATIBLE, requiresKey = false),
-    OPENCODE_GO("opencode-go", "", ApiStyle.OPENAI_COMPATIBLE, requiresKey = false);
+    OPENCODE_GO("opencode-go", "", ApiStyle.OPENAI_COMPATIBLE, requiresKey = false),
+
+    /** 9Router local proxy — OpenAI-compatible, requires an API key. */
+    NINEROUTER("9router", "http://localhost:20128/v1", ApiStyle.OPENAI_COMPATIBLE);
 
     companion object {
         private val byId = entries.associateBy { it.providerId }

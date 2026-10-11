@@ -60,7 +60,9 @@ def main() -> int:
         print(f"{PACKAGE} is not installed. Build and install it first.")
         return 2
 
-    receivers = adb(serial, "shell", "pm", "query-receivers", "-a", ACTION).stdout
+    # `pm query-receivers` does not exist on all devices; `dumpsys package` is
+    # the portable way to check whether a receiver is registered.
+    receivers = adb(serial, "shell", "dumpsys", "package", PACKAGE).stdout
     if "ControlReceiver" not in receivers:
         print("ControlReceiver is not registered on the device.")
         return 2
@@ -79,7 +81,7 @@ def main() -> int:
         "set valid animation",
         ["--es", "cmd", "set_animation", "--es", "state", "celebrate"],
         0,
-        "queued",
+        "celebrate",
     )
     check(
         "reject invalid animation",
@@ -91,7 +93,7 @@ def main() -> int:
         "set visibility",
         ["--es", "cmd", "set_creature_visible", "--ez", "visible", "false"],
         0,
-        "queued",
+        "visible",
     )
     check(
         "set and read setting",

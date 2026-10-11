@@ -949,6 +949,46 @@ object ProviderData {
                     costPer1k = 2.0
                 )
             )
+        ),
+        Provider(
+            id = "9router",
+            name = "9Router",
+            description = "Smart AI router with 60+ providers and automatic fallback",
+            apiKeyName = "NINEROUTER_API_KEY",
+            website = "https://9router.com",
+            isFree = true,
+            models = listOf(
+                AiModel(
+                    id = "9router-auto",
+                    providerId = "9router",
+                    name = "auto",
+                    displayName = "Auto (Best Available)",
+                    isFree = true,
+                    isEnabled = true,
+                    description = "9Router picks the best available provider",
+                    maxTokens = 8192
+                ),
+                AiModel(
+                    id = "9router-claude",
+                    providerId = "9router",
+                    name = "anthropic/claude-3.5-sonnet",
+                    displayName = "Claude 3.5 Sonnet (via 9Router)",
+                    isFree = false,
+                    isEnabled = false,
+                    description = "Claude 3.5 Sonnet through 9Router",
+                    maxTokens = 8192
+                ),
+                AiModel(
+                    id = "9router-gpt4o",
+                    providerId = "9router",
+                    name = "openai/gpt-4o",
+                    displayName = "GPT-4o (via 9Router)",
+                    isFree = false,
+                    isEnabled = false,
+                    description = "GPT-4o through 9Router",
+                    maxTokens = 128000
+                )
+            )
         )
     )
 }
