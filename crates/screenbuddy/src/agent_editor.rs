@@ -488,11 +488,10 @@ impl AgentEditor {
 
     /// Insert a character into the focused text field.
     pub fn on_char(&mut self, ch: char) {
-        // Only the name field accepts keyboard input in this first pass; the
-        // instructions box is reachable by cycling presets and providers.
         match self.focus {
             Some(Field::Name) if self.editing_name => self.draft.name.push(ch),
             Some(Field::Model) if self.editing_name => self.draft.model.push(ch),
+            Some(Field::Instructions) if self.editing_name => self.draft.system_prompt.push(ch),
             _ => {}
         }
         self.validate();
@@ -1628,6 +1627,7 @@ unsafe extern "system" fn editor_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
             }
             0
         }
+        WM_ERASEBKGND => 1,
         WM_DESTROY => {
             let editor = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AgentEditor;
             if !editor.is_null() {

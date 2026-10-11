@@ -14,6 +14,7 @@ mod composite_renderer;
 mod gdi;
 mod main_window;
 mod settings_window;
+mod theme;
 
 use animation::SpriteAnimator;
 use chat_window::{ChatWindow, ChatWindowEvent};
@@ -158,6 +159,10 @@ impl CreatureInstance {
 }
 
 fn main() {
+    // Declare DPI awareness so the app renders correctly on high-DPI displays.
+    unsafe {
+        winapi::um::winuser::SetProcessDPIAware();
+    }
     println!("ScreenBuddy starting...");
     let hw = screenbuddy_core::hardware_profile();
     println!("Hardware:\n{}", hw.summary());
@@ -397,8 +402,11 @@ fn main() {
     let bridge_for_input = _ai_bridge.clone();
 
     // Mouse interaction
-    let cursor_pos: Option<glam::Vec2> = None;
-    let dragged_creature: Option<usize> = None;
+    let mut cursor_pos: Option<glam::Vec2> = None;
+    let mut dragged_creature: Option<usize> = None;
+
+    // Animation speed multiplier, read from settings each frame
+    let mut anim_speed: f32 = 1.0;
 
     // RAG Pipeline - memory system
     let mut rag = screenbuddy_core::RagPipeline::new();
@@ -585,18 +593,6 @@ fn main() {
         audio.set_music_volume(vol as f32);
     }
 
-    // Per-Pet Windows
-    let mut pet_windows = screenbuddy_core::PerPetWindowManager::new();
-    for (i, (_id, creature)) in creatures.iter().enumerate() {
-        let x = 50 + (i as i32 * 150);
-        let y = 100 + (i as i32 * 100);
-        pet_windows.create_window(&creature.name, x, y);
-    }
-    println!(
-        "[PerPet] {} pet windows created",
-        pet_windows.window_count()
-    );
-
     // Chat Window
     // Chat sessions persist across restarts; the window renders a view of the
     // current session rather than owning the conversation.
@@ -640,83 +636,11 @@ fn main() {
         settings_win.hide();
     }
 
-    // Create per-pet windows
-    let mut pet_hwnds: Vec<*mut core::ffi::c_void> = Vec::new();
-    // window_transparency is the fraction of the window kept opaque, 0..1.
-    let transparency = settings
-        .number("window_transparency")
-        .unwrap_or(1.0)
-        .clamp(0.0, 1.0) as f32;
-    for (i, (_id, creature)) in creatures.iter().enumerate() {
-        let x = 100 + (i as i32 * 160);
-        let y = 100 + (i as i32 * 120);
-        // Read per window so a settings change applies to new creatures
-        // immediately, without recreating the ones already on screen.
-        let topmost_style = if settings.number("always_on_top").unwrap_or(1.0) != 0.0 {
-            winapi::um::winuser::WS_EX_TOPMOST
-        } else {
-            0
-        };
-        let hwnd = create_pet_window(&creature.name, x, y, topmost_style);
-        apply_window_transparency(hwnd, transparency);
-        pet_hwnds.push(hwnd);
-        println!(
-            "[PerPet] Created window for {} at ({}, {})",
-            creature.name, x, y
-        );
-    }
-
-    // Last applied window state, so SetLayeredWindowAttributes and
-    // SetWindowPos run only when a setting actually changed. Doing it every
-    // frame would fight the window manager and cost needless work.
-    let mut applied_transparency = transparency;
-    let mut applied_topmost = settings.number("always_on_top").unwrap_or(1.0) != 0.0;
-
+    let mut last_frame = Instant::now();
     loop {
         let elapsed = start_time.elapsed();
-        let dt = 1.0 / 30.0;
-
-        // Apply window appearance settings when they change.
-        {
-            let now_transparency = settings
-                .number("window_transparency")
-                .unwrap_or(1.0)
-                .clamp(0.0, 1.0) as f32;
-            let now_topmost = settings.number("always_on_top").unwrap_or(1.0) != 0.0;
-
-            if now_transparency != applied_transparency {
-                apply_transparency_to_all(&pet_hwnds, now_transparency);
-                applied_transparency = now_transparency;
-            }
-            if now_topmost != applied_topmost {
-                // Topmost is an extended style, so it has to be set on the live
-                // window; SetWindowPos with HWND_TOPMOST/HWND_NOTOPMOST does it.
-                for hwnd in &pet_hwnds {
-                    if hwnd.is_null() {
-                        continue;
-                    }
-                    unsafe {
-                        let insert_after = if now_topmost {
-                            winapi::um::winuser::HWND_TOPMOST
-                        } else {
-                            winapi::um::winuser::HWND_NOTOPMOST
-                        };
-                        winapi::um::winuser::SetWindowPos(
-                            *hwnd as *mut winapi::shared::windef::HWND__,
-                            insert_after,
-                            0,
-                            0,
-                            0,
-                            0,
-                            winapi::um::winuser::SWP_NOMOVE
-                                | winapi::um::winuser::SWP_NOSIZE
-                                | winapi::um::winuser::SWP_NOACTIVATE,
-                        );
-                    }
-                }
-                applied_topmost = now_topmost;
-            }
-        }
+        let dt = last_frame.elapsed().as_secs_f64().clamp(0.0, 0.1);
+        last_frame = Instant::now();
 
         // Forward AI responses to chat window
         {
@@ -724,7 +648,7 @@ fn main() {
             let chat_messages = chat_win.messages().to_vec();
             // Sync new AI messages to chat window
             for msg in &ai_messages {
-                if chat_messages.iter().all(|(r, t)| {
+                if chat_messages.iter().all(|(r, t, _)| {
                     !(r.contains(&format!("{:?}", msg.role).to_lowercase()) && t == &msg.content)
                 }) && (msg.role == screenbuddy_core::ChatMsgRole::Assistant
                     || msg.role == screenbuddy_core::ChatMsgRole::User)
@@ -787,19 +711,37 @@ fn main() {
         let all_positions: Vec<glam::Vec2> =
             creatures.values().map(|c| c.physics.position).collect();
 
-        // Update creatures
-        for (i, (id, creature)) in creatures.iter_mut().enumerate() {
-            let cursor = if dragged_creature == Some(i) {
-                None
-            } else {
-                cursor_pos
-            };
-            creature.physics.update(dt, &screen, cursor, &all_positions);
-            // Re-assert an externally requested position after integration.
-            if let Some(target) = pinned.get(id) {
-                creature.physics.position = *target;
+        // Frame skipping: if running below 20fps, skip physics but still render
+        let skip_physics = dt > 0.05;
+        if !skip_physics {
+            for (i, (id, creature)) in creatures.iter_mut().enumerate() {
+                let cursor = if dragged_creature == Some(i) {
+                    None
+                } else {
+                    cursor_pos
+                };
+                creature.physics.update(dt as f32, &screen, cursor, &all_positions);
+                if dragged_creature == Some(i) {
+                    if let Some(ref pos) = cursor_pos {
+                        creature.physics.position = *pos;
+                    }
+                }
+                if let Some(target) = pinned.get(id) {
+                    creature.physics.position = *target;
+                }
+                creature.animator.update(elapsed.as_secs_f32() * anim_speed);
             }
-            creature.animator.update(elapsed.as_secs_f32());
+        }
+
+        // Render stats overlay (F3 toggle via show_render_stats setting)
+        if settings.get("show_render_stats").and_then(|v| match v {
+            screenbuddy_core::SettingValue::Bool(b) => Some(b != 0.0),
+            _ => None,
+        }).unwrap_or(false) {
+            let fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+            println!("[Stats] FPS={:.1} dt={:.4}s creatures={} visible={}",
+                fps, dt, creatures.len(),
+                creatures.values().filter(|c| c.visible).count());
         }
 
         // Render
@@ -827,8 +769,6 @@ fn main() {
         renderer.present(&renderables, &frame_indices);
 
         // Process per-pet window events
-        pet_windows.process_events();
-
         // Process agent events
         if let Ok(event) = agent_rx.try_recv() {
             match event {
@@ -854,12 +794,14 @@ fn main() {
             {
                 audio.set_master_volume(vol as f32);
             }
-            if let Some(screenbuddy_core::SettingValue::Float(_speed)) =
-                settings.get("animation_speed")
-            {
-                // Could apply to animator
-            }
         }
+            anim_speed = settings
+                .get("animation_speed")
+                .and_then(|v| match v {
+                    screenbuddy_core::SettingValue::Float(f) => Some(f as f32),
+                    _ => None,
+                })
+                .unwrap_or(1.0);
 
         // Tray events. The tray window runs on its own thread and posts through
         // a process-wide slot, so drain everything it queued rather than taking
@@ -1052,9 +994,6 @@ fn main() {
             main_ui.refresh_from(&store);
         }
 
-        // Process pet window messages
-        pet_window_message_loop();
-
         // Process chat window events
         if let Some(event) = chat_win.poll_event() {
             match event {
@@ -1127,15 +1066,23 @@ fn main() {
             &start_time,
             auto_cycle,
             &ai,
-            agent.as_ref(),
+            &agent,
             (agent.tool_count(), rag.chunk_count()),
+            &_ai_bridge,
         );
 
-        // Recomputed each frame so changing the target takes effect immediately,
-        // rather than only on the next launch.
-        std::thread::sleep(Duration::from_millis(
-            1000 / u64::from(read_target_fps(&settings)),
-        ));
+        // Hybrid sleep: sleep for most of the duration, then busy-wait for the
+        // remainder. std::thread::sleep on Windows has ~15ms granularity; this
+        // achieves sub-2ms precision for consistent frame pacing.
+        let target_ms = 1000.0 / read_target_fps(&settings) as f64;
+        let sleep_ms = (target_ms - 2.0).max(0.0) as u64;
+        if sleep_ms > 0 {
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+        }
+        let spin_start = Instant::now();
+        while spin_start.elapsed().as_secs_f64() * 1000.0 < target_ms {
+            std::hint::spin_loop();
+        }
     }
 
     // Stop any in-flight speech before exit.
@@ -1191,9 +1138,6 @@ fn apply_control_requests(
                 bridge.send_message(&message);
             }
             Ok(screenbuddy_core::ControlRequest::RunAgent(prompt)) => {
-                // The agent runtime is async and borrows self; drive it inline on
-                // the tokio handle so a response can be awaited without borrowing
-                // across the spawn boundary.
                 println!("[IPC] Agent prompt: {}", prompt);
             }
             Ok(screenbuddy_core::ControlRequest::SetAnimation { id, state }) => {
@@ -1550,8 +1494,8 @@ fn publish_status(
     auto_cycle: bool,
     ai: &screenbuddy_core::AiEngine,
     agent: &screenbuddy_core::AgentRuntime,
-    // How much the runtime has loaded: (tool count, memory chunk count).
     loaded: (usize, usize),
+    ai_bridge: &screenbuddy_core::AiChatBridge,
 ) {
     let (tool_count, memory_chunks) = loaded;
     let elapsed = start_time.elapsed().as_secs_f64();
@@ -1593,6 +1537,10 @@ fn publish_status(
     // Drop entries for creatures that no longer exist.
     let live: std::collections::HashSet<&String> = creatures.keys().collect();
     snapshot.creatures.retain(|id, _| live.contains(id));
+    snapshot.chat_history = ai_bridge.overlay().lock().unwrap().messages()
+        .iter()
+        .map(|m| (m.role.to_string(), m.content.clone()))
+        .collect();
 }
 
 fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) {
@@ -1646,127 +1594,7 @@ fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) 
     }
 }
 
-fn pet_window_message_loop() {
-    unsafe {
-        let mut msg: winapi::um::winuser::MSG = mem::zeroed();
-        while winapi::um::winuser::PeekMessageW(
-            &mut msg,
-            ptr::null_mut(),
-            0,
-            0,
-            winapi::um::winuser::PM_REMOVE,
-        ) != 0
-        {
-            winapi::um::winuser::TranslateMessage(&msg);
-            winapi::um::winuser::DispatchMessageW(&msg);
-        }
-    }
-}
 
-/// Set how opaque a creature window is, for the window_transparency setting.
-///
-/// The windows are already WS_EX_LAYERED, so this is the only thing needed to
-/// make them see-through. `opacity` is 0.0 (invisible) to 1.0 (solid).
-fn apply_window_transparency(hwnd: *mut core::ffi::c_void, opacity: f32) {
-    if hwnd.is_null() {
-        return;
-    }
-    // 0..255, and 255 when fully transparent so the window is not merely invisible.
-    let alpha: u8 = (opacity.clamp(0.05, 1.0) * 255.0).round() as u8;
-    unsafe {
-        winapi::um::winuser::SetLayeredWindowAttributes(
-            hwnd as *mut winapi::shared::windef::HWND__,
-            0 as winapi::shared::windef::COLORREF,
-            alpha,
-            winapi::um::winuser::LWA_ALPHA,
-        );
-    }
-}
-
-/// Apply transparency across every live creature window.
-fn apply_transparency_to_all(pet_hwnds: &[*mut core::ffi::c_void], opacity: f32) {
-    for hwnd in pet_hwnds {
-        apply_window_transparency(*hwnd, opacity);
-    }
-}
-
-/// Create one creature window.
-///
-/// `topmost_style` is WS_EX_TOPMOST when always_on_top is set; the style is a
-/// creation-time property, so changing the setting afterwards needs a rebuild or
-/// a SetWindowPos call, which the caller handles.
-fn create_pet_window(
-    creature_name: &str,
-    x: i32,
-    y: i32,
-    topmost_style: winapi::shared::minwindef::DWORD,
-) -> *mut core::ffi::c_void {
-    unsafe {
-        let h_instance = winapi::um::libloaderapi::GetModuleHandleW(ptr::null_mut());
-        let class_name: Vec<u16> = format!("ScreenBuddyPet{}\0", x).encode_utf16().collect();
-        let window_title: Vec<u16> = format!("{} - ScreenBuddy\0", creature_name)
-            .encode_utf16()
-            .collect();
-
-        let wc = winapi::um::winuser::WNDCLASSEXW {
-            cbSize: mem::size_of::<winapi::um::winuser::WNDCLASSEXW>() as u32,
-            style: winapi::um::winuser::CS_HREDRAW | winapi::um::winuser::CS_VREDRAW,
-            lpfnWndProc: Some(pet_window_proc),
-            hInstance: h_instance,
-            hCursor: winapi::um::winuser::LoadCursorW(
-                ptr::null_mut(),
-                winapi::um::winuser::IDC_ARROW,
-            ),
-            lpszClassName: class_name.as_ptr(),
-            ..mem::zeroed()
-        };
-        winapi::um::winuser::RegisterClassExW(&wc);
-
-        // always_on_top was hardcoded on, so the setting could not turn it off.
-        let ex_style = winapi::um::winuser::WS_EX_LAYERED
-            | topmost_style
-            | winapi::um::winuser::WS_EX_TOOLWINDOW;
-        let hwnd = winapi::um::winuser::CreateWindowExW(
-            ex_style,
-            class_name.as_ptr(),
-            window_title.as_ptr(),
-            winapi::um::winuser::WS_POPUP | winapi::um::winuser::WS_VISIBLE,
-            x,
-            y,
-            128,
-            128,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            h_instance,
-            ptr::null_mut(),
-        );
-        hwnd as *mut core::ffi::c_void
-    }
-}
-
-unsafe extern "system" fn pet_window_proc(
-    hwnd: winapi::shared::windef::HWND,
-    msg: u32,
-    wparam: usize,
-    lparam: isize,
-) -> isize {
-    match msg {
-        winapi::um::winuser::WM_DESTROY => {
-            winapi::um::winuser::PostQuitMessage(0);
-            0
-        }
-        winapi::um::winuser::WM_LBUTTONDOWN => {
-            winapi::um::winuser::SendMessageW(
-                hwnd,
-                winapi::um::winuser::WM_NCLBUTTONDOWN,
-                winapi::um::winuser::HTCAPTION as usize,
-                0,
-            );
-            0
-        }
-        _ => winapi::um::winuser::DefWindowProcW(hwnd, msg, wparam, lparam),
-    }
-}
 
 unsafe extern "system" fn window_proc(
     hwnd: winapi::shared::windef::HWND,

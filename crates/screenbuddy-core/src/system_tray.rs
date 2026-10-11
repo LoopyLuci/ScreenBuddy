@@ -282,17 +282,33 @@ unsafe fn add_icon(
         cbSize: mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: ICON_ID,
-        // NIF_TIP for the hover text, NIF_MESSAGE so clicks reach us.
-        uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP,
+        uFlags: NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_INFO,
         uCallbackMessage: WM_TRAY_CALLBACK,
         hIcon: if icon.is_null() { fallback } else { icon },
         ..mem::zeroed()
     };
-    let tip: Vec<u16> = "ScreenBuddy ".encode_utf16().collect();
+    let tip: Vec<u16> = "ScreenBuddy\0".encode_utf16().collect();
     for (slot, ch) in data.szTip.iter_mut().zip(tip.iter()) {
         *slot = *ch;
     }
     Shell_NotifyIconW(NIM_ADD, &mut data as *mut _);
+}
+
+/// Show a balloon notification to the user.
+pub fn show_balloon(title: &str, message: &str) {
+    use std::mem;
+    use std::ptr;
+    use winapi::um::shellapi::*;
+    unsafe {
+        let mut data: NOTIFYICONDATAW = mem::zeroed();
+        data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
+        data.uFlags = NIF_INFO;
+        let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let msg_wide: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+        ptr::copy_nonoverlapping(title_wide.as_ptr(), data.szInfoTitle.as_mut_ptr(), title_wide.len().min(63));
+        ptr::copy_nonoverlapping(msg_wide.as_ptr(), data.szInfo.as_mut_ptr(), msg_wide.len().min(255));
+        Shell_NotifyIconW(NIM_MODIFY, &mut data as *mut _);
+    }
 }
 
 /// Remove the notification icon, so quitting does not leave a ghost behind.
@@ -311,6 +327,14 @@ unsafe fn remove_icon(hwnd: winapi::shared::windef::HWND) {
 }
 
 #[cfg(windows)]
+/// Register for the TaskbarCreated message so the tray icon is restored
+/// after an Explorer restart. Returns the message ID.
+fn register_taskbar_message() -> u32 {
+    use std::os::windows::ffi::OsStrExt;
+    let name: Vec<u16> = std::ffi::OsStr::new("TaskbarCreated").encode_wide().chain(std::iter::once(0)).collect();
+    unsafe { winapi::um::winuser::RegisterWindowMessageW(name.as_ptr()) }
+}
+
 unsafe extern "system" fn tray_window_proc(
     hwnd: winapi::shared::windef::HWND,
     msg: u32,
@@ -320,6 +344,10 @@ unsafe extern "system" fn tray_window_proc(
     match msg {
         winapi::um::winuser::WM_DESTROY => {
             winapi::um::winuser::PostQuitMessage(0);
+            0
+        }
+        msg if msg == register_taskbar_message() => {
+            unsafe { add_icon(hwnd, winapi::um::libloaderapi::GetModuleHandleW(std::ptr::null_mut())) };
             0
         }
         WM_TRAY_CALLBACK => {
@@ -383,18 +411,29 @@ unsafe fn show_context_menu(hwnd: winapi::shared::windef::HWND) -> u32 {
         return 0;
     }
 
+    // Dynamic menu: reflect current state with checkmarks and labels.
+    let creatures_visible = crate::creature_visibility();
     let items = [
         (cmd::OPEN_WINDOW, "Open ScreenBuddy"),
         (cmd::MINIMIZE, "Minimise to tray"),
     ];
-    let tail = [
-        (cmd::SHOW_CREATURE, "Show creature"),
-        (cmd::HIDE_CREATURE, "Hide creature"),
-        (cmd::OPEN_AGENTS, "Agents"),
-        (cmd::OPEN_CHAT, "Open chat"),
-        (cmd::NEXT_CREATURE, "Next creature"),
-        (cmd::OPEN_SETTINGS, "Settings"),
-    ];
+    let tail = if creatures_visible {
+        [
+            (cmd::HIDE_CREATURE, "Hide creature"),
+            (cmd::OPEN_AGENTS, "Agents"),
+            (cmd::OPEN_CHAT, "Open chat"),
+            (cmd::NEXT_CREATURE, "Next creature"),
+            (cmd::OPEN_SETTINGS, "Settings"),
+        ]
+    } else {
+        [
+            (cmd::SHOW_CREATURE, "Show creature"),
+            (cmd::OPEN_AGENTS, "Agents"),
+            (cmd::OPEN_CHAT, "Open chat"),
+            (cmd::NEXT_CREATURE, "Next creature"),
+            (cmd::OPEN_SETTINGS, "Settings"),
+        ]
+    };
     let end = [
         (cmd::ABOUT, "About ScreenBuddy"),
         (cmd::QUIT, "Quit ScreenBuddy"),

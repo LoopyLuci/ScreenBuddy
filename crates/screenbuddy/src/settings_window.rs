@@ -208,6 +208,8 @@ pub struct SettingsView {
     store: *mut SettingsUI,
     tab: Tab,
     rows: Vec<Row>,
+    scroll_offset: usize,
+    search_query: String,
     hits: Vec<HitTarget>,
     hwnd: Option<HWND>,
     /// Index of the row under the pointer, for hover feedback.
@@ -232,6 +234,8 @@ impl SettingsView {
             store,
             tab: Tab::General,
             rows: Vec::new(),
+            scroll_offset: 0,
+            search_query: String::new(),
             hits: Vec::new(),
             hwnd: None,
             hovered: None,
@@ -499,7 +503,7 @@ impl SettingsView {
 
         let label_w = FIELD_LEFT - PADDING * 2;
         let rows = self.rows.clone();
-        for (index, row) in rows.iter().enumerate() {
+        for (index, row) in rows.iter().enumerate().skip(self.scroll_offset) {
             let y = top + index as i32 * ROW_PITCH;
             if y + ROW_PITCH > self.surface_h - 50 {
                 // Out of room: say so rather than silently dropping settings.
@@ -890,10 +894,15 @@ fn next_value(value: &SettingValue) -> SettingValue {
         SettingValue::Bool(v) => SettingValue::Bool(if *v == 0.0 { 1.0 } else { 0.0 }),
         SettingValue::Int(v) => SettingValue::Int(v + 1),
         SettingValue::String(s) => {
-            if s == "true" {
-                SettingValue::String("false".into())
+            // Cycle through known AI models. The settings window has no direct
+            // access to the AI engine, so we cycle through a static list.
+            let models = ["llama3.2", "mistral", "gemma2", "qwen2.5", "phi3", "codellama"];
+            if models.is_empty() {
+                SettingValue::String("No models".into())
             } else {
-                SettingValue::String("true".into())
+                let idx = models.iter().position(|m| m == s).unwrap_or(0);
+                let next = (idx + 1) % models.len();
+                SettingValue::String(models[next].to_string())
             }
         }
         // Enums advance through their options, wrapping at the end.
@@ -997,6 +1006,40 @@ unsafe extern "system" fn settings_proc(
         WM_CLOSE => {
             // Hides rather than quits: the app keeps running in the tray.
             ShowWindow(hwnd, SW_HIDE);
+            0
+        }
+        WM_MOUSEWHEEL => {
+            let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+            if !view_ptr.is_null() {
+                let delta = ((wparam >> 16) as i16) as i32;
+                let lines = 3;
+                unsafe {
+                    if delta > 0 {
+                        (*view_ptr).scroll_offset = (*view_ptr).scroll_offset.saturating_sub(lines);
+                    } else {
+                        (*view_ptr).scroll_offset = ((*view_ptr).scroll_offset + lines)
+                            .min((*view_ptr).rows.len().saturating_sub(1));
+                    }
+                }
+            }
+            0
+        }
+        WM_ERASEBKGND => 1,
+        WM_DPICHANGED => {
+            // Resize and re-layout on DPI change
+            let rect = *(lparam as *const RECT);
+            let _new_dpi = (wparam & 0xFFFF) as u32;
+            unsafe {
+                SetWindowPos(hwnd, ptr::null_mut(),
+                    rect.left, rect.top,
+                    rect.right - rect.left, rect.bottom - rect.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+                // Re-layout controls at new scale
+                let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+                if !view_ptr.is_null() {
+                    (*view_ptr).scroll_offset = 0;
+                }
+            }
             0
         }
         WM_DESTROY => {

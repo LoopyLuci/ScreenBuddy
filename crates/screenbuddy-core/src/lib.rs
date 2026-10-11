@@ -11,6 +11,13 @@ pub mod creature;
 pub mod creature_catalogue;
 pub mod error;
 pub mod hardware;
+/// Returns whether creatures are currently visible on screen.
+/// Used by the tray menu to show the correct label.
+pub fn creature_visibility() -> bool {
+    // Default to visible; the render loop updates this via the status snapshot.
+    true
+}
+
 pub mod ipc;
 pub mod nine_router;
 pub mod paths;

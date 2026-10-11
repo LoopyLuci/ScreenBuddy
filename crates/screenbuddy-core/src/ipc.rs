@@ -374,6 +374,9 @@ pub struct IpcServer {
     /// the same conversations. A std Mutex, not the tokio one: it is locked
     /// briefly and synchronously from both the IPC task and the render loop.
     sessions: SharedSessions,
+    /// Optional authentication token. When set, clients must send
+    /// {"auth":"<token>"} as their first message before any commands.
+    pub auth_token: Option<String>,
 }
 
 impl IpcServer {
@@ -390,6 +393,7 @@ impl IpcServer {
             sessions: Arc::new(std::sync::Mutex::new(
                 crate::session::SessionStore::with_default_session(),
             )),
+            auth_token: None,
         }
     }
 
@@ -431,8 +435,9 @@ impl IpcServer {
                     let status = self.status.clone();
                     let sessions = self.sessions.clone();
                     let shutdown = self.shutdown.clone();
+                    let token = self.auth_token.clone();
                     tokio::spawn(async move {
-                        handle_client(stream, tx, control, creatures, status, sessions, shutdown)
+                        handle_client(stream, tx, control, creatures, status, sessions, shutdown, token)
                             .await;
                     });
                 }
@@ -498,8 +503,10 @@ async fn handle_client(
     status: Arc<std::sync::Mutex<RuntimeStatus>>,
     sessions: SharedSessions,
     shutdown: Arc<Notify>,
+    auth_token: Option<String>,
 ) {
     let mut buf = vec![0u8; 8192];
+    let mut authenticated = auth_token.is_none();
     loop {
         let frame = tokio::select! {
             frame = read_frame(&mut stream, &mut buf) => frame,
@@ -522,6 +529,26 @@ async fn handle_client(
                 break;
             }
         };
+
+        if !authenticated {
+            // First message must be a simple auth handshake: {"auth":"<token>"}
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                if v.get("auth").and_then(|t| t.as_str()) == auth_token.as_deref() {
+                    authenticated = true;
+                    let _ = write_frame(&mut stream, &Response::Success { data: None }).await;
+                    continue;
+                }
+            }
+            let _ = write_frame(
+                &mut stream,
+                &Response::Error {
+                    message: "Authentication required".into(),
+                    code: Some(401),
+                },
+            )
+            .await;
+            break;
+        }
 
         match serde_json::from_slice::<GodotCommand>(&payload) {
             Ok(cmd) => {
@@ -1462,6 +1489,7 @@ mod tests {
                     status,
                     s.sessions.clone(),
                     shutdown,
+                    None,
                 ));
             }
         });
@@ -1530,6 +1558,7 @@ mod tests {
                     status,
                     s.sessions.clone(),
                     shutdown,
+                    None,
                 ));
             }
         });

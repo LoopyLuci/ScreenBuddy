@@ -31,14 +31,15 @@ const INPUT_H: i32 = 44;
 const PADDING: i32 = 12;
 
 /// Colours as 0x00BBGGRR, matching the DIB layout used below.
-const C_BG: u32 = 0x001E1E21;
-const C_HEADER: u32 = 0x0026262B;
-const C_SIDEBAR: u32 = 0x00222227;
-const C_ROW_ACTIVE: u32 = 0x00333A4A;
-const C_INPUT_BG: u32 = 0x002A2A32;
-const C_BORDER: u32 = 0x00464652;
-const C_TEXT: u32 = 0x00E8E8EC;
-const C_MUTED: u32 = 0x009A9AA6;
+// Unified dark theme constants (mirror theme.rs Theme::dark())
+const C_BG: u32 = 0x00141212;
+const C_HEADER: u32 = 0x00231F1F;
+const C_SIDEBAR: u32 = 0x001A1818;
+const C_ROW_ACTIVE: u32 = 0x00304A50;
+const C_INPUT_BG: u32 = 0x00222233;
+const C_BORDER: u32 = 0x003A3A4A;
+const C_TEXT: u32 = 0x00F0E6D8;
+const C_MUTED: u32 = 0x00A8C0C8;
 const C_ACCENT: u32 = 0x00C0865A;
 
 /// What the user clicked, delivered to the main loop.

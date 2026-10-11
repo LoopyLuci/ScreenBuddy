@@ -13,8 +13,12 @@ use std::sync::{Arc, Mutex};
 pub struct ChatWindow {
     hwnd: Option<isize>,
     visible: bool,
-    messages: Vec<(String, String)>, // (role, text)
+    messages: Vec<(String, String, String)>, // (role, text, timestamp)
     input_buffer: String,
+    scroll_offset: usize,
+    typing: bool,
+    typing_frame: u32,
+    send_btn_rect: Option<(i32, i32, i32, i32)>,
     event_sender: Sender<ChatWindowEvent>,
     event_receiver: Arc<Mutex<Receiver<ChatWindowEvent>>>,
 }
@@ -38,6 +42,10 @@ impl ChatWindow {
             visible: false,
             messages: Vec::new(),
             input_buffer: String::new(),
+            scroll_offset: 0,
+            typing: false,
+            typing_frame: 0,
+            send_btn_rect: None,
             event_sender: tx,
             event_receiver: Arc::new(Mutex::new(rx)),
         }
@@ -53,16 +61,23 @@ impl ChatWindow {
     }
 
     pub fn add_message(&mut self, role: &str, text: &str) {
-        self.messages.push((role.to_string(), text.to_string()));
-        // Keep last 50 messages
+        let ts = chrono::Local::now().format("%H:%M").to_string();
+        self.messages.push((role.to_string(), text.to_string(), ts));
         if self.messages.len() > 50 {
             self.messages.remove(0);
         }
+        self.scroll_offset = 0;
         self.invalidate();
     }
 
-    pub fn messages(&self) -> &[(String, String)] {
+    pub fn messages(&self) -> &[(String, String, String)] {
         &self.messages
+    }
+
+    pub fn set_typing(&mut self, typing: bool) {
+        self.typing = typing;
+        self.typing_frame = 0;
+        self.invalidate();
     }
 
     #[allow(dead_code)] // public chat API
@@ -237,10 +252,16 @@ pub mod platform {
                 }
                 match wparam as i32 {
                     VK_RETURN => {
-                        let text = (*chat).input_buffer.clone();
-                        if !text.is_empty() {
-                            (*chat).event_sender.send(ChatWindowEvent::Input(text)).ok();
-                            (*chat).clear_input();
+                        // Shift+Enter inserts a newline; Enter sends.
+                        let shift_held = unsafe { GetKeyState(VK_SHIFT) < 0 };
+                        if shift_held {
+                            (*chat).input_buffer.push('\n');
+                        } else {
+                            let text = (*chat).input_buffer.trim().to_string();
+                            if !text.is_empty() {
+                                (*chat).event_sender.send(ChatWindowEvent::Input(text)).ok();
+                                (*chat).clear_input();
+                            }
                         }
                         0
                     }
@@ -253,9 +274,49 @@ pub mod platform {
                         (*chat).hide();
                         0
                     }
+                    0x43 if unsafe { GetKeyState(VK_CONTROL) < 0 } => {
+                        if let Some((_, text, _)) = (*chat).messages.last() {
+                            let _ = clipboard_win::set_clipboard(clipboard_win::formats::Unicode, text);
+                        }
+                        0
+                    }
                     _ => DefWindowProcW(hwnd, msg, wparam, lparam),
                 }
             }
+            WM_MOUSEWHEEL => {
+                let chat_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
+                if !chat_ptr.is_null() {
+                    let delta = ((wparam >> 16) as i16) as i32;
+                    let lines = 3;
+                    unsafe {
+                        if delta > 0 {
+                            (*chat_ptr).scroll_offset = (*chat_ptr).scroll_offset.saturating_sub(lines);
+                        } else {
+                            (*chat_ptr).scroll_offset = ((*chat_ptr).scroll_offset + lines)
+                                .min((*chat_ptr).messages.len().saturating_sub(1));
+                        }
+                    }
+                }
+                0
+            }
+            WM_LBUTTONDOWN => {
+                let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
+                if chat.is_null() { return 0; }
+                let x = (lparam & 0xFFFF) as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                if let Some((rx, ry, rw, rh)) = (*chat).send_btn_rect {
+                    if x >= rx && x < rx + rw && y >= ry && y < ry + rh {
+                        let text = (*chat).input_buffer.trim().to_string();
+                        if !text.is_empty() {
+                            (*chat).event_sender.send(ChatWindowEvent::Input(text)).ok();
+                            (*chat).clear_input();
+                        }
+                        return 0;
+                    }
+                }
+                0
+            }
+            WM_ERASEBKGND => 1,
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -330,7 +391,8 @@ pub mod platform {
         let msg_area_bottom = CHAT_HEIGHT - INPUT_HEIGHT - PADDING;
         let mut y = msg_area_bottom;
 
-        for (role, text) in chat.messages.iter().rev() {
+        let visible_msgs: Vec<_> = chat.messages.iter().rev().skip(chat.scroll_offset).collect();
+        for (role, text, _ts) in visible_msgs {
             if y < PADDING {
                 break;
             }
@@ -422,6 +484,39 @@ pub mod platform {
         let border_brush = CreateSolidBrush(RGB(100, 100, 130));
         FrameRect(hdc_mem, &input_rect, border_brush);
         DeleteObject(border_brush as _);
+
+        // Draw send button
+        let btn_w = 60i32;
+        let btn_h = 24i32;
+        let btn_x = CHAT_WIDTH - PADDING - btn_w;
+        let btn_y = input_top + (INPUT_HEIGHT - btn_h) / 2;
+        let has_input = !chat.input_buffer().is_empty();
+        let btn_color: u32 = if has_input { 0xFF_4A_90_D9 } else { 0xAA_55_55_55 };
+        let btn_buf = pixel_data as *mut u32;
+        for row in btn_y..(btn_y + btn_h) {
+            for col in btn_x..(btn_x + btn_w) {
+                let idx = (row * CHAT_WIDTH + col) as usize;
+                if idx < total {
+                    *btn_buf.add(idx) = btn_color;
+                }
+            }
+        }
+        let btn_rect = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+        let btn_border = CreateSolidBrush(RGB(100, 150, 220));
+        FrameRect(hdc_mem, &btn_rect, btn_border);
+        DeleteObject(btn_border as _);
+        SetTextColor(hdc_mem, if has_input { RGB(255, 255, 255) } else { RGB(150, 150, 150) });
+        let label = if has_input { "Send" } else { "Send" };
+        let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut btn_text_rect = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+        DrawTextW(hdc_mem, wide.as_ptr(), -1, &mut btn_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        // Store rect for hit testing
+        unsafe {
+            let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
+            if !chat.is_null() {
+                (*chat).send_btn_rect = Some((btn_x, btn_y, btn_w, btn_h));
+            }
+        }
 
         // Draw input text
         SetTextColor(hdc_mem, RGB(255, 255, 255));
