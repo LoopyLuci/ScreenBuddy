@@ -501,6 +501,9 @@ fn main() {
 
     // Settings UI
     let mut settings = screenbuddy_core::SettingsUI::new();
+    // Load persisted settings before any read; without this, fps_target is
+    // always the default (30) at startup because the saved value is never read.
+    settings.load();
 
     // fps_target was a setting nothing read; the loop was pinned at 30. Clamped so
     // a zero or absurd value cannot stall or melt the CPU.

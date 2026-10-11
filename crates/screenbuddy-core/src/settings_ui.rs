@@ -116,7 +116,7 @@ impl SettingsUI {
     ///
     /// Only keys this build defines are accepted, so a stale or hand-edited file
     /// cannot inject settings the app would then honour.
-    fn load(&mut self) {
+    pub fn load(&mut self) {
         if self.path.as_os_str().is_empty() {
             return;
         }
