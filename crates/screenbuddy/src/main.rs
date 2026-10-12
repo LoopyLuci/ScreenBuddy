@@ -692,6 +692,17 @@ fn main() {
     let mut last_session_flush = Instant::now();
     // Last query the cross-session search was run for, so it runs on change.
     let mut last_search_query = String::new();
+    // Rolling frame-time window, published as percentiles for `get_metrics`.
+    let mut frame_metrics = screenbuddy_core::metrics::FrameMetrics::new(600);
+    // Length of the AI overlay transcript at the last sync, so the per-frame
+    // comparison does not clone the whole transcript every frame.
+    let mut last_overlay_len = 0usize;
+    // Cheap signature of the session store, so the window only re-reads it when
+    // something actually changed.
+    let mut last_session_sig: (usize, usize, usize) = (0, 0, 0);
+    // `publish_status` clones the transcript and creature map; it is for IPC
+    // polling, so a few times a second is plenty.
+    let mut last_status_publish = Instant::now() - Duration::from_secs(1);
     loop {
         // Pump this thread's message queue. Without this the main window never
         // receives WM_PAINT, WM_KEYDOWN, WM_CHAR, WM_LBUTTONDOWN or
@@ -726,21 +737,36 @@ fn main() {
         let elapsed = start_time.elapsed();
         let dt = last_frame.elapsed().as_secs_f64().clamp(0.0, 0.1);
         last_frame = Instant::now();
+        // Record the real frame interval so stutter shows up in the percentiles.
+        frame_metrics.record(dt * 1000.0);
 
-        // Forward AI responses to chat window
+        // Forward AI responses to chat window.
+        //
+        // The whole transcript used to be cloned every frame, twice, to decide
+        // whether anything was new. Both clones are now taken only when the
+        // overlay has actually grown, which is what made a 13ms frame budget
+        // take 40ms.
         {
-            let ai_messages = _ai_bridge.overlay().lock().unwrap().messages().to_vec();
-            let chat_messages = chat_win.messages().to_vec();
-            // Sync new AI messages to chat window
-            for msg in &ai_messages {
-                if chat_messages.iter().all(|(r, t, _)| {
-                    !(r.contains(&format!("{:?}", msg.role).to_lowercase()) && t == &msg.content)
-                }) && (msg.role == screenbuddy_core::ChatMsgRole::Assistant
-                    || msg.role == screenbuddy_core::ChatMsgRole::User)
-                {
-                    let role_str = format!("{:?}", msg.role).to_lowercase();
-                    chat_win.add_message(&role_str, &msg.content);
+            let overlay_len = _ai_bridge
+                .overlay()
+                .lock()
+                .map(|o| o.messages().len())
+                .unwrap_or(0);
+            if overlay_len != last_overlay_len {
+                let ai_messages = _ai_bridge.overlay().lock().unwrap().messages().to_vec();
+                let chat_messages = chat_win.messages().to_vec();
+                for msg in &ai_messages {
+                    if chat_messages.iter().all(|(r, t, _)| {
+                        !(r.contains(&format!("{:?}", msg.role).to_lowercase())
+                            && t == &msg.content)
+                    }) && (msg.role == screenbuddy_core::ChatMsgRole::Assistant
+                        || msg.role == screenbuddy_core::ChatMsgRole::User)
+                    {
+                        let role_str = format!("{:?}", msg.role).to_lowercase();
+                        chat_win.add_message(&role_str, &msg.content);
+                    }
                 }
+                last_overlay_len = overlay_len;
             }
         }
 
@@ -1132,8 +1158,20 @@ fn main() {
         }
 
         // Keep the window's view in step with the store and the AI.
+        //
+        // `refresh_from` clones the session list and the whole transcript, so it
+        // is done only when a cheap signature of the store changes rather than
+        // on every frame.
         if let Ok(store) = shared_sessions.lock() {
-            main_ui.refresh_from(&store);
+            let sig = (
+                store.list().len(),
+                store.current_id().len(),
+                store.current().map(|s| s.messages.len()).unwrap_or(0),
+            );
+            if sig != last_session_sig {
+                main_ui.refresh_from(&store);
+                last_session_sig = sig;
+            }
         }
 
         // Apply the theme setting when it changes. It was declared but read by
@@ -1145,19 +1183,6 @@ fn main() {
             main_ui.set_theme_by_name(&want_theme);
             println!("[UI] theme -> {want_theme}");
             applied_theme = want_theme;
-        }
-
-        // Keep the published settings snapshot in step with the store.
-        //
-        // It used to be mirrored only on an IPC write, so undo and redo (which
-        // change values without going through that path) left the snapshot
-        // reporting the old value even though the store had reverted.
-        if let Ok(mut st) = status.lock() {
-            st.settings = theme_settings_reader
-                .snapshot()
-                .iter()
-                .map(|(k, v)| (k.clone(), setting_to_json(v)))
-                .collect();
         }
 
         // Feed cross-session search results while a query is active. Recomputed
@@ -1267,16 +1292,35 @@ fn main() {
         }
 
         // Publish a status snapshot for `get_status` / query commands.
-        publish_status(
-            &status,
-            &creatures,
-            &start_time,
-            auto_cycle,
-            &ai,
-            &agent,
-            (agent.tool_count(), rag.chunk_count()),
-            &_ai_bridge,
-        );
+        //
+        // Throttled: it clones the chat transcript, the creature map and every
+        // setting, which is wasted work at 60+ frames a second when the only
+        // consumer is a poller over IPC.
+        if last_status_publish.elapsed() >= Duration::from_millis(250) {
+            publish_status(
+                &status,
+                &creatures,
+                &start_time,
+                auto_cycle,
+                &ai,
+                &agent,
+                (agent.tool_count(), rag.chunk_count()),
+                &_ai_bridge,
+                &frame_metrics,
+            );
+            // Keep the published settings snapshot in step with the store. It
+            // used to be mirrored only on an IPC write, so undo and redo (which
+            // change values without going through that path) left the snapshot
+            // reporting the old value even though the store had reverted.
+            if let Ok(mut st) = status.lock() {
+                st.settings = theme_settings_reader
+                    .snapshot()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), setting_to_json(v)))
+                    .collect();
+            }
+            last_status_publish = Instant::now();
+        }
 
         // Hybrid sleep: sleep for most of the duration, then busy-wait for the
         // remainder. std::thread::sleep on Windows has ~15ms granularity; this
@@ -1727,6 +1771,7 @@ fn publish_status(
     agent: &screenbuddy_core::AgentRuntime,
     loaded: (usize, usize),
     ai_bridge: &screenbuddy_core::AiChatBridge,
+    metrics: &screenbuddy_core::metrics::FrameMetrics,
 ) {
     let (tool_count, memory_chunks) = loaded;
     let elapsed = start_time.elapsed().as_secs_f64();
@@ -1734,6 +1779,9 @@ fn publish_status(
         return;
     };
     snapshot.frame_count += 1;
+    // Frame-time percentiles, so stutter is visible. The average below cannot
+    // show a hitch, which is the thing a user actually notices.
+    snapshot.metrics = metrics.summary();
     // Average FPS across the whole run: total frames over total uptime. This is
     // stable, unlike a per-frame instantaneous reading that would alias.
     snapshot.fps = if elapsed > 0.0 {

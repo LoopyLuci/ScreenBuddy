@@ -199,6 +199,11 @@ pub enum GodotCommand {
         query: String,
         limit: usize,
     },
+    /// Frame-time percentiles and frame counts.
+    ///
+    /// Separate from `get_status` because the full status snapshot is large and
+    /// a profiling loop wants only this.
+    GetMetrics,
 }
 
 /// A control request the main loop should apply on its next tick.
@@ -317,6 +322,11 @@ pub struct RuntimeStatus {
     pub memory_chunks: usize,
     /// Creature id -> live state summary.
     pub creatures: HashMap<String, serde_json::Value>,
+    /// Frame-time percentiles over a rolling window, for `get_metrics`.
+    ///
+    /// The instantaneous `fps` field cannot show stutter, which is what a user
+    /// actually notices, so the distribution is kept too.
+    pub metrics: crate::metrics::MetricsSummary,
     /// Key -> current setting value.
     pub settings: HashMap<String, serde_json::Value>,
     /// Newest-last chat transcript.
@@ -728,6 +738,30 @@ async fn process_command(
                     "current_id": store.current_id(),
                     "count": list.len(),
                     "sessions": list,
+                })),
+            };
+        }
+
+        GodotCommand::GetMetrics => {
+            let st = match status.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("status lock poisoned"),
+            };
+            let m = st.metrics;
+            return Response::Success {
+                data: Some(serde_json::json!({
+                    "fps": st.fps,
+                    "frame_count": st.frame_count,
+                    "uptime_secs": st.uptime_secs,
+                    "p50_ms": m.p50_ms,
+                    "p95_ms": m.p95_ms,
+                    "p99_ms": m.p99_ms,
+                    "mean_ms": m.mean_ms,
+                    "worst_ms": m.worst_ms,
+                    "window_frames": m.window_frames,
+                    // Derived so a caller does not have to redo the arithmetic.
+                    "p95_fps": crate::metrics::FrameMetrics::fps_from_ms(m.p95_ms),
+                    "worst_fps": crate::metrics::FrameMetrics::fps_from_ms(m.worst_ms),
                 })),
             };
         }
@@ -1349,6 +1383,35 @@ mod tests {
             Response::Error { message, .. } => message,
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn get_metrics_reports_percentiles_not_just_an_average() {
+        let s = server();
+        {
+            // Record a run with one bad hitch.
+            let mut st = s.status.lock().unwrap();
+            let mut m = crate::metrics::FrameMetrics::new(100);
+            for _ in 0..99 {
+                m.record(16.0);
+            }
+            m.record(200.0);
+            st.metrics = m.summary();
+        }
+        let d = ok_data(dispatch(&s, &GodotCommand::GetMetrics).await);
+        assert_eq!(d["p50_ms"], 16.0);
+        assert_eq!(d["worst_ms"], 200.0);
+        assert!(d["p95_fps"].as_f64().unwrap() > 0.0);
+        // The window size must be reported so a caller knows the sample count.
+        assert_eq!(d["window_frames"], 100);
+    }
+
+    #[tokio::test]
+    async fn get_metrics_on_a_fresh_server_is_zero_not_an_error() {
+        let s = server();
+        let d = ok_data(dispatch(&s, &GodotCommand::GetMetrics).await);
+        assert_eq!(d["p50_ms"], 0.0);
+        assert_eq!(d["window_frames"], 0);
     }
 
     #[tokio::test]

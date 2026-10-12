@@ -33,6 +33,7 @@ pub fn notify(title: &str, message: &str) {
 
 pub mod ipc;
 pub mod logging;
+pub mod metrics;
 pub mod nine_router;
 pub mod paths;
 pub mod per_pet_window;
