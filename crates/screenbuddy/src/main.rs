@@ -1062,6 +1062,8 @@ fn main() {
                     }
                     bridge_for_input.send_message(&text);
                     main_ui.set_generating(true);
+                    // Audible confirmation that the message went out.
+                    audio.play("click").ok();
                 }
                 UiEvent::NewSession => {
                     if let Ok(mut store) = shared_sessions.lock() {
@@ -1272,6 +1274,8 @@ fn main() {
                 // A reply means the AI finished, so the typing indicator stops.
                 if role == "assistant" {
                     main_ui.set_generating(false);
+                    // Chime on a reply: the window may not be in view.
+                    audio.play("notification").ok();
                 }
                 // The main window re-reads the store each frame, so recording the
                 // reply here is what makes it appear there.
