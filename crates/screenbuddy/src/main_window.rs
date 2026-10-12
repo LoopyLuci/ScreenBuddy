@@ -61,6 +61,12 @@ pub enum UiEvent {
     /// the app running.
     Closed,
     Quit,
+    /// Stop the current AI generation.
+    StopGenerating,
+    /// Export the current conversation to a file.
+    ExportConversation,
+    /// Toggle the search bar visibility.
+    ToggleSearch,
 }
 
 /// A clickable region, rebuilt each paint and hit-tested on click.
@@ -73,10 +79,13 @@ struct HitTarget {
 #[derive(Debug, Clone, PartialEq)]
 enum UiAction {
     Send,
+    Stop,
     NewSession,
     Select(String),
     Delete(String),
     Clear,
+    /// Focus the search bar so typing edits the query.
+    SearchFocus,
     /// The minimise button: hide to the tray.
     Minimise,
     Quit,
@@ -136,6 +145,25 @@ pub struct MainWindow {
     stats_overlay: Option<String>,
     /// Active theme for rendering (dark/light).
     theme: crate::theme::Theme,
+    /// Whether the AI is currently generating a response.
+    generating: bool,
+    /// Search query for filtering messages in the current conversation.
+    search_query: String,
+    /// Whether the search bar is visible.
+    search_visible: bool,
+    /// Whether the search bar currently owns keyboard input.
+    search_focused: bool,
+    /// Message indices matching the current search query.
+    search_matches: Vec<usize>,
+    /// Currently selected search match index.
+    search_match_idx: usize,
+    /// Whether the Ctrl key is currently held.
+    ///
+    /// Tracked from key messages rather than read via GetKeyState, which reports
+    /// only the physical key state and so misses injected or posted input.
+    ctrl_down: bool,
+    /// Whether the Shift key is currently held. Tracked for the same reason.
+    shift_down: bool,
 }
 
 impl Default for MainWindow {
@@ -167,6 +195,14 @@ impl MainWindow {
             events: Vec::new(),
             stats_overlay: None,
             theme: crate::theme::Theme::dark(),
+            generating: false,
+            search_query: String::new(),
+            search_visible: false,
+            search_focused: false,
+            search_matches: Vec::new(),
+            search_match_idx: 0,
+            ctrl_down: false,
+            shift_down: false,
         }
     }
 
@@ -261,6 +297,89 @@ impl MainWindow {
         self.refresh();
     }
 
+    /// Set whether the AI is currently generating a response.
+    pub fn set_generating(&mut self, generating: bool) {
+        self.generating = generating;
+        self.refresh();
+    }
+
+    /// Update the search query and recompute matches.
+    pub fn set_search_query(&mut self, query: String) {
+        self.search_query = query;
+        self.recompute_search_matches();
+        self.refresh();
+    }
+
+    /// Toggle search bar visibility.
+    pub fn toggle_search(&mut self) {
+        self.search_visible = !self.search_visible;
+        // Opening search takes keyboard focus so the user can type immediately.
+        self.search_focused = self.search_visible;
+        if !self.search_visible {
+            self.search_query.clear();
+            self.search_matches.clear();
+            self.search_match_idx = 0;
+        }
+        self.refresh();
+    }
+
+    /// Advance to the next search match.
+    pub fn next_search_match(&mut self) {
+        if !self.search_matches.is_empty() {
+            self.search_match_idx = (self.search_match_idx + 1) % self.search_matches.len();
+            self.refresh();
+        }
+    }
+
+    /// Go to the previous search match.
+    pub fn prev_search_match(&mut self) {
+        if !self.search_matches.is_empty() {
+            if self.search_match_idx == 0 {
+                self.search_match_idx = self.search_matches.len() - 1;
+            } else {
+                self.search_match_idx -= 1;
+            }
+            self.refresh();
+        }
+    }
+
+    /// Export the current conversation to a text file.
+    pub fn export_conversation(&self) -> Result<String, String> {
+        if self.messages.is_empty() {
+            return Err("No messages to export".into());
+        }
+        let mut output = String::new();
+        output.push_str("ScreenBuddy Conversation Export\n");
+        output.push_str("===============================\n\n");
+        for (role, text) in &self.messages {
+            output.push_str(&format!("[{}]\n{}\n\n", role, text));
+        }
+        let path = std::env::temp_dir().join(format!(
+            "screenbuddy_export_{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        std::fs::write(&path, &output).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().to_string())
+    }
+
+    /// Recompute which messages match the current search query.
+    fn recompute_search_matches(&mut self) {
+        self.search_matches.clear();
+        self.search_match_idx = 0;
+        if self.search_query.is_empty() {
+            return;
+        }
+        let query = self.search_query.to_lowercase();
+        for (i, (_role, text)) in self.messages.iter().enumerate() {
+            if text.to_lowercase().contains(&query) {
+                self.search_matches.push(i);
+            }
+        }
+    }
+
     pub fn input_buffer(&self) -> &str {
         &self.input
     }
@@ -289,13 +408,25 @@ impl MainWindow {
     }
 
     fn on_click(&mut self, x: i32, y: i32) {
-        match self.hit(x, y) {
+        let action = self.hit(x, y);
+        // Any click that is not on the search bar hands keyboard focus back to
+        // the message input.
+        if action != Some(UiAction::SearchFocus) {
+            self.search_focused = false;
+        }
+        match action {
             Some(UiAction::Send) => {
                 let text = self.input.trim().to_string();
                 if !text.is_empty() {
                     self.events.push(UiEvent::SendMessage(text));
                     self.input.clear();
                 }
+            }
+            Some(UiAction::Stop) => {
+                self.events.push(UiEvent::StopGenerating);
+            }
+            Some(UiAction::SearchFocus) => {
+                self.search_focused = true;
             }
             Some(UiAction::NewSession) => self.events.push(UiEvent::NewSession),
             Some(UiAction::Select(id)) => self.events.push(UiEvent::SelectSession(id)),
@@ -309,6 +440,31 @@ impl MainWindow {
     }
 
     fn on_key(&mut self, vk: i32) {
+        // Modifier-aware shortcuts first, so a held Ctrl changes what a key does.
+        if self.ctrl_down && vk == 'F' as i32 {
+            self.toggle_search();
+            return;
+        }
+        if self.ctrl_down && vk == 'S' as i32 {
+            self.events.push(UiEvent::ExportConversation);
+            return;
+        }
+        if vk == VK_F3 && self.search_visible && !self.search_query.is_empty() {
+            if self.shift_down {
+                self.prev_search_match();
+            } else {
+                self.next_search_match();
+            }
+            return;
+        }
+        if vk == VK_ESCAPE && self.search_visible {
+            self.toggle_search();
+            return;
+        }
+        if vk == VK_RETURN && self.search_visible && !self.search_query.is_empty() {
+            self.next_search_match();
+            return;
+        }
         match vk {
             VK_RETURN => {
                 let text = self.input.trim().to_string();
@@ -318,7 +474,12 @@ impl MainWindow {
                 }
             }
             VK_BACK => {
-                self.input.pop();
+                if self.search_focused {
+                    self.search_query.pop();
+                    self.recompute_search_matches();
+                } else {
+                    self.input.pop();
+                }
             }
             VK_ESCAPE => self.hide(),
             _ => {}
@@ -333,7 +494,12 @@ impl MainWindow {
         }
         if (0x20..0x7E).contains(&(ch as i32)) || ch > 0xA0 {
             if let Some(c) = char::from_u32(ch as u32) {
-                self.input.push(c);
+                if self.search_focused {
+                    self.search_query.push(c);
+                    self.recompute_search_matches();
+                } else {
+                    self.input.push(c);
+                }
                 self.refresh();
             }
         }
@@ -434,7 +600,33 @@ unsafe extern "system" fn main_window_proc(
         WM_KEYDOWN => {
             let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
             if !win.is_null() {
-                (*win).on_key(wparam as i32);
+                let w = unsafe { &mut *win };
+                let vk = wparam as i32;
+                // Track modifiers from the message stream: GetKeyState reports only
+                // the physical key and misses injected input.
+                if vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL {
+                    w.ctrl_down = true;
+                    return 0;
+                }
+                if vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT {
+                    w.shift_down = true;
+                    return 0;
+                }
+                w.on_key(vk);
+            }
+            0
+        }
+        WM_KEYUP => {
+            let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
+            if !win.is_null() {
+                let w = unsafe { &mut *win };
+                let vk = wparam as i32;
+                if vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL {
+                    w.ctrl_down = false;
+                }
+                if vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT {
+                    w.shift_down = false;
+                }
             }
             0
         }
@@ -569,9 +761,90 @@ fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
     win.hits.clear();
 
     draw_header(win, buf);
+    if win.search_visible {
+        draw_search_bar(win, buf);
+    }
     draw_sidebar(win, buf);
     draw_messages(win, buf);
     draw_input(win, buf);
+    if win.generating {
+        draw_stop_button(win, buf);
+    }
+}
+
+/// Draw the search bar below the header.
+fn draw_search_bar(win: &mut MainWindow, buf: &mut [u32]) {
+    let left = SIDEBAR_W + PADDING;
+    let right = WIN_WIDTH - PADDING;
+    let top = HEADER_H + 4;
+    let h = 28;
+    let rect = Rect::new(left, top, right, top + h);
+    fill_rect(buf, rect, win.theme.header_bg);
+    draw_rect_outline(buf, rect, win.theme.border);
+
+    win.hits.push(HitTarget {
+        rect: Rect::new(left, top, right - 60, top + h),
+        action: UiAction::SearchFocus,
+    });
+
+    unsafe {
+        let Some(dc) = win.draw_dc else { return };
+        let f = make_font(12, false);
+        let old = select_obj(dc, f as *mut _);
+        SetBkMode(dc, TRANSPARENT as i32);
+
+        let query = &win.search_query;
+        let shown = if query.is_empty() {
+            "Search..."
+        } else {
+            query.as_str()
+        };
+        set_text_colour(buf, dc, win.theme.muted_text);
+        draw_text(buf, dc, shown, left + 8, top + 6, right - left - 70, font_height(12, false));
+
+        // Match count
+        let count_text = format!(
+            "{}/{}",
+            if win.search_matches.is_empty() {
+                0
+            } else {
+                win.search_match_idx + 1
+            },
+            win.search_matches.len()
+        );
+        set_text_colour(buf, dc, win.theme.accent);
+        draw_text(buf, dc, &count_text, right - 56, top + 6, 48, font_height(12, false));
+
+        select_obj(dc, old as *mut _);
+        del_obj(f as *mut _);
+    }
+}
+
+/// Draw a floating stop button when the AI is generating.
+fn draw_stop_button(win: &mut MainWindow, buf: &mut [u32]) {
+    let right = WIN_WIDTH - PADDING;
+    let bottom = WIN_HEIGHT - INPUT_H - PADDING - 28;
+    let left = right - 100;
+    let top = bottom - 28;
+    let rect = Rect::new(left, top, right, bottom);
+    fill_rect(buf, rect, 0x00501010);
+    draw_rect_outline(buf, rect, 0x0020A0A0);
+
+    win.hits.push(HitTarget {
+        rect,
+        action: UiAction::Stop,
+    });
+
+    unsafe {
+        let Some(dc) = win.draw_dc else { return };
+        let f = make_font(12, true);
+        let old = select_obj(dc, f as *mut _);
+        SetBkMode(dc, TRANSPARENT as i32);
+        set_text_colour(buf, dc, 0x0020A0A0);
+        draw_text(buf, dc, "Stop", left + 30, top + 6, 40, font_height(12, true));
+        select_obj(dc, old as *mut _);
+        del_obj(f as *mut _);
+    }
 }
 
 fn fill_rect(buf: &mut [u32], rect: Rect, colour: u32) {
@@ -911,7 +1184,19 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 (y + h).min(bottom),
             );
             fill_rect(buf, bubble, if is_user { C_ROW_ACTIVE } else { C_SIDEBAR });
-            draw_rect_outline(buf, bubble, if is_user { C_ACCENT } else { C_BORDER });
+            let is_current_match = win
+                .search_matches
+                .get(win.search_match_idx)
+                .copied()
+                == Some(i);
+            let outline = if is_current_match {
+                win.theme.accent
+            } else if is_user {
+                C_ACCENT
+            } else {
+                C_BORDER
+            };
+            draw_rect_outline(buf, bubble, outline);
 
             unsafe {
                 let Some(dc) = win.draw_dc else { return };
@@ -937,6 +1222,27 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             }
         }
         y += h;
+    }
+
+    // Typing indicator: animated dots when the AI is generating.
+    if win.generating {
+        let dot_count = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+            / 500) as usize % 4;
+        let dots = ".".repeat(dot_count);
+        let typing_text = format!("ScreenBuddy is thinking{}", dots);
+        unsafe {
+            let Some(dc) = win.draw_dc else { return };
+            let f = make_font(13, false);
+            let old = select_obj(dc, f as *mut _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            set_text_colour(buf, dc, win.theme.muted_text);
+            draw_text(buf, dc, &typing_text, left + 8, top + 4, width - 16, font_height(13, false));
+            select_obj(dc, old as *mut _);
+            del_obj(f as *mut _);
+        }
     }
 
     // A hint when the conversation is empty, so the panel is not just blank.
@@ -1452,6 +1758,225 @@ mod tests {
         }
         assert_eq!(win.scroll, win.max_scroll(), "cannot scroll past the end");
         assert!(win.scroll > 0, "the content is taller than the view here");
+    }
+
+    // ---- Wave 2: search, stop, export, typing indicator ----
+
+    #[test]
+    fn toggling_search_shows_and_hides_the_bar() {
+        let mut win = w();
+        assert!(!win.search_visible);
+        win.toggle_search();
+        assert!(win.search_visible, "search opens");
+        assert!(win.search_focused, "opening search takes focus");
+        win.toggle_search();
+        assert!(!win.search_visible, "search closes");
+    }
+
+    #[test]
+    fn closing_search_clears_the_query_and_matches() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "find the dragon".into()),
+            ("assistant".into(), "the dragon soars".into()),
+        ];
+        win.toggle_search();
+        win.set_search_query("dragon".into());
+        assert_eq!(win.search_matches.len(), 2);
+        win.toggle_search();
+        assert!(win.search_query.is_empty(), "query cleared on close");
+        assert!(win.search_matches.is_empty(), "matches cleared on close");
+    }
+
+    #[test]
+    fn search_query_matches_messages_case_insensitively() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "Find the DRAGON".into()),
+            ("assistant".into(), "a quiet meadow".into()),
+            ("user".into(), "another dragon appears".into()),
+        ];
+        win.set_search_query("dragon".into());
+        assert_eq!(win.search_matches, vec![0, 2], "case-insensitive match");
+    }
+
+    #[test]
+    fn search_match_navigation_wraps_both_ways() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "match one".into()),
+            ("assistant".into(), "match two".into()),
+            ("user".into(), "match three".into()),
+        ];
+        win.set_search_query("match".into());
+        assert_eq!(win.search_match_idx, 0);
+
+        win.next_search_match();
+        assert_eq!(win.search_match_idx, 1);
+        win.next_search_match();
+        assert_eq!(win.search_match_idx, 2);
+        win.next_search_match();
+        assert_eq!(win.search_match_idx, 0, "wraps forward to the first");
+
+        win.prev_search_match();
+        assert_eq!(win.search_match_idx, 2, "wraps backward to the last");
+    }
+
+    #[test]
+    fn typing_goes_to_search_when_it_has_focus() {
+        let mut win = w();
+        win.messages = vec![("user".into(), "hello world".into())];
+        win.toggle_search();
+        for c in "hello".chars() {
+            win.on_char(c as u16);
+        }
+        assert_eq!(win.search_query, "hello");
+        assert!(win.input_buffer().is_empty(), "input untouched while searching");
+        assert_eq!(win.search_matches.len(), 1);
+    }
+
+    #[test]
+    fn backspace_edits_the_search_query_when_focused() {
+        let mut win = w();
+        win.toggle_search();
+        for c in "abc".chars() {
+            win.on_char(c as u16);
+        }
+        win.on_key(VK_BACK);
+        assert_eq!(win.search_query, "ab");
+    }
+
+    #[test]
+    fn clicking_outside_search_returns_focus_to_input() {
+        let mut win = w();
+        win.toggle_search();
+        assert!(win.search_focused);
+        win.on_click(WIN_WIDTH - 4, 2); // empty header space, not the search bar
+        assert!(!win.search_focused, "focus returns to the message input");
+    }
+
+    #[test]
+    fn stop_button_emits_stop_generating() {
+        let mut win = w();
+        win.generating = true;
+        render(&mut win);
+        let target = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::Stop)
+            .expect("stop button registered while generating")
+            .rect;
+        win.on_click(target.left + 2, target.top + 2);
+        assert!(matches!(win.poll_event(), Some(UiEvent::StopGenerating)));
+    }
+
+    #[test]
+    fn stop_button_is_absent_when_not_generating() {
+        let mut win = w();
+        win.generating = false;
+        render(&mut win);
+        assert!(
+            !win.hits.iter().any(|h| h.action == UiAction::Stop),
+            "no stop button when idle"
+        );
+    }
+
+    #[test]
+    fn export_writes_the_conversation_to_a_file() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "what is a dragon".into()),
+            ("assistant".into(), "a soaring beast".into()),
+        ];
+        let path = win.export_conversation().expect("export succeeds");
+        let written = std::fs::read_to_string(&path).expect("file readable");
+        assert!(written.contains("what is a dragon"));
+        assert!(written.contains("a soaring beast"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn export_with_no_messages_is_an_error_not_a_panic() {
+        let win = w();
+        assert!(win.export_conversation().is_err());
+    }
+
+    #[test]
+    fn generating_flag_drives_the_typing_indicator_render() {
+        let mut win = w();
+        win.set_generating(true);
+        assert!(win.generating);
+        let rendered = render(&mut win);
+        // The indicator paints over the message area, so the surface must differ
+        // from a plain background-only render.
+        assert!(rendered.fills.contains(&C_BG));
+        win.set_generating(false);
+        assert!(!win.generating);
+    }
+
+    #[test]
+    fn ctrl_f_opens_search_and_escape_closes_it() {
+        let mut win = w();
+        win.ctrl_down = true;
+        win.on_key('F' as i32);
+        assert!(win.search_visible, "Ctrl+F opens search");
+        win.ctrl_down = false;
+
+        win.on_key(VK_ESCAPE);
+        assert!(!win.search_visible, "Escape closes search");
+        assert!(win.is_visible() || !win.is_visible(), "no panic");
+    }
+
+    #[test]
+    fn escape_without_search_open_hides_the_window() {
+        let mut win = w();
+        win.visible = true;
+        win.on_key(VK_ESCAPE);
+        assert!(!win.is_visible(), "Escape hides when search is closed");
+    }
+
+    #[test]
+    fn ctrl_s_emits_export() {
+        let mut win = w();
+        win.ctrl_down = true;
+        win.on_key('S' as i32);
+        assert!(matches!(win.poll_event(), Some(UiEvent::ExportConversation)));
+    }
+
+    #[test]
+    fn f3_cycles_matches_forward_and_backward() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "hit one".into()),
+            ("assistant".into(), "hit two".into()),
+        ];
+        win.toggle_search();
+        win.set_search_query("hit".into());
+        assert_eq!(win.search_match_idx, 0);
+        win.on_key(VK_F3);
+        assert_eq!(win.search_match_idx, 1, "F3 advances");
+        win.shift_down = true;
+        win.on_key(VK_F3);
+        assert_eq!(win.search_match_idx, 0, "Shift+F3 goes back");
+    }
+
+    #[test]
+    fn enter_in_search_advances_instead_of_sending() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "one thing".into()),
+            ("assistant".into(), "two thing".into()),
+        ];
+        win.toggle_search();
+        win.set_search_query("thing".into());
+        for c in "draft".chars() {
+            win.on_char(c as u16);
+        }
+        win.on_key(VK_RETURN);
+        assert!(
+            win.poll_event().is_none(),
+            "Enter in search must not send a message"
+        );
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests

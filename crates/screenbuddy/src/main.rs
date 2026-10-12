@@ -637,7 +637,40 @@ fn main() {
     }
 
     let mut last_frame = Instant::now();
+    // Declared outside the loop so the message pump can set it before the tray
+    // section reads it.
+    let mut should_quit = false;
     loop {
+        // Pump this thread's message queue. Without this the main window never
+        // receives WM_PAINT, WM_KEYDOWN, WM_CHAR, WM_LBUTTONDOWN or
+        // WM_MOUSEWHEEL: the window renders nothing and ignores every click and
+        // keystroke, because its window proc is only ever called by the
+        // dispatcher. PeekMessage (not GetMessage) keeps the loop non-blocking.
+        {
+            let mut msg: winapi::um::winuser::MSG = unsafe { mem::zeroed() };
+            while unsafe {
+                winapi::um::winuser::PeekMessageW(
+                    &mut msg,
+                    ptr::null_mut(),
+                    0,
+                    0,
+                    winapi::um::winuser::PM_REMOVE,
+                )
+            } != 0
+            {
+                if msg.message == winapi::um::winuser::WM_QUIT {
+                    should_quit = true;
+                }
+                unsafe {
+                    winapi::um::winuser::TranslateMessage(&msg);
+                    winapi::um::winuser::DispatchMessageW(&msg);
+                }
+            }
+            if should_quit {
+                break;
+            }
+        }
+
         let elapsed = start_time.elapsed();
         let dt = last_frame.elapsed().as_secs_f64().clamp(0.0, 0.1);
         last_frame = Instant::now();
@@ -813,7 +846,7 @@ fn main() {
             .into_iter()
             .chain(std::iter::from_fn(|| tray.poll_event()))
             .collect();
-        let mut should_quit = false;
+        should_quit = false;
         for event in tray_events {
             match event {
                 screenbuddy_core::TrayEvent::OpenWindow => {
@@ -950,6 +983,7 @@ fn main() {
                         store.push(Role::User, text.clone());
                     }
                     bridge_for_input.send_message(&text);
+                    main_ui.set_generating(true);
                 }
                 UiEvent::NewSession => {
                     if let Ok(mut store) = shared_sessions.lock() {
@@ -989,6 +1023,21 @@ fn main() {
                     println!("[UI] quit requested");
                     std::process::exit(0);
                 }
+                UiEvent::StopGenerating => {
+                    // Cancellation is best-effort: the bridge has no cancel
+                    // channel, so clear the generating flag and note it.
+                    println!("[Chat] Stop requested");
+                    main_ui.set_generating(false);
+                }
+                UiEvent::ExportConversation => {
+                    match main_ui.export_conversation() {
+                        Ok(path) => println!("[Chat] Exported conversation to {path}"),
+                        Err(e) => eprintln!("[Chat] Export failed: {e}"),
+                    }
+                }
+                UiEvent::ToggleSearch => {
+                    main_ui.toggle_search();
+                }
             }
         }
 
@@ -1006,6 +1055,7 @@ fn main() {
                         store.push(Role::User, text.clone());
                     }
                     bridge_for_input.send_message(&text);
+                    main_ui.set_generating(true);
                 }
                 ChatWindowEvent::Toggle => {
                     chat_win.toggle();
@@ -1044,6 +1094,10 @@ fn main() {
                 .collect();
             for (role, text) in fresh {
                 chat_win.add_message(&role, &text);
+                // A reply means the AI finished, so the typing indicator stops.
+                if role == "assistant" {
+                    main_ui.set_generating(false);
+                }
                 // The main window re-reads the store each frame, so recording the
                 // reply here is what makes it appear there.
                 if let Ok(mut store) = shared_sessions.lock() {
