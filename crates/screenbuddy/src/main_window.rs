@@ -740,13 +740,23 @@ pub fn create_main_window(win: &mut MainWindow) -> Result<HWND, String> {
         let outer_w = frame.right - frame.left;
         let outer_h = frame.bottom - frame.top;
 
+        // Open on the monitor the user is actually looking at, rather than
+        // CW_USEDEFAULT which always picks the primary one. Falls back to the
+        // system default when the cursor position or monitor list is unavailable.
+        let mut cursor: winapi::shared::windef::POINT = mem::zeroed();
+        let have_cursor = GetCursorPos(&mut cursor) != 0;
+        let (place_x, place_y) = match crate::monitors::monitor_at(cursor.x, cursor.y) {
+            Some(m) if have_cursor => crate::monitors::centre_on(&m, outer_w, outer_h),
+            _ => (CW_USEDEFAULT, CW_USEDEFAULT),
+        };
+
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
             window_title.as_ptr(),
             WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            place_x,
+            place_y,
             outer_w,
             outer_h,
             ptr::null_mut(),

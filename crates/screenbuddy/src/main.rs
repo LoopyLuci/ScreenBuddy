@@ -14,6 +14,7 @@ mod composite_renderer;
 mod gdi;
 mod main_window;
 mod markdown;
+mod monitors;
 mod settings_window;
 mod theme;
 
