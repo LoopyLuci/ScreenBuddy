@@ -123,6 +123,34 @@ pub struct HitRow {
     pub snippet: String,
 }
 
+/// Which part of the window owns the keyboard, for Tab-based navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRegion {
+    Sidebar,
+    Conversation,
+    Input,
+}
+
+impl FocusRegion {
+    /// The next region in tab order.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Sidebar => Self::Conversation,
+            Self::Conversation => Self::Input,
+            Self::Input => Self::Sidebar,
+        }
+    }
+
+    /// The previous region in tab order.
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Sidebar => Self::Input,
+            Self::Conversation => Self::Sidebar,
+            Self::Input => Self::Conversation,
+        }
+    }
+}
+
 impl Rect {
     fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self {
         Self {
@@ -192,6 +220,11 @@ pub struct MainWindow {
     /// Index of the user message being edited, if any. While set, the input
     /// holds that message and Enter replaces it instead of appending.
     editing_index: Option<usize>,
+    /// Which region has keyboard focus, for keyboard-only navigation. Tab
+    /// cycles it; the sidebar and the conversation are otherwise mouse-only.
+    focus_region: FocusRegion,
+    /// Selected row in the sidebar while it holds focus.
+    sidebar_index: usize,
     /// Whether Ctrl key is held.
     ///
     /// Tracked from key messages rather than read via GetKeyState, which reports
@@ -245,6 +278,8 @@ impl MainWindow {
             selected_message: None,
             toast: None,
             editing_index: None,
+            focus_region: FocusRegion::Input,
+            sidebar_index: 0,
             ctrl_down: false,
             shift_down: false,
             width: WIN_WIDTH,
@@ -521,6 +556,43 @@ impl MainWindow {
         self.refresh();
     }
 
+    /// Move keyboard focus between regions, as Tab does.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        self.focus_region = if forward {
+            self.focus_region.next()
+        } else {
+            self.focus_region.prev()
+        };
+        // Focus the input only when it actually holds focus, so typing does not
+        // land in the box while the user is navigating the session list.
+        self.focus = self.focus_region == FocusRegion::Input;
+        self.refresh();
+    }
+
+    /// The region that currently owns the keyboard.
+    pub fn focus_region(&self) -> FocusRegion {
+        self.focus_region
+    }
+
+    /// Move the sidebar selection, clamped to the session list.
+    fn move_sidebar(&mut self, delta: i32) {
+        if self.sessions.is_empty() {
+            return;
+        }
+        let last = self.sessions.len() as i32 - 1;
+        let next = (self.sidebar_index as i32 + delta).clamp(0, last);
+        self.sidebar_index = next as usize;
+        self.refresh();
+    }
+
+    /// Activate the focused sidebar row.
+    fn activate_sidebar(&mut self) {
+        if let Some(summary) = self.sessions.get(self.sidebar_index) {
+            let id = summary.id.clone();
+            self.events.push(UiEvent::SelectSession(id));
+        }
+    }
+
     /// Recompute which messages match the current search query.
     fn recompute_search_matches(&mut self) {
         self.search_matches.clear();
@@ -644,14 +716,36 @@ impl MainWindow {
             return;
         }
         match vk {
+            VK_TAB => {
+                // Tab cycles the focus regions; Shift+Tab goes back.
+                if !self.search_focused {
+                    self.cycle_focus(!self.shift_down);
+                    return;
+                }
+            }
             VK_RETURN => {
-                self.send_or_edit();
+                // Enter means "activate what has focus", which is not always
+                // "send the input".
+                match self.focus_region {
+                    FocusRegion::Sidebar => self.activate_sidebar(),
+                    _ => self.send_or_edit(),
+                }
+            }
+            VK_DOWN => {
+                if self.focus_region == FocusRegion::Sidebar {
+                    self.move_sidebar(1);
+                }
+            }
+            VK_UP => {
+                if self.focus_region == FocusRegion::Sidebar {
+                    self.move_sidebar(-1);
+                }
             }
             VK_BACK => {
                 if self.search_focused {
                     self.search_query.pop();
                     self.recompute_search_matches();
-                } else {
+                } else if self.focus_region == FocusRegion::Input {
                     self.input.pop();
                 }
             }
@@ -678,7 +772,10 @@ impl MainWindow {
                 if self.search_focused {
                     self.search_query.push(c);
                     self.recompute_search_matches();
-                } else {
+                } else if self.focus_region == FocusRegion::Input {
+                    // Typing only lands in the input while it owns the keyboard;
+                    // otherwise keystrokes would edit the draft while the user is
+                    // navigating the session list.
                     self.input.push(c);
                 }
                 self.refresh();
@@ -1458,7 +1555,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     y = btn.bottom + PADDING;
 
     // Session rows.
-    for summary in win.sessions.clone() {
+    for (row_index, summary) in win.sessions.clone().into_iter().enumerate() {
         if y + 40 > win.height {
             break;
         }
@@ -1470,6 +1567,11 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
                 Rect::new(row.left, row.top, row.left + 3, row.bottom),
                 win.theme.accent,
             );
+        }
+        // Keyboard focus indicator: without it a keyboard-only user cannot tell
+        // which row Enter would activate.
+        if win.focus_region == FocusRegion::Sidebar && row_index == win.sidebar_index {
+            draw_rect_outline(buf, win.width, row, win.theme.accent);
         }
         win.hits.push(HitTarget {
             rect: row,
@@ -3136,6 +3238,100 @@ mod tests {
         win.input.clear();
         win.on_key(VK_RETURN);
         assert!(win.poll_event().is_none(), "blank edit is not sent");
+    }
+
+    #[test]
+    fn tab_cycles_the_focus_regions_both_ways() {
+        let mut win = w();
+        assert_eq!(win.focus_region(), FocusRegion::Input);
+        win.on_key(VK_TAB);
+        assert_eq!(win.focus_region(), FocusRegion::Sidebar);
+        win.on_key(VK_TAB);
+        assert_eq!(win.focus_region(), FocusRegion::Conversation);
+        win.on_key(VK_TAB);
+        assert_eq!(win.focus_region(), FocusRegion::Input);
+
+        win.shift_down = true;
+        win.on_key(VK_TAB);
+        assert_eq!(win.focus_region(), FocusRegion::Conversation, "Shift+Tab goes back");
+    }
+
+    #[test]
+    fn typing_does_not_reach_the_input_while_the_sidebar_has_focus() {
+        let mut win = w();
+        win.cycle_focus(true); // -> Sidebar
+        assert_eq!(win.focus_region(), FocusRegion::Sidebar);
+        for c in "abc".chars() {
+            win.on_char(c as u16);
+        }
+        assert!(
+            win.input_buffer().is_empty(),
+            "keystrokes must not edit the draft while navigating"
+        );
+    }
+
+    #[test]
+    fn arrow_keys_move_the_sidebar_selection_within_bounds() {
+        let mut win = w(); // has two sessions
+        win.cycle_focus(true); // -> Sidebar
+        assert_eq!(win.sidebar_index, 0);
+        win.on_key(VK_DOWN);
+        assert_eq!(win.sidebar_index, 1);
+        win.on_key(VK_DOWN);
+        assert_eq!(win.sidebar_index, 1, "clamped at the last row");
+        win.on_key(VK_UP);
+        win.on_key(VK_UP);
+        assert_eq!(win.sidebar_index, 0, "clamped at the first row");
+    }
+
+    #[test]
+    fn enter_activates_the_focused_sidebar_row_instead_of_sending() {
+        let mut win = w();
+        win.cycle_focus(true); // -> Sidebar
+        win.on_key(VK_DOWN); // second session ("b")
+        win.on_key(VK_RETURN);
+        match win.poll_event() {
+            Some(UiEvent::SelectSession(id)) => assert_eq!(id, "b"),
+            other => panic!("expected SelectSession(b), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_still_sends_when_the_input_has_focus() {
+        let mut win = w();
+        win.cycle_focus(true); // Sidebar
+        win.cycle_focus(true); // Conversation
+        win.cycle_focus(true); // Input
+        assert_eq!(win.focus_region(), FocusRegion::Input);
+        for c in "hello".chars() {
+            win.on_char(c as u16);
+        }
+        win.on_key(VK_RETURN);
+        assert!(matches!(win.poll_event(), Some(UiEvent::SendMessage(_))));
+    }
+
+    #[test]
+    fn the_sidebar_focus_indicator_is_drawn_only_when_it_has_focus() {
+        let mut win = w();
+        win.cycle_focus(true); // -> Sidebar
+        render(&mut win);
+        // The focus outline uses the accent colour; the row is also a hit target.
+        assert!(win.hits.iter().any(|h| matches!(h.action, UiAction::Select(_))));
+        assert_eq!(win.focus_region(), FocusRegion::Sidebar);
+
+        win.cycle_focus(true); // -> Conversation
+        render(&mut win);
+        assert_ne!(win.focus_region(), FocusRegion::Sidebar);
+    }
+
+    #[test]
+    fn tab_while_searching_edits_the_query_not_the_focus() {
+        let mut win = w();
+        win.toggle_search();
+        assert!(win.search_focused);
+        let before = win.focus_region();
+        win.on_key(VK_TAB);
+        assert_eq!(win.focus_region(), before, "Tab in the search bar must not move focus");
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests
