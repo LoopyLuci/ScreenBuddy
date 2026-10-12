@@ -491,16 +491,40 @@ fn main() {
         shared_sessions.lock().map(|s| s.list().len()).unwrap_or(0)
     );
 
+    // Settings UI
+    //
+    // Declared before the IPC server is built so the server can share the same
+    // store for export/import. Behind an Arc<Mutex> for that sharing; the
+    // allocation is stable for the Arc's lifetime, which matters because the
+    // settings window holds a raw pointer into this object and it must not move.
+    let settings = Arc::new(std::sync::Mutex::new(screenbuddy_core::SettingsUI::new()));
+    // Load persisted settings before any read; without this, fps_target is
+    // always the default (30) at startup because the saved value is never read.
+    settings.lock().unwrap().load();
+
+    // Held outside the IPC block so the settings window can use it after.
+    let mut settings_control: Option<
+        tokio::sync::broadcast::Sender<screenbuddy_core::ControlRequest>,
+    > = None;
+
     if std::env::var("SCREENBUDDY_DISABLE_IPC").is_err() {
         // `main` is not inside a Tokio runtime, so the server gets its own and
         // runs on a dedicated OS thread. This mirrors AiChatBridge.
         // The server and this loop must share one snapshot handle; two copies
         // would make every query return defaults.
-        let ipc = screenbuddy_core::IpcServer::with_status(ipc_config.clone(), status.clone())
+        //
+        // The settings store is shared too, so a profile imported over IPC is
+        // live in the render loop immediately rather than on next launch.
+        let mut ipc = screenbuddy_core::IpcServer::with_status(ipc_config.clone(), status.clone())
             .with_sessions(shared_sessions.clone());
+        ipc.set_settings(settings.clone());
         // Subscribe before starting the thread so a request arriving
         // immediately after startup is not missed.
         control_rx = Some(ipc.subscribe_control());
+        // Taken before `ipc` is moved into its thread: the settings window needs
+        // a way to ask the render loop to export or import.
+        let sender = ipc.control_sender();
+        settings_control = Some(sender);
         let ipc_addr = ipc_config.addr.clone();
         thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -523,15 +547,11 @@ fn main() {
         println!("[IPC] Control server disabled (SCREENBUDDY_DISABLE_IPC set)");
     }
 
-    // Settings UI
-    let mut settings = screenbuddy_core::SettingsUI::new();
-    // Load persisted settings before any read; without this, fps_target is
-    // always the default (30) at startup because the saved value is never read.
-    settings.load();
-
     // Install the logging subscriber. Until now the tracing calls in this crate
     // went nowhere, because nothing ever installed one.
     let log_level = settings
+        .lock()
+        .unwrap()
         .text("log_level")
         .unwrap_or_else(|| "info".to_string());
     let log_path = screenbuddy_core::logging::default_log_path();
@@ -546,7 +566,7 @@ fn main() {
 
     // fps_target was a setting nothing read; the loop was pinned at 30. Clamped so
     // a zero or absurd value cannot stall or melt the CPU.
-    let read_target_fps = |settings: &screenbuddy_core::SettingsUI| -> u32 {
+    let read_target_fps = |settings: &screenbuddy_core::SettingsReader| -> u32 {
         // Clamped so a zero or absurd value cannot stall or melt the CPU.
         settings
             .number("fps_target")
@@ -554,58 +574,60 @@ fn main() {
             .unwrap_or(30)
             .clamp(5, 120) as u32
     };
-    let target_fps = read_target_fps(&settings);
+    let read_theme = |settings: &screenbuddy_core::SettingsReader| -> String {
+        settings
+            .text("theme")
+            .unwrap_or_else(|| "dark".to_string())
+    };
+
+    // Shareable read handles. Cloned before the settings window takes a mutable
+    // borrow of the store, since that borrow lasts as long as the window does.
+    let settings_reader = settings.lock().unwrap().reader();
+    let ipc_settings_reader = settings_reader.clone();
+    // A third handle for the render loop: settings_reader itself is moved into
+    // the settings window below.
+    let theme_settings_reader = settings_reader.clone();
+
+    let target_fps = read_target_fps(&settings_reader);
     println!("Animation at {target_fps} FPS");
 
     // The theme setting was declared but nothing read it, so the window always
     // used dark. Read it through the same reader the loop uses and apply it when
     // it changes.
-    let read_theme = |settings: &screenbuddy_core::SettingsUI| -> String {
-        settings
-            .text("theme")
-            .unwrap_or_else(|| "dark".to_string())
-    };
-    let mut applied_theme = read_theme(&settings);
-
-    // Shareable read handles. Cloned before the settings window takes a mutable
-    // borrow of the store, since that borrow lasts as long as the window does.
-    let settings_reader = settings.reader();
-    let ipc_settings_reader = settings_reader.clone();
-    // A third handle for the render loop: settings_reader itself is moved into
-    // the settings window, which holds a mutable borrow of the store.
-    let theme_settings_reader = settings_reader.clone();
-    settings
-        .set(
+    let mut applied_theme = read_theme(&theme_settings_reader);
+    {
+        let mut s = settings.lock().unwrap();
+        s.set(
             "creature_count",
             screenbuddy_core::SettingValue::Int(creatures.len() as i64),
         )
         .ok();
-    settings
-        .set(
+        s.set(
             "collision_avoidance",
             screenbuddy_core::SettingValue::Bool(1.0),
         )
         .ok();
-    settings
-        .set(
+        s.set(
             "cursor_interaction",
             screenbuddy_core::SettingValue::Bool(1.0),
         )
         .ok();
-    println!("[Settings] {} settings loaded", settings.export().len());
-    // Seed the snapshot from the loaded settings so reads work before any write.
-    if let Ok(mut snapshot) = status.lock() {
-        for (name, value) in settings.export() {
-            snapshot
-                .settings
-                .insert(name, serde_json::json!(setting_to_json(&value)));
+        println!("[Settings] {} settings loaded", s.export().len());
+        // Seed the snapshot from the loaded settings so reads work before any
+        // write. Merged, so control-inserted keys are not wiped.
+        if let Ok(mut snapshot) = status.lock() {
+            for (name, value) in s.export() {
+                snapshot
+                    .settings
+                    .insert(name, serde_json::json!(setting_to_json(&value)));
+            }
         }
     }
 
     // Apply the AI settings the engine was built before settings were loaded.
     // These report what they did rather than failing silently.
     {
-        if let Some(screenbuddy_core::SettingValue::String(provider)) = settings.get("ai_provider")
+        if let Some(screenbuddy_core::SettingValue::String(provider)) = settings.lock().unwrap().get("ai_provider")
         {
             match screenbuddy_core::AiEngine::parse_backend(provider.as_str()) {
                 Ok(backend) => {
@@ -615,7 +637,7 @@ fn main() {
                 Err(e) => println!("[AI] {e}; keeping the default model list"),
             }
         }
-        if let Some(screenbuddy_core::SettingValue::String(model)) = settings.get("ai_model") {
+        if let Some(screenbuddy_core::SettingValue::String(model)) = settings.lock().unwrap().get("ai_model") {
             // An unknown model must say so: silently using a different one is
             // exactly the defect this audit turned up.
             match ai.set_default_model(model.as_str()) {
@@ -626,14 +648,14 @@ fn main() {
     }
 
     // Apply initial settings to audio
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_master") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_master") {
         audio.set_master_volume(vol as f32);
     }
     // The two bus levels had no path from settings to playback.
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_effects") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_effects") {
         audio.set_effects_volume(vol as f32);
     }
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_music") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_music") {
         audio.set_music_volume(vol as f32);
     }
 
@@ -673,9 +695,16 @@ fn main() {
     // The window borrows the store the render loop owns. The reader was cloned
     // above, before this mutable borrow begins.
     let mut settings_win =
-        Box::new(unsafe { settings_window::SettingsView::new(settings_reader, &mut settings) });
+        Box::new(unsafe {
+            settings_window::SettingsView::new(settings_reader, &mut *settings.lock().unwrap())
+        });
     unsafe {
         settings_window::create_settings_window(settings_win.as_mut());
+    }
+    // The window asks the render loop to export or import; only the loop owns
+    // the store, so the window cannot do the file I/O itself.
+    if let Some(sender) = settings_control.as_ref() {
+        settings_win.set_control(sender.clone());
     }
     // Created hidden: the tray menu opens it on request, so it should not
     // appear unasked at startup.
@@ -815,7 +844,8 @@ fn main() {
             &bridge_for_input,
             &mut rag,
             &mut audio,
-            &mut settings,
+            &mut *settings.lock().unwrap(),
+            settings_win.as_mut(),
             &mut tts,
             &mut auto_cycle,
             &status,
@@ -853,7 +883,7 @@ fn main() {
         }
 
         // Render stats overlay (drawn on screen in main window)
-        if settings.get("show_render_stats").and_then(|v| match v {
+        if settings.lock().unwrap().get("show_render_stats").and_then(|v| match v {
             screenbuddy_core::SettingValue::Bool(b) => Some(b != 0.0),
             _ => None,
         }).unwrap_or(false) {
@@ -911,14 +941,16 @@ fn main() {
         }
 
         // Check for settings changes
-        if settings.changed() {
-            if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.get("volume_master")
+        if settings.lock().unwrap().changed() {
+            if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_master")
             {
                 audio.set_master_volume(vol as f32);
             }
         }
             anim_speed = settings
-                .get("animation_speed")
+              .lock()
+              .unwrap()
+              .get("animation_speed")
                 .and_then(|v| match v {
                     screenbuddy_core::SettingValue::Float(f) => Some(f as f32),
                     _ => None,
@@ -1348,7 +1380,7 @@ fn main() {
         // target + work, so a lower target still produces a faster frame while
         // the work dominates. Clamping to 60Hz measured slower (21ms) than
         // leaving the 77fps setting (17ms).
-        let target_ms = 1000.0 / read_target_fps(&settings) as f64;
+        let target_ms = 1000.0 / read_target_fps(&theme_settings_reader) as f64;
         let frame_deadline = frame_start + Duration::from_secs_f64(target_ms / 1000.0);
         let sleep_ms = (target_ms - 2.0).max(0.0) as u64;
         if sleep_ms > 0 {
@@ -1391,6 +1423,8 @@ fn apply_control_requests(
     rag: &mut screenbuddy_core::RagPipeline,
     audio: &mut screenbuddy_core::AudioSystem,
     settings: &mut screenbuddy_core::SettingsUI,
+    // The settings window, so an import can re-read the rows it just changed.
+    settings_win: &mut settings_window::SettingsView,
     tts: &mut Option<screenbuddy_core::TtsSystem>,
     auto_cycle: &mut bool,
     status: &std::sync::Arc<std::sync::Mutex<screenbuddy_core::RuntimeStatus>>,
@@ -1561,6 +1595,36 @@ fn apply_control_requests(
                     Err(e) => eprintln!("[Agents] Delete failed: {e}"),
                 }
                 agent_win.reload(agent_store);
+            }
+            Ok(screenbuddy_core::ControlRequest::ExportSettings { path }) => {
+                // The file dialog already ran on the settings window's thread;
+                // the write happens here because the render loop owns the store.
+                let target = std::path::PathBuf::from(&path);
+                match settings.export_to(&target) {
+                    Ok(n) => {
+                        println!("[Settings] Exported {n} setting(s) to {path}");
+                        settings_win.sync();
+                    }
+                    Err(e) => eprintln!("[Settings] Export failed: {e}"),
+                }
+            }
+            Ok(screenbuddy_core::ControlRequest::ImportSettings { path }) => {
+                let source = std::path::PathBuf::from(&path);
+                match settings.import_from(&source) {
+                    Ok((applied, skipped)) => {
+                        println!(
+                            "[Settings] Imported {applied} setting(s) from {path} ({} skipped)",
+                            skipped.len()
+                        );
+                        // Re-read so the rows show the imported values rather
+                        // than the ones painted before the import.
+                        settings_win.sync();
+                        if !skipped.is_empty() {
+                            println!("[Settings] Skipped unknown keys: {}", skipped.join(", "));
+                        }
+                    }
+                    Err(e) => eprintln!("[Settings] Import failed: {e}"),
+                }
             }
             Ok(screenbuddy_core::ControlRequest::NineRouterStatus { endpoint, api_key }) => {
                 // Discovery is the useful part: it tells the user whether 9Router

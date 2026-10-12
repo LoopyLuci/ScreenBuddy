@@ -146,6 +146,87 @@ impl SettingsUI {
         std::fs::write(&self.path, json).map_err(|e| e.to_string())
     }
 
+    /// Write the current settings to an explicit path.
+    ///
+    /// Separate from `save`, which writes the app's own file: this is for a user
+    /// keeping a named profile to move between machines. Returns how many
+    /// settings were written so the caller can confirm the file is not empty.
+    pub fn export_to(&self, path: &std::path::Path) -> Result<usize, String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let snapshot: HashMap<String, SettingValue> = self
+            .settings
+            .lock()
+            .map_err(|_| "settings lock poisoned".to_string())?
+            .clone();
+        let json = serde_json::to_string_pretty(&snapshot).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())?;
+        Ok(snapshot.len())
+    }
+
+    /// Clamp a value to the definition's declared bounds.
+    ///
+    /// Only used by import. `set()` deliberately rejects an out-of-range value,
+    /// which is right for a single control edit but wrong for a profile: a file
+    /// written elsewhere may carry a value this build's definition refuses, and
+    /// clamping turns that into a working setting rather than a silently
+    /// dropped one. Enum and String have no numeric bounds and pass through.
+    fn clamp_to_definition(&self, name: &str, value: SettingValue) -> SettingValue {
+        let Some(def) = self.definitions.iter().find(|d| d.name == name) else {
+            return value;
+        };
+        match (value, &def.min, &def.max) {
+            (
+                SettingValue::Float(v),
+                Some(SettingValue::Float(lo)),
+                Some(SettingValue::Float(hi)),
+            ) => SettingValue::Float(v.clamp(*lo, *hi)),
+            (
+                SettingValue::Int(v),
+                Some(SettingValue::Int(lo)),
+                Some(SettingValue::Int(hi)),
+            ) => SettingValue::Int(v.clamp(*lo, *hi)),
+            (other, _, _) => other,
+        }
+    }
+
+    /// Read settings from an explicit path and apply the ones this build knows.
+    ///
+    /// Unknown keys are counted and skipped rather than rejected, so a profile
+    /// written by a newer build still loads on an older one. Returns
+    /// `(applied, skipped)`.
+    pub fn import_from(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<(usize, Vec<String>), String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let stored =
+            serde_json::from_str::<HashMap<String, SettingValue>>(&text).map_err(|e| e.to_string())?;
+        let known: std::collections::HashSet<String> = self
+            .definitions
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        let mut applied = 0usize;
+        let mut skipped = Vec::new();
+        for (key, value) in stored {
+            if !known.contains(&key) {
+                skipped.push(key);
+                continue;
+            }
+            // Clamp to the definition's bounds first: set() rejects an
+            // out-of-range value, which would drop the key entirely.
+            let value = self.clamp_to_definition(&key, value);
+            // Then go through set() so the change is recorded for undo and the
+            // rest of the validation still applies.
+            if self.set(&key, value).is_ok() {
+                applied += 1;
+            }
+        }
+        Ok((applied, skipped))
+    }
+
     /// Read settings back, ignoring anything unrecognised.
     ///
     /// Only keys this build defines are accepted, so a stale or hand-edited file

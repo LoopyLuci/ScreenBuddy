@@ -199,6 +199,13 @@ pub enum GodotCommand {
         query: String,
         limit: usize,
     },
+    /// Export the current settings to a JSON file and report where.
+    ///
+    /// A profile is how a user moves a setup between machines; without this the
+    /// only copy is the app's own file, which has to be found by hand.
+    ExportSettings { path: String },
+    /// Read a settings file and apply the keys this build knows.
+    ImportSettings { path: String },
     /// Frame-time percentiles and frame counts.
     ///
     /// Separate from `get_status` because the full status snapshot is large and
@@ -270,6 +277,10 @@ pub enum ControlRequest {
         query: String,
         limit: usize,
     },
+    /// Write the current settings to a file, so a setup can move between machines.
+    ExportSettings { path: String },
+    /// Read a settings file and apply the keys this build knows.
+    ImportSettings { path: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +411,12 @@ pub struct IpcServer {
     /// Optional authentication token. When set, clients must send
     /// {"auth":"<token>"} as their first message before any commands.
     pub auth_token: Option<String>,
+    /// The settings store, for the export/import commands.
+    ///
+    /// Optional because the server is also constructed in tests that have no
+    /// settings to export. The render loop keeps its own handle; this is the
+    /// same object behind an Arc, so an import is visible to the loop.
+    pub settings: Option<Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>>,
 }
 
 impl IpcServer {
@@ -417,7 +434,16 @@ impl IpcServer {
                 crate::session::SessionStore::with_default_session(),
             )),
             auth_token: None,
+            settings: None,
         }
+    }
+
+    /// Share the settings store with the IPC layer.
+    ///
+    /// The render loop keeps its own handle to the same object, so a value
+    /// imported over IPC is picked up by the loop on its next read.
+    pub fn set_settings(&mut self, settings: Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>) {
+        self.settings = Some(settings);
     }
 
     /// Enable authentication with the given token.
@@ -486,9 +512,20 @@ impl IpcServer {
                     let sessions = self.sessions.clone();
                     let shutdown = self.shutdown.clone();
                     let token = self.auth_token.clone();
+                    let settings = self.settings.clone();
                     tokio::spawn(async move {
                         let _permit = permit;
-                        handle_client(stream, tx, control, creatures, status, sessions, shutdown, token)
+                        handle_client(
+                            stream,
+                            tx,
+                            control,
+                            creatures,
+                            status,
+                            sessions,
+                            shutdown,
+                            token,
+                            settings,
+                        )
                             .await;
                     });
                 }
@@ -509,6 +546,12 @@ impl IpcServer {
     /// Subscribe to control requests. The main loop drains these each frame.
     pub fn subscribe_control(&self) -> broadcast::Receiver<ControlRequest> {
         self.control.subscribe()
+    }
+
+    /// A sender for control requests, for a window that needs to ask the render
+    /// loop to act (the settings window's export/import).
+    pub fn control_sender(&self) -> broadcast::Sender<ControlRequest> {
+        self.control.clone()
     }
 
     pub async fn load_creature(&self, id: String, data: serde_json::Value) {
@@ -585,6 +628,7 @@ async fn handle_client(
     sessions: SharedSessions,
     shutdown: Arc<Notify>,
     auth_token: Option<String>,
+    settings: Option<Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>>,
 ) {
     let mut buf = vec![0u8; 8192];
     let mut authenticated = auth_token.is_none();
@@ -643,7 +687,15 @@ async fn handle_client(
 
         match serde_json::from_slice::<GodotCommand>(&payload) {
             Ok(cmd) => {
-                let resp = process_command(&cmd, &creatures, &control, &status, &sessions).await;
+                let resp = process_command(
+                    &cmd,
+                    &creatures,
+                    &control,
+                    &status,
+                    &sessions,
+                    &settings,
+                )
+                .await;
                 let _ = write_frame(&mut stream, &resp, request_id).await;
                 // `send` fails only when there are no subscribers, which is fine:
                 // the app may not be draining this channel.
@@ -712,6 +764,10 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
                 .unwrap_or(DEFAULT_SEARCH_LIMIT)
                 .clamp(1, MAX_SEARCH_LIMIT),
         },
+        GodotCommand::ExportSettings { path } => ControlRequest::ExportSettings { path: path.clone() },
+        GodotCommand::ImportSettings { path } => {
+            ControlRequest::ImportSettings { path: path.clone() }
+        }
         _ => return None,
     })
 }
@@ -722,6 +778,7 @@ async fn process_command(
     control: &broadcast::Sender<ControlRequest>,
     status: &Arc<std::sync::Mutex<RuntimeStatus>>,
     sessions: &SharedSessions,
+    settings: &Option<Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>>,
 ) -> Response {
     // Query-style commands are answered from server-side state where possible.
     match cmd {
@@ -739,6 +796,50 @@ async fn process_command(
                     "count": list.len(),
                     "sessions": list,
                 })),
+            };
+        }
+
+        GodotCommand::ExportSettings { path } => {
+            // A missing handle means the app did not share its store; say so
+            // rather than writing an empty file that looks like a real profile.
+            let Some(store) = settings.as_ref() else {
+                return Response::err("settings store is not available");
+            };
+            let target = std::path::PathBuf::from(path.clone());
+            let count = match store.lock() {
+                Ok(s) => match s.export_to(&target) {
+                    Ok(n) => n,
+                    Err(e) => return Response::err(format!("export failed: {e}")),
+                },
+                Err(_) => return Response::err("settings lock poisoned"),
+            };
+            return Response::ok(serde_json::json!({
+                "path": path,
+                "exported": count,
+            }));
+        }
+
+        GodotCommand::ImportSettings { path } => {
+            let Some(store) = settings.as_ref() else {
+                return Response::err("settings store is not available");
+            };
+            let source = std::path::PathBuf::from(path.clone());
+            let outcome = {
+                let Ok(mut s) = store.lock() else {
+                    return Response::err("settings lock poisoned");
+                };
+                let outcome = s.import_from(&source);
+                // Persist so a restart keeps what was imported.
+                let _ = s.save();
+                outcome
+            };
+            return match outcome {
+                Ok((applied, skipped)) => Response::ok(serde_json::json!({
+                    "path": path,
+                    "applied": applied,
+                    "skipped": skipped,
+                })),
+                Err(e) => Response::err(format!("import failed: {e}")),
             };
         }
 
@@ -1076,11 +1177,25 @@ mod tests {
     /// Dispatch against the shared test server, whose session store the tests
     /// inspect directly.
     async fn dispatch(s: &IpcServer, cmd: &GodotCommand) -> Response {
-        process_command(cmd, &s.creatures, &s.control, &s.status, &s.sessions).await
+        process_command(
+            cmd,
+            &s.creatures,
+            &s.control,
+            &s.status,
+            &s.sessions,
+            &s.settings,
+        )
+        .await
     }
 
     fn server() -> IpcServer {
-        IpcServer::new(IpcConfig::default())
+        // Shares a settings store, so the export/import tests have somewhere to
+        // read and write. in_memory() keeps the tests off the real settings file.
+        let mut s = IpcServer::new(IpcConfig::default());
+        s.set_settings(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::settings_ui::SettingsUI::in_memory(),
+        )));
+        s
     }
 
     #[tokio::test]
@@ -1407,6 +1522,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_then_import_round_trips_a_setting() {
+        let s = server();
+        // Give the store a value to export.
+        s.settings
+            .as_ref()
+            .expect("test server shares a settings store")
+            .lock()
+            .unwrap()
+            .set("creature_count", crate::settings_ui::SettingValue::Int(4))
+            .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("sb_export_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profile.json");
+
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::ExportSettings {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            )
+            .await,
+        );
+        // Every declared setting is exported, so a profile is complete rather
+        // than holding only what has been changed.
+        let written_count = d["exported"].as_u64().unwrap();
+        assert!(written_count >= 1, "expected the full set, got {written_count}");
+        let written = std::fs::read_to_string(&path).expect("export file exists");
+        assert!(written.contains("creature_count"), "got: {written}");
+
+        // Change it, then import the file back.
+        s.settings
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .set("creature_count", crate::settings_ui::SettingValue::Int(9))
+            .unwrap();
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::ImportSettings {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            )
+            .await,
+        );
+        // The whole file applies, not just the key that changed.
+        let applied = d["applied"].as_u64().unwrap();
+        assert!(applied >= 1, "expected the profile to apply, got {applied}");
+        assert_eq!(
+            s.settings
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .number("creature_count"),
+            Some(4.0),
+            "the imported value must be live in the store"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_skips_unknown_keys_instead_of_failing() {
+        // A profile written by a newer build must still load here.
+        let s = server();
+        let dir = std::env::temp_dir().join(format!("sb_import_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mixed.json");
+        std::fs::write(
+            &path,
+            r#"{"creature_count":{"Int":5},"some_future_setting":{"Int":1}}"#,
+        )
+        .unwrap();
+
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::ImportSettings {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            )
+            .await,
+        );
+        assert_eq!(d["applied"].as_u64().unwrap(), 1, "the known key applied");
+        assert_eq!(
+            d["skipped"].as_array().map(|a| a.len()),
+            Some(1),
+            "the unknown key was skipped, not fatal"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_clamps_a_hostile_value_rather_than_storing_it() {
+        let s = server();
+        let dir = std::env::temp_dir().join(format!("sb_clamp_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hostile.json");
+        // creature_count has no explicit bound in every build, so use
+        // animation_speed, which is bounded 0.1..5.0.
+        std::fs::write(&path, r#"{"animation_speed":{"Float":999.0}}"#).unwrap();
+
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::ImportSettings {
+                    path: path.to_string_lossy().into_owned(),
+                },
+            )
+            .await,
+        );
+        assert_eq!(d["applied"].as_u64().unwrap(), 1);
+        let applied = s
+            .settings
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .number("animation_speed");
+        assert_eq!(applied, Some(5.0), "clamped to the definition's max");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn import_reports_an_unreadable_path_without_blocking() {
+        let s = server();
+        let r = dispatch(
+            &s,
+            &GodotCommand::ImportSettings {
+                path: "C:/definitely/not/here.json".to_string(),
+            },
+        )
+        .await;
+        assert!(r.is_error(), "a missing file must be reported");
+    }
+
+    #[tokio::test]
+    async fn export_without_a_shared_store_says_so() {
+        // A server built without set_settings must not write an empty file that
+        // looks like a real profile.
+        let s = IpcServer::new(IpcConfig {
+            addr: "127.0.0.1:0".to_string(),
+            enable_hot_reload: false,
+            max_connections: 1,
+        });
+        let r = dispatch(
+            &s,
+            &GodotCommand::ExportSettings {
+                path: "C:/temp/should_not_exist.json".to_string(),
+            },
+        )
+        .await;
+        assert!(r.is_error(), "a server with no store must refuse");
+        assert!(!std::path::Path::new("C:/temp/should_not_exist.json").exists());
+    }
+
+    #[tokio::test]
     async fn get_metrics_on_a_fresh_server_is_zero_not_an_error() {
         let s = server();
         let d = ok_data(dispatch(&s, &GodotCommand::GetMetrics).await);
@@ -1716,6 +1991,7 @@ mod tests {
                     s.sessions.clone(),
                     shutdown,
                     None,
+                    s.settings.clone(),
                 ));
             }
         });
@@ -1785,6 +2061,7 @@ mod tests {
                     s.sessions.clone(),
                     shutdown,
                     None,
+                    s.settings.clone(),
                 ));
             }
         });
@@ -1846,6 +2123,7 @@ mod tests {
                         let _permit = permit;
                         handle_client(
                             stream, tx, control, creatures, status, sessions, shutdown, None,
+                            None,
                         )
                         .await;
                     });
@@ -1912,7 +2190,7 @@ mod tests {
             tokio::spawn(async move {
                 if let Ok((stream, _)) = listener.accept().await {
                     handle_client(
-                        stream, tx, control, creatures, status, sessions, shutdown, None,
+                        stream, tx, control, creatures, status, sessions, shutdown, None, None,
                     )
                     .await;
                 }

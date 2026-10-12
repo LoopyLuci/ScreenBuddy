@@ -156,6 +156,10 @@ enum Action {
     Toggle(usize),
     Close,
     ResetAll,
+    /// Write the current settings to a file the user picks.
+    Export,
+    /// Read a settings file the user picks and apply it.
+    Import,
 }
 
 /// Which way a stepper moved.
@@ -222,6 +226,14 @@ pub struct SettingsView {
     surface_h: i32,
     /// Whether Ctrl is held, tracked from key messages so injected input works.
     ctrl_down: bool,
+    /// Sends a request the render loop must act on. Only the render loop owns
+    /// the settings store, so a window cannot export or import it directly.
+    control: Option<tokio::sync::broadcast::Sender<screenbuddy_core::ControlRequest>>,
+    /// Supplies a file path instead of showing the dialog.
+    ///
+    /// The real dialog is modal and blocks, which is correct for a user and
+    /// wrong for a test. `None` means "show the dialog".
+    path_prompt: Option<fn(bool) -> Option<String>>,
 }
 
 impl SettingsView {
@@ -247,9 +259,22 @@ impl SettingsView {
             surface_w: WIN_WIDTH,
             surface_h: WIN_HEIGHT,
             ctrl_down: false,
+            control: None,
+            path_prompt: None,
         };
         view.reload();
         view
+    }
+
+    /// Give the window a way to ask the render loop to act.
+    ///
+    /// The render loop owns the settings store, so the window cannot export or
+    /// import it directly; it sends a request instead.
+    pub fn set_control(
+        &mut self,
+        control: tokio::sync::broadcast::Sender<screenbuddy_core::ControlRequest>,
+    ) {
+        self.control = Some(control);
     }
 
     /// Reverse the most recent setting change, if any.
@@ -420,6 +445,44 @@ impl SettingsView {
             Action::Step(index, dir) => self.step(index, dir == StepDir::Inc),
             Action::ResetAll => self.reset_all(),
             Action::Close => self.hide(),
+            Action::Export | Action::Import => {
+                // The file dialog must run on the window's own thread, which this
+                // is; the actual write happens in the render loop, which owns the
+                // store.
+                let save = matches!(target.action, Action::Export);
+                let owner = self.hwnd.unwrap_or(ptr::null_mut());
+                // An injected prompt stands in for the modal dialog, which would
+                // otherwise block a test forever.
+                let path = match self.path_prompt {
+                    Some(prompt) => prompt(save),
+                    None => {
+                        if save {
+                            Self::prompt_save_path(owner)
+                        } else {
+                            Self::prompt_open_path(owner)
+                        }
+                    }
+                };
+                // A cancelled dialog is not an error; just show nothing.
+                let Some(path) = path else {
+                    return;
+                };
+                let Some(control) = self.control.clone() else {
+                    self.notice = Some("Export is unavailable".to_string());
+                    return;
+                };
+                let _ = control.send(if save {
+                    screenbuddy_core::ControlRequest::ExportSettings { path }
+                } else {
+                    screenbuddy_core::ControlRequest::ImportSettings { path }
+                });
+                self.notice = Some(if save {
+                    "Exporting profile...".to_string()
+                } else {
+                    "Importing profile...".to_string()
+                });
+                self.refresh();
+            }
         }
     }
 
@@ -861,8 +924,35 @@ impl SettingsView {
             del_obj(font as *mut _);
         }
 
+        // Export / Import sit left of Reset all, so a profile can be saved and
+        // restored without finding the app's data directory by hand.
         let bw = 110;
+        let gap = 8;
         let rx = w - PADDING - bw;
+        let ix = rx - gap - bw;
+        let ex = ix - gap - bw;
+
+        for (x, label, action) in [
+            (ex, "Export", Action::Export),
+            (ix, "Import", Action::Import),
+        ] {
+            fill_rect(buf, w, x, top + 10, bw, 26, 0x00304048);
+            let (font, old) = select_font(dc, 12, false);
+            set_text_colour(dc, 0x00D0E0E0);
+            draw_text(
+                buf,
+                dc,
+                label,
+                x + 10,
+                top + 15,
+                bw - 20,
+                font_height(12, false),
+            );
+            select_obj(dc, old);
+            del_obj(font as *mut _);
+            self.hits.push(HitTarget::new(x, top + 10, bw, 26, action));
+        }
+
         fill_rect(buf, w, rx, top + 10, bw, 26, 0x00304048);
         let (font, old) = select_font(dc, 12, false);
         set_text_colour(dc, 0x00D0E0E0);
@@ -879,6 +969,50 @@ impl SettingsView {
         del_obj(font as *mut _);
         self.hits
             .push(HitTarget::new(rx, top + 10, bw, 26, Action::ResetAll));
+    }
+
+    /// Ask the user where to save a settings profile.
+    ///
+    /// Returns `None` when the dialog is cancelled, which is a normal outcome and
+    /// must not be reported as a failure.
+    fn prompt_save_path(owner: HWND) -> Option<String> {
+        Self::prompt_file_path(owner, true)
+    }
+
+    /// Ask the user which settings profile to open.
+    fn prompt_open_path(owner: HWND) -> Option<String> {
+        Self::prompt_file_path(owner, false)
+    }
+
+    fn prompt_file_path(owner: HWND, save: bool) -> Option<String> {
+        unsafe {
+            let mut buf = [0u16; 1024];
+            let mut ofn: winapi::um::commdlg::OPENFILENAMEW = std::mem::zeroed();
+            ofn.lStructSize = std::mem::size_of::<winapi::um::commdlg::OPENFILENAMEW>() as u32;
+            ofn.hwndOwner = owner;
+            // "JSON\0*.json\0All files\0*.*\0\0" as UTF-16.
+            let filter: Vec<u16> = "JSON\0*.json\0All files\0*.*\0\0"
+                .encode_utf16()
+                .collect();
+            ofn.lpstrFilter = filter.as_ptr();
+            ofn.lpstrFile = buf.as_mut_ptr();
+            ofn.nMaxFile = buf.len() as u32;
+            ofn.lpstrDefExt = "json\0".encode_utf16().collect::<Vec<u16>>().as_ptr();
+            ofn.Flags = winapi::um::commdlg::OFN_OVERWRITEPROMPT
+                | winapi::um::commdlg::OFN_PATHMUSTEXIST
+                | winapi::um::commdlg::OFN_NOCHANGEDIR;
+
+            let ok = if save {
+                winapi::um::commdlg::GetSaveFileNameW(&mut ofn)
+            } else {
+                winapi::um::commdlg::GetOpenFileNameW(&mut ofn)
+            };
+            if ok == 0 {
+                return None;
+            }
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            String::from_utf16(&buf[..len]).ok()
+        }
     }
 
     /// Paint the window: draw into a DIB, then blit to the paint DC.
@@ -1437,6 +1571,91 @@ mod tests {
                 assert_eq!(view.rows[index].value, SettingValue::Int(29));
             },
         );
+    }
+
+    #[test]
+    fn the_footer_offers_export_and_import() {
+        // A profile is how a setup moves between machines; without these the only
+        // copy is the app's data file, which has to be found by hand.
+        with_view(None, |view| {
+            let target = crate::gdi::DrawTarget::new(WIN_WIDTH, WIN_HEIGHT);
+            let mut buffer = vec![0u32; (WIN_WIDTH * WIN_HEIGHT) as usize];
+            view.paint(&mut buffer, target.handle(), WIN_WIDTH, WIN_HEIGHT);
+            let actions: Vec<Action> = view.hits.iter().map(|h| h.action).collect();
+            assert!(
+                actions.contains(&Action::Export),
+                "no Export button registered: {actions:?}"
+            );
+            assert!(
+                actions.contains(&Action::Import),
+                "no Import button registered: {actions:?}"
+            );
+            // And Reset all must still be there.
+            assert!(actions.contains(&Action::ResetAll));
+        });
+    }
+
+    #[test]
+    fn export_sends_a_request_rather_than_writing_itself() {
+        // The window must not touch the store: the render loop owns it, so a
+        // write from the window's thread would race the loop's reads.
+        with_view(None, |view| {
+            let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+            view.set_control(tx);
+            // The real dialog is modal and would block the test forever.
+            view.path_prompt = Some(|_| Some("C:/temp/profile.json".to_string()));
+            let target = crate::gdi::DrawTarget::new(WIN_WIDTH, WIN_HEIGHT);
+            let mut buffer = vec![0u32; (WIN_WIDTH * WIN_HEIGHT) as usize];
+            view.paint(&mut buffer, target.handle(), WIN_WIDTH, WIN_HEIGHT);
+            let target = view
+                .hits
+                .iter()
+                .find(|h| matches!(h.action, Action::Export))
+                .expect("an Export button")
+                .clone();
+            view.on_click(target.rect.0 + 2, target.rect.1 + 2);
+
+            // The window asked; it did not write anything itself.
+            let asked = rx
+                .try_recv()
+                .expect("the window should have asked the render loop");
+            match asked {
+                screenbuddy_core::ControlRequest::ExportSettings { path } => {
+                    assert_eq!(path, "C:/temp/profile.json")
+                }
+                other => panic!("expected ExportSettings, got {other:?}"),
+            }
+            assert_eq!(
+                view.notice.as_deref(),
+                Some("Exporting profile..."),
+                "the window should report that it asked, not that it wrote"
+            );
+        });
+    }
+
+    #[test]
+    fn a_cancelled_dialog_asks_for_nothing() {
+        with_view(None, |view| {
+            let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+            view.set_control(tx);
+            // `None` from the prompt is a cancelled dialog.
+            view.path_prompt = Some(|_| None);
+            let target = crate::gdi::DrawTarget::new(WIN_WIDTH, WIN_HEIGHT);
+            let mut buffer = vec![0u32; (WIN_WIDTH * WIN_HEIGHT) as usize];
+            view.paint(&mut buffer, target.handle(), WIN_WIDTH, WIN_HEIGHT);
+            let target = view
+                .hits
+                .iter()
+                .find(|h| matches!(h.action, Action::Export))
+                .expect("an Export button")
+                .clone();
+            view.on_click(target.rect.0 + 2, target.rect.1 + 2);
+            assert!(
+                rx.try_recv().is_err(),
+                "a cancelled dialog must not send a request"
+            );
+            assert!(view.notice.is_none(), "nothing to report on a cancel");
+        });
     }
 
     #[test]
