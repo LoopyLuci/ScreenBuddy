@@ -90,6 +90,8 @@ enum UiAction {
     Clear,
     /// Focus the search bar so typing edits the query.
     SearchFocus,
+    /// Open a cross-session search result: switch to that session.
+    OpenHit(String),
     /// The minimise button: hide to the tray.
     Minimise,
     Quit,
@@ -101,6 +103,14 @@ struct Rect {
     top: i32,
     right: i32,
     bottom: i32,
+}
+
+/// One cross-session search result as the window displays it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitRow {
+    pub session_id: String,
+    pub session_title: String,
+    pub snippet: String,
 }
 
 impl Rect {
@@ -161,7 +171,10 @@ pub struct MainWindow {
     search_matches: Vec<usize>,
     /// Currently selected search match index.
     search_match_idx: usize,
-    /// Whether the Ctrl key is currently held.
+    /// Cross-session search results, shown in place of the conversation while a
+    /// query is active. Supplied by the app from the session store.
+    search_hits: Vec<HitRow>,
+    /// Whether Ctrl key is held.
     ///
     /// Tracked from key messages rather than read via GetKeyState, which reports
     /// only the physical key state and so misses injected or posted input.
@@ -210,6 +223,7 @@ impl MainWindow {
             search_focused: false,
             search_matches: Vec::new(),
             search_match_idx: 0,
+            search_hits: Vec::new(),
             ctrl_down: false,
             shift_down: false,
             width: WIN_WIDTH,
@@ -388,6 +402,23 @@ impl MainWindow {
         Ok(path.to_string_lossy().to_string())
     }
 
+    /// Supply cross-session search results to display while a query is active.
+    pub fn set_search_hits(&mut self, hits: Vec<HitRow>) {
+        self.search_hits = hits;
+        self.refresh();
+    }
+
+    /// True when a query is active, so the window should show results rather
+    /// than the conversation.
+    pub fn is_searching(&self) -> bool {
+        self.search_visible && !self.search_query.trim().is_empty()
+    }
+
+    /// The current search query, for the app to run against the session store.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
     /// Recompute which messages match the current search query.
     fn recompute_search_matches(&mut self) {
         self.search_matches.clear();
@@ -450,6 +481,15 @@ impl MainWindow {
             }
             Some(UiAction::SearchFocus) => {
                 self.search_focused = true;
+            }
+            Some(UiAction::OpenHit(id)) => {
+                self.events.push(UiEvent::SelectSession(id));
+                // Leave search so the conversation is visible after jumping.
+                self.search_visible = false;
+                self.search_focused = false;
+                self.search_query.clear();
+                self.search_matches.clear();
+                self.search_hits.clear();
             }
             Some(UiAction::NewSession) => self.events.push(UiEvent::NewSession),
             Some(UiAction::Select(id)) => self.events.push(UiEvent::SelectSession(id)),
@@ -844,10 +884,116 @@ fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
         draw_search_bar(win, buf);
     }
     draw_sidebar(win, buf);
-    draw_messages(win, buf);
+    if win.is_searching() {
+        draw_search_results(win, buf);
+    } else {
+        draw_messages(win, buf);
+    }
     draw_input(win, buf);
     if win.generating {
         draw_stop_button(win, buf);
+    }
+}
+
+/// Draw cross-session search results in place of the conversation.
+fn draw_search_results(win: &mut MainWindow, buf: &mut [u32]) {
+    let left = SIDEBAR_W + PADDING;
+    let right = win.width - PADDING;
+    let top = HEADER_H + PADDING + 34;
+    let width = right - left;
+
+    let hits = win.search_hits.clone();
+
+    // Header line: how many results, or that there are none.
+    unsafe {
+        let Some(dc) = win.draw_dc else { return };
+        let f = make_font(13, false);
+        let old = select_obj(dc, f as *mut _);
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(dc, win.theme.muted_text);
+        let header = if hits.is_empty() {
+            "No matches in any conversation".to_string()
+        } else {
+            format!("{} match(es) across conversations", hits.len())
+        };
+        let wide: Vec<u16> = header.encode_utf16().collect();
+        let mut rc = RECT {
+            left,
+            top: HEADER_H + PADDING,
+            right,
+            bottom: HEADER_H + PADDING + 20,
+        };
+        DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+        select_obj(dc, old as *mut _);
+        del_obj(f as *mut _);
+    }
+
+    let mut y = top;
+    for hit in &hits {
+        let row_h = 46;
+        if y + row_h > win.height - INPUT_H - PADDING {
+            break;
+        }
+        let row = Rect::new(left, y, right, y + row_h);
+        fill_rect(buf, win.width, row, win.theme.sidebar_bg);
+        draw_rect_outline(buf, win.width, row, win.theme.border);
+        win.hits.push(HitTarget {
+            rect: row,
+            action: UiAction::OpenHit(hit.session_id.clone()),
+        });
+
+        unsafe {
+            let Some(dc) = win.draw_dc else { return };
+            // Session title, so the user knows which conversation this is.
+            let f = make_font(13, true);
+            let old = select_obj(dc, f as *mut _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(dc, win.theme.text);
+            let wide: Vec<u16> = hit.session_title.encode_utf16().collect();
+            let mut rc = RECT {
+                left: row.left + 10,
+                top: row.top + 4,
+                right: row.right - 10,
+                bottom: row.top + 22,
+            };
+            DrawTextW(
+                dc,
+                wide.as_ptr(),
+                wide.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+            select_obj(dc, old as *mut _);
+            del_obj(f as *mut _);
+
+            let f = make_font(12, false);
+            let old = select_obj(dc, f as *mut _);
+            SetTextColor(dc, win.theme.muted_text);
+            let wide: Vec<u16> = hit.snippet.encode_utf16().collect();
+            let mut rc = RECT {
+                left: row.left + 10,
+                top: row.top + 24,
+                right: row.right - 10,
+                bottom: row.bottom - 4,
+            };
+            DrawTextW(
+                dc,
+                wide.as_ptr(),
+                wide.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+            select_obj(dc, old as *mut _);
+            del_obj(f as *mut _);
+        }
+        let _ = width;
+        y += row_h + 4;
     }
 }
 
@@ -2432,6 +2578,85 @@ mod tests {
             with_md, without_md,
             "headings and bullets must affect the layout"
         );
+    }
+
+    #[test]
+    fn is_searching_needs_both_the_bar_and_a_query() {
+        let mut win = w();
+        assert!(!win.is_searching());
+        win.toggle_search();
+        assert!(!win.is_searching(), "an empty query is not a search");
+        win.set_search_query("dragon".into());
+        assert!(win.is_searching());
+        win.toggle_search();
+        assert!(!win.is_searching(), "closing the bar ends the search");
+    }
+
+    #[test]
+    fn search_results_render_as_clickable_rows() {
+        let mut win = w();
+        win.toggle_search();
+        win.set_search_query("dragon".into());
+        win.set_search_hits(vec![
+            HitRow {
+                session_id: "a".into(),
+                session_title: "Dragon lore".into(),
+                snippet: "…the dragon soars…".into(),
+            },
+            HitRow {
+                session_id: "b".into(),
+                session_title: "More dragons".into(),
+                snippet: "…another dragon…".into(),
+            },
+        ]);
+        render(&mut win);
+        let opens: Vec<_> = win
+            .hits
+            .iter()
+            .filter(|h| matches!(h.action, UiAction::OpenHit(_)))
+            .collect();
+        assert_eq!(opens.len(), 2, "each hit is a hit target");
+    }
+
+    #[test]
+    fn clicking_a_result_switches_session_and_leaves_search() {
+        let mut win = w();
+        win.toggle_search();
+        win.set_search_query("dragon".into());
+        win.set_search_hits(vec![HitRow {
+            session_id: "b".into(),
+            session_title: "Second".into(),
+            snippet: "…dragon…".into(),
+        }]);
+        render(&mut win);
+        let target = win
+            .hits
+            .iter()
+            .find(|h| matches!(h.action, UiAction::OpenHit(_)))
+            .expect("a result row")
+            .rect;
+        win.on_click(target.left + 4, target.top + 4);
+        match win.poll_event() {
+            Some(UiEvent::SelectSession(id)) => assert_eq!(id, "b"),
+            other => panic!("expected SelectSession, got {other:?}"),
+        }
+        assert!(!win.search_visible, "search closes after jumping");
+        assert!(!win.is_searching());
+    }
+
+    #[test]
+    fn an_empty_result_set_still_renders_and_registers_no_rows() {
+        let mut win = w();
+        win.toggle_search();
+        win.set_search_query("nothing-matches-this".into());
+        win.set_search_hits(vec![]);
+        render(&mut win);
+        assert!(
+            !win.hits.iter().any(|h| matches!(h.action, UiAction::OpenHit(_))),
+            "no rows when there are no hits"
+        );
+        // The rest of the chrome must still be present.
+        assert!(win.hits.iter().any(|h| h.action == UiAction::Send));
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests

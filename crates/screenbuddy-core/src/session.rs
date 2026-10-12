@@ -73,6 +73,84 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Byte offset of the first case-insensitive occurrence of `needle_lower`.
+///
+/// Computed against the original text rather than a lowercased copy: some
+/// characters change byte length when lowercased, so an offset taken from the
+/// lowered string can point into the middle of a character in the original and
+/// panics on the slice that follows.
+fn find_ci(text: &str, needle_lower: &str) -> Option<usize> {
+    if needle_lower.is_empty() {
+        return None;
+    }
+    let lowered = text.to_lowercase();
+    // Fast path: when lowercasing preserved the byte length the offsets line up.
+    if lowered.len() == text.len() {
+        return lowered.find(needle_lower);
+    }
+    let needle_chars = needle_lower.chars().count();
+    for (i, _) in text.char_indices() {
+        let candidate: String = text[i..].chars().take(needle_chars).collect();
+        if candidate.to_lowercase() == needle_lower {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Snap down to the nearest char boundary, so slicing cannot split a character.
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Snap up to the nearest char boundary.
+fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+/// A display window around a match, with ellipses where it was cut.
+fn snippet_around(text: &str, match_byte: usize, match_len: usize) -> String {
+    const BEFORE: usize = 40;
+    const AFTER: usize = 60;
+    let start = floor_char_boundary(text, match_byte.saturating_sub(BEFORE));
+    let end = ceil_char_boundary(text, (match_byte + match_len + AFTER).min(text.len()));
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.push_str(text[start..end].trim());
+    if end < text.len() {
+        out.push('…');
+    }
+    out
+}
+
+/// A match found by [SessionStore::search_all].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub session_id: String,
+    /// The session's title, so a result can be shown without a second lookup.
+    pub session_title: String,
+    /// Index of the matching message within the session.
+    pub message_index: usize,
+    /// `user` / `assistant` / `system`.
+    pub role: String,
+    /// A window of text around the match, for display.
+    pub snippet: String,
+}
+
 /// A named conversation.
 ///
 /// A session outlives a window: closing the chat does not end the conversation,
@@ -367,6 +445,53 @@ impl SessionStore {
         self.push_to_current(Message::new(role, text));
     }
 
+    /// Search every session's messages, newest session first.
+    ///
+    /// Sessions are searched in list order so results from the conversation the
+    /// user is most likely to want come first. Matching is case-insensitive and
+    /// plain substring, not a token model: a user looking for an exact phrase
+    /// expects it to be found, and a fuzzy rank would hide it.
+    pub fn search_all(&self, query: &str, limit: usize) -> Vec<SearchHit> {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for id in &self.order {
+            let Some(session) = self.sessions.get(id) else {
+                continue;
+            };
+            for (index, message) in session.messages.iter().enumerate() {
+                if let Some(byte_pos) = find_ci(&message.text, &needle) {
+                    hits.push(SearchHit {
+                        session_id: session.id.clone(),
+                        session_title: session.title.clone(),
+                        message_index: index,
+                        role: match message.role {
+                            Role::User => "user".to_string(),
+                            Role::Assistant => "assistant".to_string(),
+                            Role::System => "system".to_string(),
+                        },
+                        snippet: snippet_around(&message.text, byte_pos, needle.len()),
+                    });
+                    if hits.len() >= limit {
+                        return hits;
+                    }
+                }
+            }
+        }
+        hits
+    }
+
+    /// Sessions whose title matches, for a session-list filter.
+    pub fn search_titles(&self, query: &str) -> Vec<SessionSummary> {
+        let needle = query.trim().to_lowercase();
+        self.list()
+            .into_iter()
+            .filter(|s| needle.is_empty() || s.title.to_lowercase().contains(&needle))
+            .collect()
+    }
+
     pub fn push_to_current(&mut self, message: Message) {
         if self.current_id.is_empty() {
             self.new_session("New chat");
@@ -552,6 +677,108 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_all_finds_a_message_in_another_session() {
+        let mut store = SessionStore::new();
+        let first_id = store.new_session("First");
+        store.push(Role::User, "the dragon soars over the mountain");
+        store.new_session("Second");
+        store.push(Role::User, "unrelated chatter");
+
+        let hits = store.search_all("dragon", 10);
+        assert_eq!(hits.len(), 1);
+        // Match on the id: pushing auto-titles the session from its first user
+        // message, so the title is no longer the one passed to new_session.
+        assert_eq!(hits[0].session_id, first_id);
+        assert_eq!(hits[0].role, "user");
+        assert!(hits[0].snippet.contains("dragon"));
+    }
+
+    #[test]
+    fn search_all_is_case_insensitive() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "The DRAGON flies");
+        assert_eq!(store.search_all("dragon", 10).len(), 1);
+        assert_eq!(store.search_all("DRAGON", 10).len(), 1);
+        assert_eq!(store.search_all("DrAgOn", 10).len(), 1);
+    }
+
+    #[test]
+    fn search_all_respects_the_limit() {
+        let mut store = SessionStore::new();
+        for _ in 0..20 {
+            store.push(Role::User, "needle here");
+        }
+        assert_eq!(store.search_all("needle", 5).len(), 5);
+    }
+
+    #[test]
+    fn search_all_returns_nothing_for_an_empty_query() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "something");
+        assert!(store.search_all("", 10).is_empty());
+        assert!(store.search_all("   ", 10).is_empty());
+        assert!(store.search_all("something", 0).is_empty());
+    }
+
+    #[test]
+    fn search_all_records_the_message_index_and_role() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "first line");
+        store.push(Role::Assistant, "second line with marker");
+        store.push(Role::User, "third line");
+
+        let hits = store.search_all("marker", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].message_index, 1);
+        assert_eq!(hits[0].role, "assistant");
+    }
+
+    #[test]
+    fn search_all_survives_multibyte_text() {
+        // Lowercasing some characters changes byte length, which is where a
+        // naive offset would slice mid-character and panic.
+        let mut store = SessionStore::new();
+        store.push(Role::User, "İstanbul café  dragons  naïve");
+        let hits = store.search_all("dragon", 10);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("dragon"));
+
+        // Every character of the snippet must be valid, i.e. it sliced on
+        // boundaries.
+        for hit in store.search_all("café", 10) {
+            assert!(hit.snippet.is_char_boundary(0));
+        }
+        let _ = store.search_all("İ", 10);
+    }
+
+    #[test]
+    fn a_long_message_snippet_is_windowed_not_returned_whole() {
+        let mut store = SessionStore::new();
+        let long = format!("{} the marker {}", "x".repeat(400), "y".repeat(400));
+        store.push(Role::User, long);
+        let hits = store.search_all("marker", 10);
+        assert_eq!(hits.len(), 1);
+        assert!(
+            hits[0].snippet.chars().count() < 200,
+            "snippet should be a window, got {} chars",
+            hits[0].snippet.chars().count()
+        );
+        assert!(hits[0].snippet.contains("marker"));
+    }
+
+    #[test]
+    fn search_titles_filters_the_session_list() {
+        let mut store = SessionStore::new();
+        store.new_session("Dragon lore");
+        store.new_session("Cooking");
+        let hits = store.search_titles("dragon");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Dragon lore");
+        // An empty query keeps every session.
+        assert_eq!(store.search_titles("").len(), 2);
     }
 
     #[test]

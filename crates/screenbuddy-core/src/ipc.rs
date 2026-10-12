@@ -191,6 +191,14 @@ pub enum GodotCommand {
         query: String,
         limit: Option<usize>,
     },
+    /// Search every conversation's messages and return the hits directly.
+    ///
+    /// Answered from the session store rather than the status snapshot, because
+    /// a caller wants the results, not whatever the render loop last published.
+    SearchSessions {
+        query: String,
+        limit: usize,
+    },
 }
 
 /// A control request the main loop should apply on its next tick.
@@ -720,6 +728,21 @@ async fn process_command(
                     "current_id": store.current_id(),
                     "count": list.len(),
                     "sessions": list,
+                })),
+            };
+        }
+
+        GodotCommand::SearchSessions { query, limit } => {
+            let store = match sessions.lock() {
+                Ok(s) => s,
+                Err(_) => return Response::err("session store lock poisoned"),
+            };
+            let hits = store.search_all(query, (*limit).min(200));
+            return Response::Success {
+                data: Some(serde_json::json!({
+                    "query": query,
+                    "count": hits.len(),
+                    "hits": hits,
                 })),
             };
         }
@@ -1326,6 +1349,72 @@ mod tests {
             Response::Error { message, .. } => message,
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn search_sessions_returns_hits_over_ipc() {
+        let s = server();
+        {
+            let mut store = s.sessions.lock().unwrap();
+            store.push(crate::session::Role::User, "the dragon guards the hoard");
+        }
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::SearchSessions {
+                    query: "dragon".into(),
+                    limit: 10,
+                },
+            )
+            .await,
+        );
+        assert_eq!(d["count"], 1);
+        assert_eq!(d["hits"][0]["role"], "user");
+        assert!(d["hits"][0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("dragon"));
+    }
+
+    #[tokio::test]
+    async fn search_sessions_with_no_match_is_an_empty_list_not_an_error() {
+        let s = server();
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::SearchSessions {
+                    query: "zzz-no-such-text".into(),
+                    limit: 10,
+                },
+            )
+            .await,
+        );
+        assert_eq!(d["count"], 0);
+        assert_eq!(d["hits"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn search_sessions_clamps_an_absurd_limit() {
+        let s = server();
+        {
+            let mut store = s.sessions.lock().unwrap();
+            for _ in 0..5 {
+                store.push(crate::session::Role::User, "repeated marker text");
+            }
+        }
+        let d = ok_data(
+            dispatch(
+                &s,
+                &GodotCommand::SearchSessions {
+                    query: "marker".into(),
+                    limit: usize::MAX,
+                },
+            )
+            .await,
+        );
+        // The clamp is 200; the point is that it returns rather than allocating
+        // an unbounded result set.
+        assert!(d["count"].as_u64().unwrap() <= 200);
     }
 
     #[tokio::test]

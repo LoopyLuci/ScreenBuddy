@@ -674,6 +674,8 @@ fn main() {
     let mut should_quit = false;
     // Throttles the deferred session write; see the flush in the loop body.
     let mut last_session_flush = Instant::now();
+    // Last query the cross-session search was run for, so it runs on change.
+    let mut last_search_query = String::new();
     loop {
         // Pump this thread's message queue. Without this the main window never
         // receives WM_PAINT, WM_KEYDOWN, WM_CHAR, WM_LBUTTONDOWN or
@@ -1089,6 +1091,32 @@ fn main() {
             main_ui.set_theme_by_name(&want_theme);
             println!("[UI] theme -> {want_theme}");
             applied_theme = want_theme;
+        }
+
+        // Feed cross-session search results while a query is active. Recomputed
+        // only when the query changes, not every frame.
+        if main_ui.is_searching() {
+            let query = main_ui.search_query().to_string();
+            if query != last_search_query {
+                let hits = shared_sessions
+                    .lock()
+                    .map(|store| {
+                        store
+                            .search_all(&query, 50)
+                            .into_iter()
+                            .map(|h| main_window::HitRow {
+                                session_id: h.session_id,
+                                session_title: h.session_title,
+                                snippet: h.snippet,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                main_ui.set_search_hits(hits);
+                last_search_query = query;
+            }
+        } else if !last_search_query.is_empty() {
+            last_search_query.clear();
         }
 
         // Persist any pending session change, at most once a second. Writing on
