@@ -71,6 +71,8 @@ pub enum UiEvent {
     ExportConversation,
     /// Toggle the search bar visibility.
     ToggleSearch,
+    /// Re-run the last user message to get a fresh reply.
+    Regenerate,
 }
 
 /// A clickable region, rebuilt each paint and hit-tested on click.
@@ -92,6 +94,10 @@ enum UiAction {
     SearchFocus,
     /// Open a cross-session search result: switch to that session.
     OpenHit(String),
+    /// Select the message at this index, so Ctrl+C copies it.
+    SelectMessage(usize),
+    /// Re-run the last user message.
+    Regenerate,
     /// The minimise button: hide to the tray.
     Minimise,
     Quit,
@@ -174,6 +180,11 @@ pub struct MainWindow {
     /// Cross-session search results, shown in place of the conversation while a
     /// query is active. Supplied by the app from the session store.
     search_hits: Vec<HitRow>,
+    /// Index of the message the user last clicked, so Ctrl+C copies that one
+    /// rather than always the last message.
+    selected_message: Option<usize>,
+    /// Status text shown briefly after an action such as a copy.
+    toast: Option<(String, std::time::Instant)>,
     /// Whether Ctrl key is held.
     ///
     /// Tracked from key messages rather than read via GetKeyState, which reports
@@ -224,6 +235,8 @@ impl MainWindow {
             search_matches: Vec::new(),
             search_match_idx: 0,
             search_hits: Vec::new(),
+            selected_message: None,
+            toast: None,
             ctrl_down: false,
             shift_down: false,
             width: WIN_WIDTH,
@@ -419,6 +432,44 @@ impl MainWindow {
         &self.search_query
     }
 
+    /// Copy the selected message to the clipboard, or the last message when
+    /// nothing is selected. Reports the outcome in the status toast.
+    pub fn copy_selected_message(&mut self) {
+        let index = self.selected_message.or_else(|| {
+            if self.messages.is_empty() {
+                None
+            } else {
+                Some(self.messages.len() - 1)
+            }
+        });
+        let Some(i) = index else {
+            self.set_toast("Nothing to copy");
+            return;
+        };
+        let Some((role, text)) = self.messages.get(i).cloned() else {
+            self.set_toast("Nothing to copy");
+            return;
+        };
+        match clipboard_win::set_clipboard(clipboard_win::formats::Unicode, text.as_str()) {
+            Ok(()) => self.set_toast(&format!("Copied {role} message")),
+            Err(e) => self.set_toast(&format!("Copy failed: {e}")),
+        }
+    }
+
+    /// Show a short status message. It expires on its own so it cannot linger.
+    fn set_toast(&mut self, text: &str) {
+        self.toast = Some((text.to_string(), std::time::Instant::now()));
+        self.refresh();
+    }
+
+    /// The message text Ctrl+C would copy, for tests.
+    pub fn copy_target(&self) -> Option<(String, String)> {
+        let index = self
+            .selected_message
+            .or_else(|| self.messages.len().checked_sub(1))?;
+        self.messages.get(index).cloned()
+    }
+
     /// Recompute which messages match the current search query.
     fn recompute_search_matches(&mut self) {
         self.search_matches.clear();
@@ -491,6 +542,12 @@ impl MainWindow {
                 self.search_matches.clear();
                 self.search_hits.clear();
             }
+            Some(UiAction::SelectMessage(i)) => {
+                self.selected_message = Some(i);
+            }
+            Some(UiAction::Regenerate) => {
+                self.events.push(UiEvent::Regenerate);
+            }
             Some(UiAction::NewSession) => self.events.push(UiEvent::NewSession),
             Some(UiAction::Select(id)) => self.events.push(UiEvent::SelectSession(id)),
             Some(UiAction::Delete(id)) => self.events.push(UiEvent::DeleteSession(id)),
@@ -510,6 +567,14 @@ impl MainWindow {
         }
         if self.ctrl_down && vk == 'S' as i32 {
             self.events.push(UiEvent::ExportConversation);
+            return;
+        }
+        if self.ctrl_down && vk == 'C' as i32 {
+            self.copy_selected_message();
+            return;
+        }
+        if self.ctrl_down && vk == 'R' as i32 {
+            self.events.push(UiEvent::Regenerate);
             return;
         }
         if vk == VK_F3 && self.search_visible && !self.search_query.is_empty() {
@@ -892,6 +957,93 @@ fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
     draw_input(win, buf);
     if win.generating {
         draw_stop_button(win, buf);
+    } else if win
+        .messages
+        .iter()
+        .any(|(role, _)| role == "assistant")
+    {
+        draw_regenerate_button(win, buf);
+    }
+    draw_toast(win, buf);
+}
+
+/// Draw the Regenerate affordance above the input, on the right.
+fn draw_regenerate_button(win: &mut MainWindow, buf: &mut [u32]) {
+    let right = win.width - PADDING;
+    let bottom = win.height - INPUT_H - PADDING - 8;
+    let left = right - 116;
+    let top = bottom - 26;
+    let rect = Rect::new(left, top, right, bottom);
+    fill_rect(buf, win.width, rect, win.theme.sidebar_bg);
+    draw_rect_outline(buf, win.width, rect, win.theme.border);
+    win.hits.push(HitTarget {
+        rect,
+        action: UiAction::Regenerate,
+    });
+    unsafe {
+        let Some(dc) = win.draw_dc else { return };
+        let f = make_font(12, false);
+        let old = select_obj(dc, f as *mut _);
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(dc, win.theme.accent);
+        let wide: Vec<u16> = "Regenerate".encode_utf16().collect();
+        let mut rc = RECT {
+            left: left + 10,
+            top: top + 4,
+            right,
+            bottom,
+        };
+        DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_SINGLELINE | DT_NOPREFIX,
+        );
+        select_obj(dc, old as *mut _);
+        del_obj(f as *mut _);
+    }
+}
+
+/// Draw the transient status toast, if one is still fresh.
+fn draw_toast(win: &mut MainWindow, buf: &mut [u32]) {
+    let Some((text, at)) = win.toast.clone() else {
+        return;
+    };
+    // Expire on its own so a stale message cannot linger on screen.
+    if at.elapsed() > std::time::Duration::from_secs(3) {
+        win.toast = None;
+        return;
+    }
+    let right = win.width - PADDING;
+    let left = right - 220;
+    let bottom = win.height - INPUT_H - PADDING - 40;
+    let top = bottom - 24;
+    let rect = Rect::new(left, top, right, bottom);
+    fill_rect(buf, win.width, rect, win.theme.header_bg);
+    draw_rect_outline(buf, win.width, rect, win.theme.accent);
+    unsafe {
+        let Some(dc) = win.draw_dc else { return };
+        let f = make_font(12, false);
+        let old = select_obj(dc, f as *mut _);
+        SetBkMode(dc, TRANSPARENT as i32);
+        SetTextColor(dc, win.theme.text);
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let mut rc = RECT {
+            left: left + 8,
+            top: top + 3,
+            right: right - 4,
+            bottom,
+        };
+        DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+        select_obj(dc, old as *mut _);
+        del_obj(f as *mut _);
     }
 }
 
@@ -1419,7 +1571,8 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 .get(win.search_match_idx)
                 .copied()
                 == Some(i);
-            let outline = if is_current_match {
+            let is_selected = win.selected_message == Some(i);
+            let outline = if is_selected || is_current_match {
                 win.theme.accent
             } else if is_user {
                 win.theme.accent
@@ -1427,6 +1580,12 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 win.theme.border
             };
             draw_rect_outline(buf, win.width, bubble, outline);
+            // Clicking a bubble selects it, so Ctrl+C copies that message rather
+            // than always the last one.
+            win.hits.push(HitTarget {
+                rect: bubble,
+                action: UiAction::SelectMessage(i),
+            });
 
             unsafe {
                 let Some(dc) = win.draw_dc else { return };
@@ -2657,6 +2816,125 @@ mod tests {
         );
         // The rest of the chrome must still be present.
         assert!(win.hits.iter().any(|h| h.action == UiAction::Send));
+    }
+
+    #[test]
+    fn clicking_a_message_selects_it_for_copying() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "first question".into()),
+            ("assistant".into(), "second reply".into()),
+        ];
+        render(&mut win);
+        let target = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::SelectMessage(0))
+            .expect("first bubble is a hit target")
+            .rect;
+        win.on_click(target.left + 4, target.top + 4);
+        assert_eq!(win.selected_message, Some(0));
+        assert_eq!(win.copy_target().unwrap().1, "first question");
+    }
+
+    #[test]
+    fn copy_target_defaults_to_the_last_message() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "old".into()),
+            ("assistant".into(), "newest".into()),
+        ];
+        assert_eq!(win.selected_message, None);
+        assert_eq!(win.copy_target().unwrap().1, "newest");
+    }
+
+    #[test]
+    fn copy_target_is_none_with_no_messages() {
+        let win = w();
+        assert!(win.copy_target().is_none());
+    }
+
+    #[test]
+    fn ctrl_c_reports_something_in_the_toast() {
+        let mut win = w();
+        win.messages = vec![("assistant".into(), "copy me".into())];
+        win.ctrl_down = true;
+        win.on_key('C' as i32);
+        // Either the clipboard write succeeded or it failed; both are reported,
+        // and neither may panic.
+        let (text, _) = win.toast.clone().expect("a toast is shown");
+        assert!(
+            text.contains("Copied") || text.contains("failed"),
+            "unexpected toast: {text}"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_with_no_messages_does_not_panic() {
+        let mut win = w();
+        win.ctrl_down = true;
+        win.on_key('C' as i32);
+        assert!(win.toast.is_some());
+    }
+
+    #[test]
+    fn ctrl_r_emits_regenerate() {
+        let mut win = w();
+        win.ctrl_down = true;
+        win.on_key('R' as i32);
+        assert!(matches!(win.poll_event(), Some(UiEvent::Regenerate)));
+    }
+
+    #[test]
+    fn the_regenerate_button_appears_only_after_an_assistant_reply() {
+        let mut win = w();
+        win.messages = vec![("user".into(), "hello".into())];
+        render(&mut win);
+        assert!(
+            !win.hits.iter().any(|h| h.action == UiAction::Regenerate),
+            "nothing to regenerate from a user-only transcript"
+        );
+
+        win.messages.push(("assistant".into(), "hi there".into()));
+        render(&mut win);
+        assert!(
+            win.hits.iter().any(|h| h.action == UiAction::Regenerate),
+            "regenerate is offered once there is a reply"
+        );
+    }
+
+    #[test]
+    fn the_regenerate_button_is_hidden_while_generating() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "hello".into()),
+            ("assistant".into(), "hi".into()),
+        ];
+        win.generating = true;
+        render(&mut win);
+        assert!(
+            !win.hits.iter().any(|h| h.action == UiAction::Regenerate),
+            "no regenerate while a reply is in flight"
+        );
+        assert!(win.hits.iter().any(|h| h.action == UiAction::Stop));
+    }
+
+    #[test]
+    fn clicking_regenerate_emits_the_event() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "hello".into()),
+            ("assistant".into(), "hi".into()),
+        ];
+        render(&mut win);
+        let target = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::Regenerate)
+            .expect("regenerate button")
+            .rect;
+        win.on_click(target.left + 4, target.top + 4);
+        assert!(matches!(win.poll_event(), Some(UiEvent::Regenerate)));
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests

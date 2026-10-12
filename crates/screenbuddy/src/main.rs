@@ -1074,6 +1074,29 @@ fn main() {
                 UiEvent::ToggleSearch => {
                     main_ui.toggle_search();
                 }
+                UiEvent::Regenerate => {
+                    // Re-send the most recent user message, which is what
+                    // "regenerate" means in a chat: ask again from the same
+                    // prompt. Nothing is removed, so the previous reply stays in
+                    // the transcript for comparison.
+                    let last_user = shared_sessions.lock().ok().and_then(|store| {
+                        store.current().and_then(|s| {
+                            s.messages
+                                .iter()
+                                .rev()
+                                .find(|m| m.role == Role::User)
+                                .map(|m| m.text.clone())
+                        })
+                    });
+                    match last_user {
+                        Some(prompt) => {
+                            println!("[Chat] Regenerating from: {}", prompt);
+                            bridge_for_input.send_message(&prompt);
+                            main_ui.set_generating(true);
+                        }
+                        None => println!("[Chat] Nothing to regenerate"),
+                    }
+                }
             }
         }
 
