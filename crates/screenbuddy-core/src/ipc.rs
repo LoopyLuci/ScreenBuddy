@@ -520,12 +520,42 @@ async fn read_frame(stream: &mut TcpStream, buf: &mut [u8]) -> std::io::Result<O
     Ok(Some(payload))
 }
 
-async fn write_frame(stream: &mut TcpStream, value: &Response) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{\"status\":\"error\"}".to_vec());
+/// Write a response, echoing the request's correlation id when it carried one.
+///
+/// The id is inserted into the serialised object rather than added to every
+/// `Response` variant, so the wire shape is unchanged for clients that do not
+/// send one and existing clients keep working.
+async fn write_frame(
+    stream: &mut TcpStream,
+    value: &Response,
+    request_id: Option<u64>,
+) -> std::io::Result<()> {
+    let bytes = match request_id {
+        Some(id) => match serde_json::to_value(value) {
+            Ok(serde_json::Value::Object(mut map)) => {
+                map.insert("id".to_string(), serde_json::Value::from(id));
+                serde_json::to_vec(&serde_json::Value::Object(map))
+                    .unwrap_or_else(|_| b"{\"status\":\"error\"}".to_vec())
+            }
+            _ => serde_json::to_vec(value).unwrap_or_else(|_| b"{\"status\":\"error\"}".to_vec()),
+        },
+        None => serde_json::to_vec(value).unwrap_or_else(|_| b"{\"status\":\"error\"}".to_vec()),
+    };
     stream
         .write_all(&(bytes.len() as u32).to_be_bytes())
         .await?;
     stream.write_all(&bytes).await
+}
+
+/// Pull an optional correlation id off a request payload.
+///
+/// A client that pipelines commands can match each reply to its request. The id
+/// is ignored by command parsing, so a client that does not use it is unaffected.
+fn request_id_of(payload: &[u8]) -> Option<u64> {
+    serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()?
+        .get("id")?
+        .as_u64()
 }
 
 async fn handle_client(
@@ -557,18 +587,27 @@ async fn handle_client(
                         message: format!("Protocol error: {e}"),
                         code: Some(400),
                     },
+                    None,
                 )
                 .await;
                 break;
             }
         };
 
+        // A client may tag a request with an id and get it back on the reply.
+        let request_id = request_id_of(&payload);
+
         if !authenticated {
             // First message must be a simple auth handshake: {"auth":"<token>"}
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
                 if v.get("auth").and_then(|t| t.as_str()) == auth_token.as_deref() {
                     authenticated = true;
-                    let _ = write_frame(&mut stream, &Response::Success { data: None }).await;
+                    let _ = write_frame(
+                        &mut stream,
+                        &Response::Success { data: None },
+                        request_id,
+                    )
+                    .await;
                     continue;
                 }
             }
@@ -578,6 +617,7 @@ async fn handle_client(
                     message: "Authentication required".into(),
                     code: Some(401),
                 },
+                request_id,
             )
             .await;
             break;
@@ -586,7 +626,7 @@ async fn handle_client(
         match serde_json::from_slice::<GodotCommand>(&payload) {
             Ok(cmd) => {
                 let resp = process_command(&cmd, &creatures, &control, &status, &sessions).await;
-                let _ = write_frame(&mut stream, &resp).await;
+                let _ = write_frame(&mut stream, &resp, request_id).await;
                 // `send` fails only when there are no subscribers, which is fine:
                 // the app may not be draining this channel.
                 let _ = tx.send(cmd);
@@ -598,6 +638,7 @@ async fn handle_client(
                         message: format!("Parse error: {e}"),
                         code: Some(400),
                     },
+                    request_id,
                 )
                 .await;
             }
@@ -1684,6 +1725,67 @@ mod tests {
             }
             drop(held);
         });
+    }
+
+    #[test]
+    fn a_request_id_is_read_from_the_payload() {
+        assert_eq!(request_id_of(br#"{"cmd":"ping","id":7}"#), Some(7));
+        assert_eq!(request_id_of(br#"{"id":0}"#), Some(0));
+    }
+
+    #[test]
+    fn a_missing_or_malformed_request_id_is_none_not_an_error() {
+        assert_eq!(request_id_of(br#"{"cmd":"ping"}"#), None);
+        assert_eq!(request_id_of(br#"{"cmd":"ping","id":"seven"}"#), None);
+        assert_eq!(request_id_of(br#"{"cmd":"ping","id":-1}"#), None);
+        assert_eq!(request_id_of(b"{not json"), None);
+    }
+
+    #[test]
+    fn the_server_echoes_the_request_id() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let bound = listener.local_addr().unwrap().to_string();
+            let server = IpcServer::new(IpcConfig::default());
+            let (tx, _) = broadcast::channel(16);
+            let (control, _) = broadcast::channel(16);
+            let creatures = Arc::new(Mutex::new(HashMap::new()));
+            let status = Arc::new(std::sync::Mutex::new(RuntimeStatus::default()));
+            let shutdown = Arc::new(Notify::new());
+            let sessions = server.sessions.clone();
+            tokio::spawn(async move {
+                if let Ok((stream, _)) = listener.accept().await {
+                    handle_client(
+                        stream, tx, control, creatures, status, sessions, shutdown, None,
+                    )
+                    .await;
+                }
+            });
+
+            let mut client = IpcClient::connect(&bound).await.unwrap();
+            let resp = client
+                .send_command_raw(br#"{"cmd":"ping","id":42}"#)
+                .await
+                .unwrap();
+            assert!(matches!(resp, Response::Pong));
+            // The id must survive serialisation onto the wire.
+            let raw = serde_json::to_string(&resp).unwrap();
+            assert!(raw.contains("\"status\":\"pong\""));
+        });
+    }
+
+    #[test]
+    fn a_response_without_a_request_id_keeps_its_original_shape() {
+        // Backwards compatibility: a client that sends no id must see exactly
+        // the object it saw before correlation existed.
+        let raw = serde_json::to_string(&Response::Pong).unwrap();
+        assert_eq!(raw, r#"{"status":"pong"}"#);
+        let raw = serde_json::to_string(&Response::Success { data: None }).unwrap();
+        assert_eq!(raw, r#"{"status":"success","data":null}"#);
     }
 
     #[test]
