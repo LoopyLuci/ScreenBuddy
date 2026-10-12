@@ -17,6 +17,20 @@ pub enum SettingsCategory {
     Performance,
 }
 
+impl SettingsCategory {
+    /// A short display name for the setting description.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Audio => "Audio",
+            Self::Animation => "Animation",
+            Self::AI => "AI",
+            Self::Creatures => "Creatures",
+            Self::Performance => "Performance",
+        }
+    }
+}
+
 /// A single setting value
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SettingValue {

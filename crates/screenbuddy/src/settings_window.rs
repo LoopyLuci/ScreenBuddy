@@ -294,6 +294,39 @@ impl SettingsView {
         self.reload();
     }
 
+    /// Rows rebuilt from all definitions, filtered globally, for the search mode.
+    fn global_filtered_rows(&self) -> Vec<Row> {
+        let definitions = unsafe { (*self.store).all_definitions() };
+        let q = self.search_query.to_lowercase();
+        let mut out = Vec::new();
+        for def in definitions.iter() {
+            if !self.search_query.trim().is_empty()
+                && !def.name.to_lowercase().contains(&q)
+                && !def.description.to_lowercase().contains(&q)
+            {
+                continue;
+            }
+            let name = def.name.clone();
+            let value = self
+                .reader
+                .get(&name)
+                .unwrap_or_else(|| def.default.clone());
+            let min = def.min.as_ref().map(numeric);
+            let max = def.max.as_ref().map(numeric);
+            let state = availability(&name);
+            out.push(Row {
+                live: state == Availability::Live,
+                state,
+                name: def.name.clone(),
+                description: format!("{} · {}", def.category.as_str(), def.description),
+                value: self.reader.get(&def.name).unwrap_or_else(|| def.default.clone()),
+                min: def.min.as_ref().map(numeric),
+                max: def.max.as_ref().map(numeric),
+            });
+        }
+        out
+    }
+
     /// Re-read the definitions and values for the current tab.
     fn reload(&mut self) {
         let definitions = unsafe { (*self.store).all_definitions() };
