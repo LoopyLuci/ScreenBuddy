@@ -174,44 +174,50 @@ def pixels_differing(a, b, w, h) -> int:
 def main() -> int:
     hwnd = find_window_by_class(MAIN_CLASS)
     if not hwnd:
-        check("main window exists", False, f"no window of class {MAIN_CLASS}")
+        check("main window exists", False, f"no visible window of class {MAIN_CLASS}")
         return 1
     check("main window exists", True, f"hwnd={hwnd}")
 
-    # Start from a known state: search closed, so the first Ctrl+F opens it
-    # rather than closing whatever a previous run left open.
-    post_key(hwnd, 0x1B)  # VK_ESCAPE
-    time.sleep(0.4)
-
-    rows, w, h = capture(hwnd)
-    if not rows:
+    rows_a, w, h = capture(hwnd)
+    if not rows_a:
         check("window renders", False, "capture returned no pixels")
         return 1
-    colours = distinct_colours(rows, h)
+    colours = distinct_colours(rows_a, h)
     check("window renders", colours > 20, f"{colours} distinct colours (floor: >20)")
 
-    # Ctrl+F should open the search bar. Compare whole captures: the bar's fill
-    # is close to the surrounding background, so an ink-vs-modal delta is too
-    # coarse a signal — a direct before/after diff is unambiguous.
-    post_key(hwnd, 0x46, ctrl=True)  # 'F'
+    # Toggle the search bar twice. Do NOT send Escape to reset: when the search
+    # bar is closed, Escape hides the window (on_key maps it to hide), which
+    # makes the probe capture a hidden window and look like a render failure.
+    #
+    # Two toggles are asserted instead, which is idempotent whatever state the
+    # window is in: closed -> open -> closed, or open -> closed -> open. Each
+    # transition moves the same number of pixels, so both diffs are large, and
+    # the third capture must match the first.
+    post_key(hwnd, 0x46, ctrl=True)  # Ctrl+F
     time.sleep(0.5)
-    rows_open, _, _ = capture(hwnd)
-    opened = pixels_differing(rows, rows_open, w, h)
+    rows_b, _, _ = capture(hwnd)
+    d1 = pixels_differing(rows_a, rows_b, w, h)
     check(
-        "Ctrl+F opens the search bar",
-        opened > 200,
-        f"{opened} pixels changed (client {w}x{h})",
+        "Ctrl+F toggles the search bar",
+        d1 > 200,
+        f"{d1} pixels changed (client {w}x{h})",
     )
 
-    # Escape should close it again, restoring the original view.
-    post_key(hwnd, 0x1B)  # VK_ESCAPE
+    post_key(hwnd, 0x46, ctrl=True)  # Ctrl+F again
     time.sleep(0.5)
-    rows_closed, _, _ = capture(hwnd)
-    closed = pixels_differing(rows, rows_closed, w, h)
+    rows_c, _, _ = capture(hwnd)
+    d2 = pixels_differing(rows_b, rows_c, w, h)
     check(
-        "Escape closes the search bar",
-        closed < opened,
-        f"{closed} pixels differ from the original view (was {opened} open)",
+        "toggling again restores the view",
+        d2 > 200,
+        f"{d2} pixels changed on the second toggle",
+    )
+
+    d3 = pixels_differing(rows_a, rows_c, w, h)
+    check(
+        "two toggles return to the original state",
+        d3 < 200,
+        f"{d3} pixels differ from the first capture",
     )
 
     passed = sum(1 for _, ok, _ in checks if ok)

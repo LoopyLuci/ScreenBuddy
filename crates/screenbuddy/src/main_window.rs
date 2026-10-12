@@ -544,6 +544,21 @@ pub fn create_main_window(win: &mut MainWindow) -> Result<HWND, String> {
         };
         RegisterClassExW(&wc);
 
+        // Grow the outer size so the CLIENT area is exactly WIN_WIDTH x
+        // WIN_HEIGHT. The layout is written against those constants, so passing
+        // them straight to CreateWindowExW would leave the client smaller by the
+        // frame (title bar + borders) and push the bottom strip - the message
+        // input - off the visible area.
+        let mut frame = RECT {
+            left: 0,
+            top: 0,
+            right: WIN_WIDTH,
+            bottom: WIN_HEIGHT,
+        };
+        AdjustWindowRectEx(&mut frame, WS_OVERLAPPEDWINDOW, 0, 0);
+        let outer_w = frame.right - frame.left;
+        let outer_h = frame.bottom - frame.top;
+
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -551,8 +566,8 @@ pub fn create_main_window(win: &mut MainWindow) -> Result<HWND, String> {
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            WIN_WIDTH,
-            WIN_HEIGHT,
+            outer_w,
+            outer_h,
             ptr::null_mut(),
             ptr::null_mut(),
             h_instance,
