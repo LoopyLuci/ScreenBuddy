@@ -1341,6 +1341,13 @@ fn main() {
         // The deadline is measured from the START of the frame. Measuring from
         // after the sleep added the whole target again, so every frame cost about
         // twice its budget (13ms target produced ~30ms frames).
+        //
+        // The target is deliberately NOT clamped to the display refresh. A
+        // layered window is composited by DWM at the refresh rate, so the loop
+        // cannot actually present faster than that; but the frame time is
+        // target + work, so a lower target still produces a faster frame while
+        // the work dominates. Clamping to 60Hz measured slower (21ms) than
+        // leaving the 77fps setting (17ms).
         let target_ms = 1000.0 / read_target_fps(&settings) as f64;
         let frame_deadline = frame_start + Duration::from_secs_f64(target_ms / 1000.0);
         let sleep_ms = (target_ms - 2.0).max(0.0) as u64;
