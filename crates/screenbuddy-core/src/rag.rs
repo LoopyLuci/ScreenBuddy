@@ -18,6 +18,9 @@ pub trait VectorStore: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// Every stored chunk, for persistence. Without this the store cannot be
+    /// written to disk and every ingested document is lost on restart.
+    fn chunks(&self) -> Vec<Chunk>;
 }
 
 pub struct InMemoryVectorStore {
@@ -52,6 +55,10 @@ impl VectorStore for InMemoryVectorStore {
 
     fn len(&self) -> usize {
         self.chunks.len()
+    }
+
+    fn chunks(&self) -> Vec<Chunk> {
+        self.chunks.clone()
     }
 }
 
@@ -402,11 +409,103 @@ impl RagPipeline {
     pub fn clear(&mut self) {
         self.store = Box::new(InMemoryVectorStore::new());
     }
+
+    /// Write every stored chunk to `path` as JSON.
+    ///
+    /// Without this the index is in-memory only and every ingested document has
+    /// to be re-added on each launch.
+    pub fn save(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let chunks = self.store.chunks();
+        let json = serde_json::to_string(&chunks).map_err(|e| e.to_string())?;
+        std::fs::write(path, json).map_err(|e| e.to_string())
+    }
+
+    /// Load a previously saved index. A missing or corrupt file yields an empty
+    /// pipeline rather than an error, so a bad file cannot stop the app starting.
+    pub fn load(path: impl AsRef<std::path::Path>) -> Self {
+        let path = path.as_ref();
+        let mut pipeline = Self::new();
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            return pipeline;
+        };
+        match serde_json::from_str::<Vec<Chunk>>(&raw) {
+            Ok(chunks) => {
+                let n = chunks.len();
+                for chunk in chunks {
+                    let _ = pipeline.store.insert(chunk);
+                }
+                eprintln!("[RAG] restored {n} chunk(s) from {}", path.display());
+            }
+            Err(e) => eprintln!("[RAG] ignoring unreadable index at {path:?}: {e}"),
+        }
+        pipeline
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_index_survives_a_save_and_load_round_trip() {
+        let dir = std::env::temp_dir().join("screenbuddy_rag_roundtrip");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("index.json");
+
+        let mut rag = RagPipeline::new();
+        rag.ingest_str("memory://note", "the cheetah is the fastest land animal")
+            .expect("ingest");
+        let before = rag.chunk_count();
+        assert!(before > 0);
+        rag.save(&path).expect("save");
+
+        let reloaded = RagPipeline::load(&path);
+        assert_eq!(reloaded.chunk_count(), before, "every chunk comes back");
+
+        // The reloaded index must still answer queries, not just hold rows.
+        let hits = reloaded.search("fastest animal", 3);
+        assert!(!hits.is_empty(), "search works after reload");
+        assert!(hits[0].1.text.contains("cheetah"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loading_a_missing_file_yields_an_empty_pipeline() {
+        let rag = RagPipeline::load("C:/definitely/not/here/index.json");
+        assert_eq!(rag.chunk_count(), 0);
+    }
+
+    #[test]
+    fn loading_a_corrupt_file_yields_an_empty_pipeline_not_a_panic() {
+        let dir = std::env::temp_dir().join("screenbuddy_rag_corrupt");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("index.json");
+        std::fs::write(&path, "{ not json at all").unwrap();
+
+        let rag = RagPipeline::load(&path);
+        assert_eq!(rag.chunk_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clearing_then_saving_persists_the_empty_state() {
+        let dir = std::env::temp_dir().join("screenbuddy_rag_clear");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("index.json");
+
+        let mut rag = RagPipeline::new();
+        rag.ingest_str("memory://x", "some text here").unwrap();
+        rag.clear();
+        rag.save(&path).unwrap();
+        assert_eq!(RagPipeline::load(&path).chunk_count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn embedding_is_normalised_and_fixed_width() {

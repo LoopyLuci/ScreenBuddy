@@ -409,13 +409,21 @@ fn main() {
     // Animation speed multiplier, read from settings each frame
     let mut anim_speed: f32 = 1.0;
 
-    // RAG Pipeline - memory system
-    let mut rag = screenbuddy_core::RagPipeline::new();
-    let _ = rag.ingest_document(
-        std::path::Path::new("memory://startup"),
-        "ScreenBuddy is an AI desktop companion. It has 7 creatures with unique personalities. The user can interact with them via click, drag, and chat."
+    // RAG Pipeline - memory system. Restored from disk so ingested documents
+    // survive a restart; the startup blurb is only added to a fresh index, or it
+    // would be duplicated on every launch.
+    let mut rag = screenbuddy_core::RagPipeline::load(rag_index_path());
+    if rag.chunk_count() == 0 {
+        let _ = rag.ingest_document(
+            std::path::Path::new("memory://startup"),
+            "ScreenBuddy is an AI desktop companion. It has 7 creatures with unique personalities. The user can interact with them via click, drag, and chat."
+        );
+        let _ = rag.save(rag_index_path());
+    }
+    println!(
+        "[RAG] Memory system initialized with {} chunk(s)",
+        rag.chunk_count()
     );
-    println!("[RAG] Memory system initialized");
 
     // Agent Runtime - agentic capabilities. The default tools (echo, time) make
     // the runtime immediately useful instead of reporting zero tools.
@@ -1417,7 +1425,16 @@ fn apply_control_requests(
                     continue;
                 }
                 match rag.ingest_str(&source, &content) {
-                    Ok(n) => println!("[IPC] Ingested {} chunk(s) from {}", n, source),
+                    Ok(n) => {
+                        println!("[IPC] Ingested {} chunk(s) from {}", n, source);
+                        // Persist immediately: an ingested document that vanished
+                        // on restart was the whole complaint about the old
+                        // in-memory-only index.
+                        match rag.save(rag_index_path()) {
+                            Ok(()) => println!("[RAG] index saved ({} chunks)", rag.chunk_count()),
+                            Err(e) => eprintln!("[RAG] could not save index: {e}"),
+                        }
+                    }
                     Err(e) => eprintln!("[IPC] Ingest failed: {}", e),
                 }
             }
@@ -1510,6 +1527,15 @@ fn sessions_path() -> std::path::PathBuf {
         .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
         .unwrap_or_else(std::env::temp_dir);
     base.join("ScreenBuddy").join("sessions.json")
+}
+
+/// Where the RAG index is persisted, beside the other app data.
+fn rag_index_path() -> std::path::PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("ScreenBuddy").join("rag_index.json")
 }
 
 /// Map a JSON setting value onto the typed setting enum.
