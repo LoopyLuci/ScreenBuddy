@@ -1324,12 +1324,12 @@ fn main() {
             // used to be mirrored only on an IPC write, so undo and redo (which
             // change values without going through that path) left the snapshot
             // reporting the old value even though the store had reverted.
+            //
+            // Merged, not replaced: the snapshot also carries keys the control
+            // loop inserts directly (`agents.list`, `agents.saved`, ...), and
+            // overwriting the whole map wiped them on the next publish.
             if let Ok(mut st) = status.lock() {
-                st.settings = theme_settings_reader
-                    .snapshot()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), setting_to_json(v)))
-                    .collect();
+                merge_store_settings(&mut st.settings, &theme_settings_reader);
             }
             last_status_publish = Instant::now();
         }
@@ -1777,7 +1777,22 @@ fn json_to_setting(value: serde_json::Value) -> screenbuddy_core::SettingValue {
     }
 }
 
-/// Render a typed setting back to JSON for the snapshot.
+/// Merge the settings store into a published snapshot.
+///
+/// Merged rather than replaced because the snapshot also carries keys the
+/// control loop inserts directly (`agents.list`, `agents.saved`, ...).
+/// Replacing the whole map wiped those on the next publish, which made
+/// `get_setting agents.list` return nothing even though the control handler
+/// had just populated it.
+fn merge_store_settings(
+    snapshot: &mut HashMap<String, serde_json::Value>,
+    store: &screenbuddy_core::SettingsReader,
+) {
+    for (key, value) in store.snapshot() {
+        snapshot.insert(key, setting_to_json(&value));
+    }
+}
+
 fn setting_to_json(value: &screenbuddy_core::SettingValue) -> serde_json::Value {
     use screenbuddy_core::SettingValue as SV;
     match value {
@@ -1925,5 +1940,94 @@ unsafe extern "system" fn window_proc(
             0
         }
         _ => winapi::um::winuser::DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use screenbuddy_core::SettingValue;
+
+    #[test]
+    fn merging_the_store_keeps_keys_the_control_loop_inserted() {
+        // Regression: the publish used to replace the whole settings map with the
+        // store snapshot, which wiped `agents.list` a control handler had just
+        // inserted. get_setting then returned nothing for it.
+        let mut store = screenbuddy_core::SettingsUI::in_memory();
+        store.set("creature_count", SettingValue::Int(7)).unwrap();
+        let reader = store.reader();
+
+        let mut snapshot = HashMap::new();
+        snapshot.insert(
+            "agents.list".to_string(),
+            serde_json::json!([{"name": "Coder"}]),
+        );
+
+        merge_store_settings(&mut snapshot, &reader);
+
+        assert_eq!(
+            snapshot.get("agents.list"),
+            Some(&serde_json::json!([{"name": "Coder"}])),
+            "a key the control loop inserted must survive the store merge"
+        );
+        assert_eq!(
+            snapshot.get("creature_count"),
+            Some(&serde_json::json!(7)),
+            "the store value must reach the snapshot"
+        );
+    }
+
+    #[test]
+    fn merging_twice_reflects_a_changed_store_value() {
+        let mut store = screenbuddy_core::SettingsUI::in_memory();
+        store.set("creature_count", SettingValue::Int(7)).unwrap();
+        let reader = store.reader();
+        let mut snapshot = HashMap::new();
+
+        merge_store_settings(&mut snapshot, &reader);
+        store.set("creature_count", SettingValue::Int(3)).unwrap();
+        merge_store_settings(&mut snapshot, &reader);
+
+        assert_eq!(
+            snapshot.get("creature_count"),
+            Some(&serde_json::json!(3)),
+            "a later merge must overwrite the earlier value"
+        );
+    }
+
+    #[test]
+    fn the_publish_deadline_is_measured_from_the_frame_start() {
+        // Regression: measuring from after the sleep added the whole target again,
+        // so every frame cost about twice its budget.
+        let target_ms = 1000.0 / 77.0;
+        let frame_start = Instant::now();
+        // Simulate work already done this frame.
+        std::thread::sleep(Duration::from_millis(4));
+        let deadline = frame_start + Duration::from_secs_f64(target_ms / 1000.0);
+
+        // The deadline must lie inside the original frame. At 77fps the budget is
+        // ~13ms, so after 4ms of work the remaining wait is ~9ms, not ~13ms more.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            remaining < Duration::from_millis(target_ms as u64),
+            "deadline must fall inside the frame: remaining {remaining:?}"
+        );
+        assert!(
+            remaining > Duration::from_millis(1),
+            "there should be time left to wait: {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn a_bool_setting_is_published_as_a_real_bool() {
+        // Stored as 1.0/0.0; a consumer reading JSON must not get a number.
+        assert_eq!(setting_to_json(&SettingValue::Bool(1.0)), serde_json::json!(true));
+        assert_eq!(setting_to_json(&SettingValue::Bool(0.0)), serde_json::json!(false));
+        assert_eq!(setting_to_json(&SettingValue::Int(3)), serde_json::json!(3));
+        assert_eq!(setting_to_json(&SettingValue::Float(0.5)), serde_json::json!(0.5));
+        assert_eq!(
+            setting_to_json(&SettingValue::String("light".into())),
+            serde_json::json!("light")
+        );
     }
 }
