@@ -73,6 +73,8 @@ pub enum UiEvent {
     ToggleSearch,
     /// Re-run the last user message to get a fresh reply.
     Regenerate,
+    /// Replace the user message at this index with new text and re-ask.
+    EditMessage { index: usize, text: String },
 }
 
 /// A clickable region, rebuilt each paint and hit-tested on click.
@@ -96,6 +98,8 @@ enum UiAction {
     OpenHit(String),
     /// Select the message at this index, so Ctrl+C copies it.
     SelectMessage(usize),
+    /// Leave edit mode without replacing the message.
+    CancelEdit,
     /// Re-run the last user message.
     Regenerate,
     /// The minimise button: hide to the tray.
@@ -185,6 +189,9 @@ pub struct MainWindow {
     selected_message: Option<usize>,
     /// Status text shown briefly after an action such as a copy.
     toast: Option<(String, std::time::Instant)>,
+    /// Index of the user message being edited, if any. While set, the input
+    /// holds that message and Enter replaces it instead of appending.
+    editing_index: Option<usize>,
     /// Whether Ctrl key is held.
     ///
     /// Tracked from key messages rather than read via GetKeyState, which reports
@@ -237,6 +244,7 @@ impl MainWindow {
             search_hits: Vec::new(),
             selected_message: None,
             toast: None,
+            editing_index: None,
             ctrl_down: false,
             shift_down: false,
             width: WIN_WIDTH,
@@ -470,6 +478,49 @@ impl MainWindow {
         self.messages.get(index).cloned()
     }
 
+    /// Begin editing a user message: its text goes into the input and Enter
+    /// replaces it rather than appending. Only user messages are editable.
+    pub fn begin_edit(&mut self, index: usize) {
+        let Some((role, text)) = self.messages.get(index).cloned() else {
+            return;
+        };
+        if role != "user" {
+            self.set_toast("Only your own messages can be edited");
+            return;
+        }
+        self.editing_index = Some(index);
+        self.input = text;
+        self.set_toast("Editing — Enter to resend, Esc to cancel");
+    }
+
+    /// Leave edit mode, optionally restoring the draft.
+    pub fn cancel_edit(&mut self) {
+        if self.editing_index.take().is_some() {
+            self.input.clear();
+            self.refresh();
+        }
+    }
+
+    /// True while a message is being edited.
+    pub fn is_editing(&self) -> bool {
+        self.editing_index.is_some()
+    }
+
+    /// Send the input, either as a new message or as an edit of the message
+    /// currently being edited.
+    fn send_or_edit(&mut self) {
+        let text = self.input.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        match self.editing_index.take() {
+            Some(index) => self.events.push(UiEvent::EditMessage { index, text }),
+            None => self.events.push(UiEvent::SendMessage(text)),
+        }
+        self.input.clear();
+        self.refresh();
+    }
+
     /// Recompute which messages match the current search query.
     fn recompute_search_matches(&mut self) {
         self.search_matches.clear();
@@ -521,11 +572,7 @@ impl MainWindow {
         }
         match action {
             Some(UiAction::Send) => {
-                let text = self.input.trim().to_string();
-                if !text.is_empty() {
-                    self.events.push(UiEvent::SendMessage(text));
-                    self.input.clear();
-                }
+                self.send_or_edit();
             }
             Some(UiAction::Stop) => {
                 self.events.push(UiEvent::StopGenerating);
@@ -544,6 +591,9 @@ impl MainWindow {
             }
             Some(UiAction::SelectMessage(i)) => {
                 self.selected_message = Some(i);
+            }
+            Some(UiAction::CancelEdit) => {
+                self.cancel_edit();
             }
             Some(UiAction::Regenerate) => {
                 self.events.push(UiEvent::Regenerate);
@@ -595,11 +645,7 @@ impl MainWindow {
         }
         match vk {
             VK_RETURN => {
-                let text = self.input.trim().to_string();
-                if !text.is_empty() {
-                    self.events.push(UiEvent::SendMessage(text));
-                    self.input.clear();
-                }
+                self.send_or_edit();
             }
             VK_BACK => {
                 if self.search_focused {
@@ -609,7 +655,14 @@ impl MainWindow {
                     self.input.pop();
                 }
             }
-            VK_ESCAPE => self.hide(),
+            VK_ESCAPE => {
+                // Escape leaves edit mode first; only then does it hide.
+                if self.is_editing() {
+                    self.cancel_edit();
+                } else {
+                    self.hide();
+                }
+            }
             _ => {}
         }
         self.refresh();
@@ -662,7 +715,7 @@ pub fn create_main_window(win: &mut MainWindow) -> Result<HWND, String> {
 
         let wc = WNDCLASSEXW {
             cbSize: mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
+            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
             lpfnWndProc: Some(main_window_proc),
             hInstance: h_instance,
             hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
@@ -737,6 +790,19 @@ unsafe extern "system" fn main_window_proc(
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
                 (*win).on_click(x, y);
+            }
+            0
+        }
+        WM_LBUTTONDBLCLK => {
+            // Double-clicking one of your own messages starts editing it.
+            let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
+            if !win.is_null() {
+                let x = (lparam & 0xFFFF) as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                let w = &mut *win;
+                if let Some(UiAction::SelectMessage(i)) = w.hit(x, y) {
+                    w.begin_edit(i);
+                }
             }
             0
         }
@@ -1683,6 +1749,40 @@ fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
         rect: Rect::new(rect.right - send_w, rect.top, rect.right, rect.bottom),
         action: UiAction::Send,
     });
+
+    // While editing, label the input so the mode is obvious, and offer a way out.
+    if win.is_editing() {
+        let cancel = Rect::new(rect.left, rect.top - 24, rect.left + 150, rect.top - 2);
+        fill_rect(buf, win.width, cancel, win.theme.header_bg);
+        draw_rect_outline(buf, win.width, cancel, win.theme.border);
+        win.hits.push(HitTarget {
+            rect: cancel,
+            action: UiAction::CancelEdit,
+        });
+        unsafe {
+            let Some(dc) = win.draw_dc else { return };
+            let f = make_font(12, false);
+            let old = select_obj(dc, f as *mut _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(dc, win.theme.muted_text);
+            let wide: Vec<u16> = "Editing — Esc to cancel".encode_utf16().collect();
+            let mut rc = RECT {
+                left: cancel.left + 8,
+                top: cancel.top + 3,
+                right: cancel.right,
+                bottom: cancel.bottom,
+            };
+            DrawTextW(
+                dc,
+                wide.as_ptr(),
+                wide.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+            select_obj(dc, old as *mut _);
+            del_obj(f as *mut _);
+        }
+    }
 
     unsafe {
         let Some(dc) = win.draw_dc else { return };
@@ -2935,6 +3035,97 @@ mod tests {
             .rect;
         win.on_click(target.left + 4, target.top + 4);
         assert!(matches!(win.poll_event(), Some(UiEvent::Regenerate)));
+    }
+
+    #[test]
+    fn begin_edit_loads_a_user_message_into_the_input() {
+        let mut win = w();
+        win.messages = vec![
+            ("user".into(), "my first question".into()),
+            ("assistant".into(), "an answer".into()),
+        ];
+        win.begin_edit(0);
+        assert!(win.is_editing());
+        assert_eq!(win.input_buffer(), "my first question");
+    }
+
+    #[test]
+    fn begin_edit_refuses_an_assistant_message() {
+        let mut win = w();
+        win.messages = vec![("assistant".into(), "a reply".into())];
+        win.begin_edit(0);
+        assert!(!win.is_editing(), "only user messages are editable");
+        assert!(win.input_buffer().is_empty());
+    }
+
+    #[test]
+    fn begin_edit_on_an_out_of_range_index_is_harmless() {
+        let mut win = w();
+        win.begin_edit(9);
+        assert!(!win.is_editing());
+    }
+
+    #[test]
+    fn enter_while_editing_emits_edit_not_send() {
+        let mut win = w();
+        win.messages = vec![("user".into(), "typo here".into())];
+        win.begin_edit(0);
+        // Retype the message.
+        win.input.clear();
+        for c in "fixed text".chars() {
+            win.on_char(c as u16);
+        }
+        win.on_key(VK_RETURN);
+        match win.poll_event() {
+            Some(UiEvent::EditMessage { index, text }) => {
+                assert_eq!(index, 0);
+                assert_eq!(text, "fixed text");
+            }
+            other => panic!("expected EditMessage, got {other:?}"),
+        }
+        assert!(!win.is_editing(), "edit mode ends after resending");
+        assert!(win.input_buffer().is_empty());
+    }
+
+    #[test]
+    fn escape_cancels_editing_instead_of_hiding() {
+        let mut win = w();
+        win.visible = true;
+        win.messages = vec![("user".into(), "draft".into())];
+        win.begin_edit(0);
+        win.on_key(VK_ESCAPE);
+        assert!(!win.is_editing(), "escape leaves edit mode");
+        assert!(win.is_visible(), "escape must not hide the window while editing");
+        assert!(win.input_buffer().is_empty(), "the draft is discarded");
+    }
+
+    #[test]
+    fn the_cancel_affordance_only_appears_while_editing() {
+        let mut win = w();
+        win.messages = vec![("user".into(), "hello".into())];
+        render(&mut win);
+        assert!(!win.hits.iter().any(|h| h.action == UiAction::CancelEdit));
+
+        win.begin_edit(0);
+        render(&mut win);
+        let target = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::CancelEdit)
+            .expect("cancel affordance while editing")
+            .rect;
+        win.on_click(target.left + 4, target.top + 4);
+        assert!(!win.is_editing(), "clicking cancel leaves edit mode");
+    }
+
+    #[test]
+    fn editing_an_empty_message_sends_nothing() {
+        let mut win = w();
+        win.messages = vec![("user".into(), "something".into())];
+        win.begin_edit(0);
+        win.input.clear();
+        win.on_key(VK_RETURN);
+        assert!(win.poll_event().is_none(), "blank edit is not sent");
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests

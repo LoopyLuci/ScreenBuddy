@@ -445,6 +445,27 @@ impl SessionStore {
         self.push_to_current(Message::new(role, text));
     }
 
+    /// Replace the message at `index` and drop everything after it.
+    ///
+    /// Editing a prompt invalidates the replies that followed it, so they are
+    /// removed rather than left orphaned next to a question that no longer
+    /// matches. Returns false when the index is out of range.
+    pub fn replace_from(&mut self, index: usize, text: impl Into<String>) -> bool {
+        let text = text.into();
+        let Some(session) = self.current_id_mut() else {
+            return false;
+        };
+        if index >= session.messages.len() {
+            return false;
+        }
+        session.messages.truncate(index);
+        session.messages.push(Message::new(Role::User, text));
+        session.updated_at = now_secs();
+        session.auto_title();
+        self.save();
+        true
+    }
+
     /// Search every session's messages, newest session first.
     ///
     /// Sessions are searched in list order so results from the conversation the
@@ -677,6 +698,56 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_from_swaps_the_message_and_drops_what_followed() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "original question");
+        store.push(Role::Assistant, "original answer");
+        store.push(Role::User, "follow up");
+
+        assert!(store.replace_from(0, "corrected question"));
+
+        let s = store.current().unwrap();
+        assert_eq!(s.messages.len(), 1, "later messages are dropped");
+        assert_eq!(s.messages[0].text, "corrected question");
+        assert_eq!(s.messages[0].role, Role::User);
+    }
+
+    #[test]
+    fn replace_from_in_the_middle_keeps_earlier_messages() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "first");
+        store.push(Role::Assistant, "reply one");
+        store.push(Role::User, "second");
+        store.push(Role::Assistant, "reply two");
+
+        assert!(store.replace_from(2, "second, corrected"));
+        let s = store.current().unwrap();
+        assert_eq!(s.messages.len(), 3);
+        assert_eq!(s.messages[0].text, "first");
+        assert_eq!(s.messages[1].text, "reply one");
+        assert_eq!(s.messages[2].text, "second, corrected");
+    }
+
+    #[test]
+    fn replace_from_an_out_of_range_index_is_refused() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "only");
+        assert!(!store.replace_from(5, "nope"));
+        assert_eq!(store.current().unwrap().messages.len(), 1);
+    }
+
+    #[test]
+    fn replace_from_retitles_from_the_new_first_message() {
+        let mut store = SessionStore::new();
+        store.push(Role::User, "an old opening question");
+        let before = store.current().unwrap().title.clone();
+        store.replace_from(0, "a brand new opening");
+        let after = store.current().unwrap().title.clone();
+        assert_ne!(before, after, "the title follows the new first message");
+        assert!(after.contains("brand new"));
     }
 
     #[test]

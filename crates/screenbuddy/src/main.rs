@@ -528,6 +528,21 @@ fn main() {
     // always the default (30) at startup because the saved value is never read.
     settings.load();
 
+    // Install the logging subscriber. Until now the tracing calls in this crate
+    // went nowhere, because nothing ever installed one.
+    let log_level = settings
+        .text("log_level")
+        .unwrap_or_else(|| "info".to_string());
+    let log_path = screenbuddy_core::logging::default_log_path();
+    match screenbuddy_core::logging::init(&log_level, Some(&log_path)) {
+        Ok(()) => println!(
+            "[Log] level={log_level} file={path}",
+            log_level = log_level,
+            path = log_path.display()
+        ),
+        Err(e) => eprintln!("[Log] could not start logging: {e}"),
+    }
+
     // fps_target was a setting nothing read; the loop was pinned at 30. Clamped so
     // a zero or absurd value cannot stall or melt the CPU.
     let read_target_fps = |settings: &screenbuddy_core::SettingsUI| -> u32 {
@@ -1073,6 +1088,21 @@ fn main() {
                 }
                 UiEvent::ToggleSearch => {
                     main_ui.toggle_search();
+                }
+                UiEvent::EditMessage { index, text } => {
+                    // Replace the message and drop what followed it, then ask
+                    // again from the corrected prompt.
+                    let replaced = shared_sessions
+                        .lock()
+                        .map(|mut store| store.replace_from(index, text.clone()))
+                        .unwrap_or(false);
+                    if replaced {
+                        println!("[Chat] Edited message {index}: {text}");
+                        bridge_for_input.send_message(&text);
+                        main_ui.set_generating(true);
+                    } else {
+                        eprintln!("[Chat] Could not edit message {index}");
+                    }
                 }
                 UiEvent::Regenerate => {
                     // Re-send the most recent user message, which is what

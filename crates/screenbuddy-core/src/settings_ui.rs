@@ -206,6 +206,26 @@ impl SettingsUI {
                 max: Some(SettingValue::Float(1.0)),
             },
             SettingDef {
+                name: "log_level".to_string(),
+                description: "Log verbosity: off, error, warn, info, debug, trace".to_string(),
+                category: SettingsCategory::General,
+                // Consumed by logging::init at startup. An unknown value falls
+                // back to info rather than off, so a typo cannot silence logs.
+                default: SettingValue::Enum(
+                    "info".to_string(),
+                    vec![
+                        "off".to_string(),
+                        "error".to_string(),
+                        "warn".to_string(),
+                        "info".to_string(),
+                        "debug".to_string(),
+                        "trace".to_string(),
+                    ],
+                ),
+                min: None,
+                max: None,
+            },
+            SettingDef {
                 name: "theme".to_string(),
                 description: "Colour theme: dark, light, or high_contrast".to_string(),
                 category: SettingsCategory::General,
