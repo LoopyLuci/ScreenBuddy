@@ -541,10 +541,23 @@ fn main() {
     let target_fps = read_target_fps(&settings);
     println!("Animation at {target_fps} FPS");
 
+    // The theme setting was declared but nothing read it, so the window always
+    // used dark. Read it through the same reader the loop uses and apply it when
+    // it changes.
+    let read_theme = |settings: &screenbuddy_core::SettingsUI| -> String {
+        settings
+            .text("theme")
+            .unwrap_or_else(|| "dark".to_string())
+    };
+    let mut applied_theme = read_theme(&settings);
+
     // Shareable read handles. Cloned before the settings window takes a mutable
     // borrow of the store, since that borrow lasts as long as the window does.
     let settings_reader = settings.reader();
     let ipc_settings_reader = settings_reader.clone();
+    // A third handle for the render loop: settings_reader itself is moved into
+    // the settings window, which holds a mutable borrow of the store.
+    let theme_settings_reader = settings_reader.clone();
     settings
         .set(
             "creature_count",
@@ -616,7 +629,11 @@ fn main() {
     let mut main_ui = MainWindow::new();
     let main_hwnd = create_main_window(&mut main_ui);
     match main_hwnd {
-        Ok(_) => main_ui.show(),
+        Ok(_) => {
+            // Honour the saved theme from the first frame.
+            main_ui.set_theme_by_name(&applied_theme);
+            main_ui.show();
+        }
         Err(e) => eprintln!("[UI] could not create main window: {e}"),
     }
 
@@ -1061,6 +1078,17 @@ fn main() {
         // Keep the window's view in step with the store and the AI.
         if let Ok(store) = shared_sessions.lock() {
             main_ui.refresh_from(&store);
+        }
+
+        // Apply the theme setting when it changes. It was declared but read by
+        // nothing, so the window was always dark whatever the user chose.
+        let want_theme = theme_settings_reader
+            .text("theme")
+            .unwrap_or_else(|| "dark".to_string());
+        if want_theme != applied_theme {
+            main_ui.set_theme_by_name(&want_theme);
+            println!("[UI] theme -> {want_theme}");
+            applied_theme = want_theme;
         }
 
         // Persist any pending session change, at most once a second. Writing on

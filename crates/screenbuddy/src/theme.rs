@@ -85,6 +85,43 @@ impl Theme {
         }
     }
 
+    /// A high-contrast theme for users who need maximum legibility: pure black
+    /// background, pure white body text and yellow accents, with strong borders.
+    /// Contrast ratios here are far above the WCAG AA floor.
+    pub fn high_contrast() -> Self {
+        Self {
+            name: "high_contrast",
+            bg: 0x00_00_00_00,
+            header_bg: 0x00_00_00_00,
+            sidebar_bg: 0x00_00_00_00,
+            row_bg: 0x00_00_00_00,
+            row_active_bg: 0x00_00_40_60,
+            input_bg: 0x00_00_00_00,
+            // Bright, saturated borders so every panel edge is unambiguous.
+            border: 0x00_FF_FF_FF,
+            text: 0x00_FF_FF_FF,
+            muted_text: 0x00_FF_FF_80,
+            accent: 0x00_00_FF_FF,
+            error: 0x00_00_00_FF,
+            font_family: "Segoe UI",
+            font_size_normal: 15,
+            font_size_small: 12,
+            font_size_large: 19,
+            padding: 10,
+            row_height: 54,
+        }
+    }
+
+    /// Resolve a theme by the name stored in the `theme` setting. An unknown
+    /// name falls back to dark rather than leaving the window unstyled.
+    pub fn from_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "light" => Self::light(),
+            "high_contrast" | "high-contrast" | "contrast" => Self::high_contrast(),
+            _ => Self::dark(),
+        }
+    }
+
     /// Background color as a GDI COLORREF (0x00BBGGRR).
     pub fn bg_colorref(&self) -> u32 {
         self.bg
@@ -126,5 +163,75 @@ impl Theme {
         unsafe {
             winapi::um::wingdi::CreateSolidBrush(color) as *mut core::ffi::c_void
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Relative luminance, used to check contrast rather than eyeball it.
+    fn luminance(c: u32) -> f64 {
+        let f = |shift: u32| {
+            let v = ((c >> shift) & 0xFF) as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(0) + 0.7152 * f(8) + 0.0722 * f(16)
+    }
+
+    fn contrast(a: u32, b: u32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn from_name_resolves_every_offered_option() {
+        assert_eq!(Theme::from_name("dark").name, "dark");
+        assert_eq!(Theme::from_name("light").name, "light");
+        assert_eq!(Theme::from_name("high_contrast").name, "high_contrast");
+    }
+
+    #[test]
+    fn from_name_is_case_and_whitespace_insensitive() {
+        assert_eq!(Theme::from_name("  LIGHT ").name, "light");
+        assert_eq!(Theme::from_name("High-Contrast").name, "high_contrast");
+    }
+
+    #[test]
+    fn an_unknown_theme_name_falls_back_to_dark() {
+        assert_eq!(Theme::from_name("chartreuse").name, "dark");
+        assert_eq!(Theme::from_name("").name, "dark");
+    }
+
+    #[test]
+    fn high_contrast_clears_the_wcag_aa_threshold_for_body_text() {
+        let hc = Theme::high_contrast();
+        let ratio = contrast(hc.text, hc.bg);
+        assert!(
+            ratio >= 7.0,
+            "body text contrast {ratio:.2}:1 is below the AAA floor of 7:1"
+        );
+    }
+
+    #[test]
+    fn high_contrast_beats_the_dark_theme_on_body_text() {
+        let hc = Theme::high_contrast();
+        let dark = Theme::dark();
+        assert!(
+            contrast(hc.text, hc.bg) > contrast(dark.text, dark.bg),
+            "the high-contrast theme must actually be higher contrast"
+        );
+    }
+
+    #[test]
+    fn high_contrast_muted_text_is_still_readable() {
+        let hc = Theme::high_contrast();
+        let ratio = contrast(hc.muted_text, hc.bg);
+        assert!(ratio >= 4.5, "muted text contrast {ratio:.2}:1 is below AA");
     }
 }

@@ -206,6 +206,23 @@ impl SettingsUI {
                 max: Some(SettingValue::Float(1.0)),
             },
             SettingDef {
+                name: "theme".to_string(),
+                description: "Colour theme: dark, light, or high_contrast".to_string(),
+                category: SettingsCategory::General,
+                // Consumed by Theme::from_name via main_ui.set_theme, which the
+                // render loop applies when this changes.
+                default: SettingValue::Enum(
+                    "dark".to_string(),
+                    vec![
+                        "dark".to_string(),
+                        "light".to_string(),
+                        "high_contrast".to_string(),
+                    ],
+                ),
+                min: None,
+                max: None,
+            },
+            SettingDef {
                 name: "ai_provider".to_string(),
                 description: "AI provider to use".to_string(),
                 category: SettingsCategory::AI,
@@ -338,8 +355,15 @@ impl SettingsUI {
         }
     }
 
-    /// All definitions, for a settings window that iterates rather than
-    /// hardcoding a list.
+    /// Read a setting as text. An Enum returns its selected option; a String
+    /// returns its value. Anything else is `None`.
+    pub fn text(&self, name: &str) -> Option<String> {
+        match self.get(name)? {
+            SettingValue::String(v) => Some(v),
+            SettingValue::Enum(v, _) => Some(v),
+            _ => None,
+        }
+    }
     pub fn all_definitions(&self) -> &[SettingDef] {
         &self.definitions
     }
@@ -566,6 +590,15 @@ impl SettingsReader {
         match self.get(name)? {
             SettingValue::Bool(v) | SettingValue::Float(v) => Some(v),
             SettingValue::Int(v) => Some(v as f64),
+            _ => None,
+        }
+    }
+
+    /// Read a setting as text, mirroring [SettingsUI::text].
+    pub fn text(&self, name: &str) -> Option<String> {
+        match self.get(name)? {
+            SettingValue::String(v) => Some(v),
+            SettingValue::Enum(v, _) => Some(v),
             _ => None,
         }
     }

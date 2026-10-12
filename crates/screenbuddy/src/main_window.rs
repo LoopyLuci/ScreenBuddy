@@ -237,6 +237,18 @@ impl MainWindow {
         unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
     }
 
+    /// Apply a theme by the name stored in the `theme` setting (dark, light,
+    /// high_contrast). An unknown name resolves to dark.
+    pub fn set_theme_by_name(&mut self, name: &str) {
+        self.theme = crate::theme::Theme::from_name(name);
+        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
+    }
+
+    /// The active theme's name, for tests and for reporting.
+    pub fn theme_name(&self) -> &'static str {
+        self.theme.name
+    }
+
     pub fn show(&mut self) {
         self.visible = true;
         if let Some(hwnd) = self.hwnd {
@@ -1035,7 +1047,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
 
 fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     let side = Rect::new(0, HEADER_H, SIDEBAR_W, win.height);
-    fill_rect(buf, win.width, side, C_SIDEBAR);
+    fill_rect(buf, win.width, side, win.theme.sidebar_bg);
     draw_rect_outline(buf, win.width,
         Rect::new(SIDEBAR_W - 1, HEADER_H, SIDEBAR_W, win.height),
         win.theme.border,
@@ -1246,7 +1258,16 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 if is_user { right } else { left + width * 2 / 3 },
                 (y + h).min(bottom),
             );
-            fill_rect(buf, win.width, bubble, if is_user { C_ROW_ACTIVE } else { C_SIDEBAR });
+            fill_rect(
+                buf,
+                win.width,
+                bubble,
+                if is_user {
+                    win.theme.row_active_bg
+                } else {
+                    win.theme.sidebar_bg
+                },
+            );
             let is_current_match = win
                 .search_matches
                 .get(win.search_match_idx)
@@ -1255,9 +1276,9 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             let outline = if is_current_match {
                 win.theme.accent
             } else if is_user {
-                C_ACCENT
+                win.theme.accent
             } else {
-                C_BORDER
+                win.theme.border
             };
             draw_rect_outline(buf, win.width, bubble, outline);
 
@@ -1340,8 +1361,17 @@ fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
     let right = win.width - PADDING;
     let top = win.height - INPUT_H - 6;
     let rect = Rect::new(left, top, right, win.height - PADDING);
-    fill_rect(buf, win.width, rect, C_INPUT_BG);
-    draw_rect_outline(buf, win.width, rect, if win.focus { C_ACCENT } else { C_BORDER });
+    fill_rect(buf, win.width, rect, win.theme.input_bg);
+    draw_rect_outline(
+        buf,
+        win.width,
+        rect,
+        if win.focus {
+            win.theme.accent
+        } else {
+            win.theme.border
+        },
+    );
 
     let send_w = 72;
     win.hits.push(HitTarget {
@@ -1367,9 +1397,9 @@ fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
             &win.input
         };
         let colour = if win.input.is_empty() {
-            C_MUTED
+            win.theme.muted_text
         } else {
-            C_TEXT
+            win.theme.text
         };
         set_text_colour(buf, dc, colour);
         draw_text(
@@ -1383,7 +1413,7 @@ fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
         );
 
         // Send label.
-        set_text_colour(buf, dc, C_ACCENT);
+        set_text_colour(buf, dc, win.theme.accent);
         draw_text(
             buf,
             dc,
