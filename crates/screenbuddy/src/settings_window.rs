@@ -210,6 +210,7 @@ pub struct SettingsView {
     rows: Vec<Row>,
     scroll_offset: usize,
     search_query: String,
+    focused_row: Option<usize>,
     hits: Vec<HitTarget>,
     hwnd: Option<HWND>,
     /// Index of the row under the pointer, for hover feedback.
@@ -236,6 +237,7 @@ impl SettingsView {
             rows: Vec::new(),
             scroll_offset: 0,
             search_query: String::new(),
+            focused_row: None,
             hits: Vec::new(),
             hwnd: None,
             hovered: None,
@@ -501,8 +503,17 @@ impl SettingsView {
             return;
         }
 
+        // Filter rows by search query
         let label_w = FIELD_LEFT - PADDING * 2;
-        let rows = self.rows.clone();
+        let rows: Vec<Row> = if self.search_query.is_empty() {
+            self.rows.clone()
+        } else {
+            let q = self.search_query.to_lowercase();
+            self.rows.iter()
+                .filter(|r| r.name.to_lowercase().contains(&q) || r.description.to_lowercase().contains(&q))
+                .cloned()
+                .collect()
+        };
         for (index, row) in rows.iter().enumerate().skip(self.scroll_offset) {
             let y = top + index as i32 * ROW_PITCH;
             if y + ROW_PITCH > self.surface_h - 50 {
@@ -1000,6 +1011,44 @@ unsafe extern "system" fn settings_proc(
             // Escape hides, as in the other windows.
             if wparam == VK_ESCAPE as usize {
                 ShowWindow(hwnd, SW_HIDE);
+            }
+            // Tab / Shift+Tab: move focus between controls
+            if wparam == VK_TAB as usize || wparam == VK_DOWN as usize || wparam == VK_UP as usize
+            {
+                let view_ptr =
+                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+                if !view_ptr.is_null() {
+                    unsafe {
+                        let shift = GetKeyState(VK_SHIFT) < 0;
+                        let count = (*view_ptr).rows.len();
+                        if count > 0 {
+                            let current = (*view_ptr).focused_row.unwrap_or(0);
+                            let next = if wparam == VK_DOWN as usize {
+                                (current + 1) % count
+                            } else if wparam == VK_UP as usize {
+                                if current == 0 { count - 1 } else { current - 1 }
+                            } else if shift {
+                                if current == 0 { count - 1 } else { current - 1 }
+                            } else {
+                                (current + 1) % count
+                            };
+                            (*view_ptr).focused_row = Some(next);
+                            InvalidateRect(hwnd, ptr::null_mut(), 0);
+                        }
+                    }
+                }
+            }
+            // Enter/Space: activate focused control
+            if wparam == VK_RETURN as usize || wparam == VK_SPACE as usize {
+                let view_ptr =
+                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+                if !view_ptr.is_null() {
+                    unsafe {
+                        if let Some(row) = (*view_ptr).focused_row {
+                            (*view_ptr).cycle(row);
+                        }
+                    }
+                }
             }
             0
         }

@@ -733,15 +733,17 @@ fn main() {
             }
         }
 
-        // Render stats overlay (F3 toggle via show_render_stats setting)
+        // Render stats overlay (drawn on screen in main window)
         if settings.get("show_render_stats").and_then(|v| match v {
             screenbuddy_core::SettingValue::Bool(b) => Some(b != 0.0),
             _ => None,
         }).unwrap_or(false) {
             let fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-            println!("[Stats] FPS={:.1} dt={:.4}s creatures={} visible={}",
-                fps, dt, creatures.len(),
+            let stats = format!("FPS: {:.1} | creatures: {} | visible: {}",
+                fps, creatures.len(),
                 creatures.values().filter(|c| c.visible).count());
+            // Forward to main window for on-screen rendering
+            main_ui.set_stats_overlay(&stats);
         }
 
         // Render
@@ -777,6 +779,7 @@ fn main() {
                 }
                 screenbuddy_core::AgentEvent::Message(text) => {
                     println!("[Agent] Response: {}", text);
+                    screenbuddy_core::notify("Agent", &text);
                 }
                 _ => {}
             }

@@ -19,6 +19,7 @@ pub struct ChatWindow {
     typing: bool,
     typing_frame: u32,
     send_btn_rect: Option<(i32, i32, i32, i32)>,
+    btn_hover: bool,
     event_sender: Sender<ChatWindowEvent>,
     event_receiver: Arc<Mutex<Receiver<ChatWindowEvent>>>,
 }
@@ -46,6 +47,7 @@ impl ChatWindow {
             typing: false,
             typing_frame: 0,
             send_btn_rect: None,
+            btn_hover: false,
             event_sender: tx,
             event_receiver: Arc::new(Mutex::new(rx)),
         }
@@ -299,6 +301,20 @@ pub mod platform {
                 }
                 0
             }
+            WM_MOUSEMOVE => {
+                let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
+                if chat.is_null() { return 0; }
+                let x = (lparam & 0xFFFF) as i32;
+                let y = ((lparam >> 16) & 0xFFFF) as i32;
+                if let Some((rx, ry, rw, rh)) = (*chat).send_btn_rect {
+                    let hovering = x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+                    if hovering != (*chat).btn_hover {
+                        (*chat).btn_hover = hovering;
+                        (*chat).invalidate();
+                    }
+                }
+                0
+            }
             WM_LBUTTONDOWN => {
                 let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
                 if chat.is_null() { return 0; }
@@ -317,6 +333,16 @@ pub mod platform {
                 0
             }
             WM_ERASEBKGND => 1,
+            WM_DPICHANGED => {
+                let rect = *(lparam as *const RECT);
+                unsafe {
+                    SetWindowPos(hwnd, ptr::null_mut(),
+                        rect.left, rect.top,
+                        rect.right - rect.left, rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                0
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -392,10 +418,15 @@ pub mod platform {
         let mut y = msg_area_bottom;
 
         let visible_msgs: Vec<_> = chat.messages.iter().rev().skip(chat.scroll_offset).collect();
-        for (role, text, _ts) in visible_msgs {
+        for (role, text, ts) in visible_msgs {
             if y < PADDING {
                 break;
             }
+            // Draw timestamp in muted color
+            SetTextColor(hdc_mem, RGB(150, 150, 170));
+            let ts_wide: Vec<u16> = ts.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut ts_rect = RECT { left: PADDING, top: y - 14, right: PADDING + 40, bottom: y };
+            DrawTextW(hdc_mem, ts_wide.as_ptr(), -1, &mut ts_rect, DT_LEFT | DT_SINGLELINE);
 
             let label = if role == "user" {
                 "You"
@@ -485,13 +516,32 @@ pub mod platform {
         FrameRect(hdc_mem, &input_rect, border_brush);
         DeleteObject(border_brush as _);
 
+        // Draw typing indicator
+        if chat.typing {
+            let dots = match (chat.typing_frame / 10) % 3 {
+                0 => ".",
+                1 => "..",
+                _ => "...",
+            };
+            SetTextColor(hdc_mem, RGB(150, 255, 150));
+            let dots_wide: Vec<u16> = dots.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut dots_rect = RECT { left: PADDING, top: y - 20, right: PADDING + 60, bottom: y };
+            DrawTextW(hdc_mem, dots_wide.as_ptr(), -1, &mut dots_rect, DT_LEFT | DT_SINGLELINE);
+        }
+
         // Draw send button
         let btn_w = 60i32;
         let btn_h = 24i32;
         let btn_x = CHAT_WIDTH - PADDING - btn_w;
         let btn_y = input_top + (INPUT_HEIGHT - btn_h) / 2;
         let has_input = !chat.input_buffer().is_empty();
-        let btn_color: u32 = if has_input { 0xFF_4A_90_D9 } else { 0xAA_55_55_55 };
+        let btn_color: u32 = if !has_input {
+            0xAA_55_55_55
+        } else if chat.btn_hover {
+            0xFF_6A_B0_F9
+        } else {
+            0xFF_4A_90_D9
+        };
         let btn_buf = pixel_data as *mut u32;
         for row in btn_y..(btn_y + btn_h) {
             for col in btn_x..(btn_x + btn_w) {

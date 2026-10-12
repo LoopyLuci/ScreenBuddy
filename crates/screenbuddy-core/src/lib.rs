@@ -12,10 +12,23 @@ pub mod creature_catalogue;
 pub mod error;
 pub mod hardware;
 /// Returns whether creatures are currently visible on screen.
-/// Used by the tray menu to show the correct label.
+/// Uses a process-wide atomic that the render loop updates each frame.
 pub fn creature_visibility() -> bool {
-    // Default to visible; the render loop updates this via the status snapshot.
-    true
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static VISIBLE: AtomicBool = AtomicBool::new(true);
+    VISIBLE.load(Ordering::Relaxed)
+}
+
+/// Set creature visibility (called by the render loop).
+pub fn set_creature_visibility(visible: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static VISIBLE: AtomicBool = AtomicBool::new(true);
+    VISIBLE.store(visible, Ordering::Relaxed);
+}
+
+/// Show a tray balloon notification (no-op if tray not available).
+pub fn notify(title: &str, message: &str) {
+    system_tray::show_balloon(title, message);
 }
 
 pub mod ipc;

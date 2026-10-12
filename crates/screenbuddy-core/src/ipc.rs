@@ -397,6 +397,11 @@ impl IpcServer {
         }
     }
 
+    /// Enable authentication with the given token.
+    pub fn set_auth_token(&mut self, token: String) {
+        self.auth_token = Some(token);
+    }
+
     /// Shared handle the render loop publishes into each frame.
     pub fn status_handle(&self) -> Arc<std::sync::Mutex<RuntimeStatus>> {
         self.status.clone()

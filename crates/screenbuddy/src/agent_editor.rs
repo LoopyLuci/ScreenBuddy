@@ -1015,6 +1015,13 @@ impl AgentEditor {
                 y += 14;
 
                 y = self.row_label(buf, dc, y, "Role / instructions");
+                // Draw cursor if instructions field is focused
+                if self.focus == Some(Field::Instructions) && self.editing_name {
+                    let instr = &self.draft.system_prompt;
+                    let cursor_x = left + 4 + (instr.len() as i32 * 7);
+                    let cursor_y = y + 4;
+                    fill_rect(buf, WIN_WIDTH, cursor_x, cursor_y, 2, 16, 0x00F0F0F0);
+                }
                 let instructions = if self.draft.system_prompt.trim().is_empty() {
                     "(default: describe what this agent is for)".to_string()
                 } else {
@@ -1628,6 +1635,16 @@ unsafe extern "system" fn editor_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
             0
         }
         WM_ERASEBKGND => 1,
+        WM_DPICHANGED => {
+            let rect = *(lparam as *const RECT);
+            unsafe {
+                SetWindowPos(hwnd, ptr::null_mut(),
+                    rect.left, rect.top,
+                    rect.right - rect.left, rect.bottom - rect.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            0
+        }
         WM_DESTROY => {
             let editor = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AgentEditor;
             if !editor.is_null() {

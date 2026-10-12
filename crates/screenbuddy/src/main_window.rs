@@ -132,6 +132,10 @@ pub struct MainWindow {
     blink: bool,
     focus: bool,
     events: Vec<UiEvent>,
+    /// On-screen render stats overlay text (FPS, creature count, etc.).
+    stats_overlay: Option<String>,
+    /// Active theme for rendering (dark/light).
+    theme: crate::theme::Theme,
 }
 
 impl Default for MainWindow {
@@ -161,6 +165,8 @@ impl MainWindow {
             blink: true,
             focus: false,
             events: Vec::new(),
+            stats_overlay: None,
+            theme: crate::theme::Theme::dark(),
         }
     }
 
@@ -170,6 +176,18 @@ impl MainWindow {
 
     pub fn is_visible(&self) -> bool {
         self.visible
+    }
+
+    /// Set the on-screen render stats overlay text.
+    pub fn set_stats_overlay(&mut self, text: &str) {
+        self.stats_overlay = Some(text.to_string());
+        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
+    }
+
+    /// Switch between dark and light themes.
+    pub fn set_theme(&mut self, dark: bool) {
+        self.theme = crate::theme::Theme::from_setting(dark);
+        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
     }
 
     pub fn show(&mut self) {
@@ -546,7 +564,7 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
 /// Fill the whole bitmap, then lay out and draw each region.
 fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
     for px in buf.iter_mut() {
-        *px = C_BG;
+        *px = win.theme.bg;
     }
     win.hits.clear();
 
@@ -591,11 +609,11 @@ fn draw_rect_outline(buf: &mut [u32], rect: Rect, colour: u32) {
 }
 
 fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
-    fill_rect(buf, Rect::new(0, 0, WIN_WIDTH, HEADER_H), C_HEADER);
+    fill_rect(buf, Rect::new(0, 0, WIN_WIDTH, HEADER_H), win.theme.header_bg);
     draw_rect_outline(
         buf,
         Rect::new(0, HEADER_H - 1, WIN_WIDTH, HEADER_H),
-        C_BORDER,
+        win.theme.border,
     );
 
     let font = make_font(18, true);
@@ -603,7 +621,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
         let Some(dc) = win.draw_dc else { return };
         let old_font = select_obj(dc, font as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
-        set_text_colour(buf, dc, C_TEXT);
+        set_text_colour(buf, dc, win.theme.text);
         draw_text(
             buf,
             dc,
@@ -617,7 +635,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
         // Status on the right, so it does not collide with the title.
         let small = make_font(13, false);
         select_obj(dc, small as *mut _);
-        set_text_colour(buf, dc, C_MUTED);
+        set_text_colour(buf, dc, win.theme.muted_text);
         draw_text(
             buf,
             dc,
@@ -649,7 +667,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
         let f = make_font(14, false);
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
-        set_text_colour(buf, dc, C_MUTED);
+        set_text_colour(buf, dc, win.theme.muted_text);
         draw_text(
             buf,
             dc,
@@ -679,7 +697,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     draw_rect_outline(
         buf,
         Rect::new(SIDEBAR_W - 1, HEADER_H, SIDEBAR_W, WIN_HEIGHT),
-        C_BORDER,
+        win.theme.border,
     );
 
     let mut y = HEADER_H + PADDING;
@@ -687,7 +705,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     // "New chat" button.
     let btn = Rect::new(PADDING, y, SIDEBAR_W - PADDING, y + 32);
     fill_rect(buf, btn, C_ROW_ACTIVE);
-    draw_rect_outline(buf, btn, C_ACCENT);
+    draw_rect_outline(buf, btn, win.theme.accent);
     win.hits.push(HitTarget {
         rect: btn,
         action: UiAction::NewSession,
@@ -697,7 +715,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
         let f = make_font(13, true);
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
-        set_text_colour(buf, dc, C_TEXT);
+        set_text_colour(buf, dc, win.theme.text);
         draw_text(
             buf,
             dc,
@@ -724,7 +742,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
             fill_rect(
                 buf,
                 Rect::new(row.left, row.top, row.left + 3, row.bottom),
-                C_ACCENT,
+                win.theme.accent,
             );
         }
         win.hits.push(HitTarget {
@@ -747,7 +765,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
             let f = make_font(13, false);
             let old = select_obj(dc, f as *mut _);
             SetBkMode(dc, TRANSPARENT as i32);
-            set_text_colour(buf, dc, if summary.is_current { C_TEXT } else { C_MUTED });
+            set_text_colour(buf, dc, if summary.is_current { win.theme.text } else { win.theme.muted_text });
             draw_text(
                 buf,
                 dc,
@@ -760,7 +778,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
 
             let small = make_font(11, false);
             select_obj(dc, small as *mut _);
-            set_text_colour(buf, dc, C_MUTED);
+            set_text_colour(buf, dc, win.theme.muted_text);
             draw_text(
                 buf,
                 dc,
@@ -786,7 +804,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
             let f = make_font(12, false);
             let old = select_obj(dc, f as *mut _);
             SetBkMode(dc, TRANSPARENT as i32);
-            set_text_colour(buf, dc, C_MUTED);
+            set_text_colour(buf, dc, win.theme.muted_text);
             draw_text(
                 buf,
                 dc,
@@ -821,7 +839,7 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
         let f = make_font(12, false);
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
-        set_text_colour(buf, dc, C_MUTED);
+        set_text_colour(buf, dc, win.theme.muted_text);
         draw_text(
             buf,
             dc,
@@ -900,7 +918,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 let f = if is_user { bold } else { font };
                 let old = select_obj(dc, f as *mut _);
                 SetBkMode(dc, TRANSPARENT as i32);
-                set_text_colour(buf, dc, C_TEXT);
+                set_text_colour(buf, dc, win.theme.text);
                 let mut rc = RECT {
                     left: bubble.left + 10,
                     top: bubble.top + 8,
@@ -928,7 +946,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             let f = make_font(15, false);
             let old = select_obj(dc, f as *mut _);
             SetBkMode(dc, TRANSPARENT as i32);
-            set_text_colour(buf, dc, C_MUTED);
+            set_text_colour(buf, dc, win.theme.muted_text);
             let hint = "Ask ScreenBuddy anything. Press Enter to send.";
             draw_text(
                 buf,
@@ -967,7 +985,7 @@ fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
         let f = make_font(14, false);
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
-        set_text_colour(buf, dc, C_TEXT);
+        set_text_colour(buf, dc, win.theme.text);
 
         let placeholder = if win.input.is_empty() {
             "Type a message..."
