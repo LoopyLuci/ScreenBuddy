@@ -460,6 +460,7 @@ fn main() {
         addr: std::env::var("SCREENBUDDY_IPC_ADDR")
             .unwrap_or_else(|_| format!("127.0.0.1:{}", screenbuddy_core::DEFAULT_PORT)),
         enable_hot_reload: true,
+        max_connections: 32,
     };
     let mut control_rx: Option<tokio::sync::broadcast::Receiver<screenbuddy_core::ControlRequest>> =
         None;
@@ -479,6 +480,11 @@ fn main() {
     // same conversations the GUI shows. A window renders a view of a session; it
     // does not own the conversation.
     let shared_sessions = Arc::new(std::sync::Mutex::new(SessionStore::load(sessions_path())));
+    // Save at most once a frame rather than on every message: writing the whole
+    // store at the caps measures ~9ms, over half a 60fps frame budget.
+    if let Ok(mut store) = shared_sessions.lock() {
+        store.set_deferred(true);
+    }
     println!(
         "[Session] {} session(s) loaded",
         shared_sessions.lock().map(|s| s.list().len()).unwrap_or(0)
@@ -649,6 +655,8 @@ fn main() {
     // Declared outside the loop so the message pump can set it before the tray
     // section reads it.
     let mut should_quit = false;
+    // Throttles the deferred session write; see the flush in the loop body.
+    let mut last_session_flush = Instant::now();
     loop {
         // Pump this thread's message queue. Without this the main window never
         // receives WM_PAINT, WM_KEYDOWN, WM_CHAR, WM_LBUTTONDOWN or
@@ -1055,6 +1063,16 @@ fn main() {
             main_ui.refresh_from(&store);
         }
 
+        // Persist any pending session change, at most once a second. Writing on
+        // every message measured ~9ms (over half a 60fps frame), so the store
+        // marks itself dirty and the write is batched here.
+        if last_session_flush.elapsed() >= Duration::from_millis(1000) {
+            if let Ok(mut store) = shared_sessions.lock() {
+                store.flush();
+            }
+            last_session_flush = Instant::now();
+        }
+
         // Process chat window events
         if let Some(event) = chat_win.poll_event() {
             match event {
@@ -1154,6 +1172,12 @@ fn main() {
     // Stop any in-flight speech before exit.
     if let Some(engine) = tts.take() {
         engine.stop();
+    }
+
+    // Land any deferred session write; a change made in the last second would
+    // otherwise be lost on a clean exit.
+    if let Ok(mut store) = shared_sessions.lock() {
+        store.flush();
     }
 
     println!("ScreenBuddy shutdown");

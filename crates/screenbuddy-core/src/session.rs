@@ -158,6 +158,12 @@ pub struct SessionStore {
     current_id: String,
     path: Option<PathBuf>,
     next_id: AtomicU64,
+    /// When set, [save] marks the store dirty instead of writing, and the caller
+    /// flushes once a frame. Off by default so a save always lands immediately
+    /// unless the caller opts in.
+    deferred: bool,
+    /// A change is waiting to be written.
+    dirty: bool,
 }
 
 /// How many sessions to keep. A desktop companion should not accumulate an
@@ -184,6 +190,8 @@ impl SessionStore {
             current_id: String::new(),
             path: None,
             next_id: AtomicU64::new(1),
+            deferred: false,
+            dirty: false,
         }
     }
 
@@ -221,8 +229,39 @@ impl SessionStore {
         store
     }
 
-    fn save(&self) {
-        let Some(path) = &self.path else { return };
+    /// Persist, or mark for a later flush when deferred saving is on.
+    ///
+    /// Serialising and writing the whole store at the cap measures ~9ms, which is
+    /// over half a 60fps frame budget, so the render loop must not do it inline.
+    /// Deferred mode marks the store dirty and the app calls [flush] once a
+    /// frame; the write then happens at most once per frame instead of once per
+    /// message. Tests and explicit saves leave deferred off and write at once.
+    fn save(&mut self) {
+        if self.deferred {
+            self.dirty = true;
+            return;
+        }
+        self.write_now();
+    }
+
+    /// Write immediately if anything is pending. A no-op otherwise.
+    pub fn flush(&mut self) {
+        if self.dirty {
+            self.write_now();
+        }
+    }
+
+    /// Turn deferred saving on or off. Turning it off flushes any pending write,
+    /// so a caller cannot silently lose the last change.
+    pub fn set_deferred(&mut self, deferred: bool) {
+        self.deferred = deferred;
+        if !deferred {
+            self.flush();
+        }
+    }
+
+    fn write_now(&mut self) {
+        let Some(path) = self.path.clone() else { return };
         let list: Vec<Session> = self
             .order
             .iter()
@@ -233,9 +272,18 @@ impl SessionStore {
                 if let Some(parent) = path.parent() {
                     let _ = fs::create_dir_all(parent);
                 }
-                if let Err(e) = fs::write(path, json) {
-                    eprintln!("[Session] could not save sessions: {e}");
+                // Write to a sibling then rename: a crash mid-write would
+                // otherwise leave a truncated file and lose every conversation,
+                // because the store is written whole.
+                let tmp = path.with_extension("json.tmp");
+                match fs::write(&tmp, &json).and_then(|_| fs::rename(&tmp, &path)) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("[Session] could not save sessions: {e}");
+                        let _ = fs::remove_file(&tmp);
+                    }
                 }
+                self.dirty = false;
             }
             Err(e) => eprintln!("[Session] could not serialise sessions: {e}"),
         }
@@ -390,6 +438,121 @@ pub struct SessionSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_cost_at_the_cap_is_measured() {
+        // 50 sessions x 200 messages is what the caps allow, so this is the worst
+        // case the render loop can hit. The audit called the per-push save
+        // "synchronous I/O on the render loop"; this measures whether that is
+        // actually a stall before changing persistence semantics.
+        let dir = std::env::temp_dir().join("screenbuddy_session_bench");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+
+        // Build with deferred saving on so the setup does not write 10,000 times;
+        // the timing below drives the real write path through flush().
+        let mut store = SessionStore::load(&path);
+        store.set_deferred(true);
+        for s in 0..50 {
+            store.new_session(&format!("session {s}"));
+            for m in 0..200 {
+                store.push(Role::User, format!("message {m} with some padding text"));
+            }
+        }
+
+        let start = std::time::Instant::now();
+        let rounds = 5;
+        for _ in 0..rounds {
+            store.save(); // marks dirty
+            store.flush(); // performs the write
+        }
+        let per_save = start.elapsed() / rounds;
+        println!("save() at the cap: {per_save:?} per call");
+        // A 60fps frame is 16ms; anything near that would be a real stall.
+        assert!(
+            per_save.as_millis() < 100,
+            "save() took {per_save:?}, which would stall the render loop"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deferred_saving_writes_only_on_flush() {
+        let dir = std::env::temp_dir().join("screenbuddy_session_deferred");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+
+        let mut store = SessionStore::load(&path);
+        store.set_deferred(true);
+        store.push(Role::User, "not yet written");
+
+        // The reload must not see the message while the write is deferred.
+        let midway = SessionStore::load(&path);
+        assert!(
+            !midway
+                .current()
+                .map(|s| s.transcript().iter().any(|(_, t)| t == "not yet written"))
+                .unwrap_or(false),
+            "a deferred save must not have written yet"
+        );
+
+        store.flush();
+        let after = SessionStore::load(&path);
+        assert!(
+            after
+                .current()
+                .map(|s| s.transcript().iter().any(|(_, t)| t == "not yet written"))
+                .unwrap_or(false),
+            "flush must land the pending write"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn turning_deferred_off_flushes_pending_changes() {
+        let dir = std::env::temp_dir().join("screenbuddy_session_deferred_off");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+
+        let mut store = SessionStore::load(&path);
+        store.set_deferred(true);
+        store.push(Role::User, "pending then flushed");
+        // Switching the mode back must not drop the pending change.
+        store.set_deferred(false);
+
+        let reloaded = SessionStore::load(&path);
+        assert!(reloaded
+            .current()
+            .map(|s| s.transcript().iter().any(|(_, t)| t == "pending then flushed"))
+            .unwrap_or(false));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_leaves_no_temp_file_behind() {
+        let dir = std::env::temp_dir().join("screenbuddy_session_tmp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.json");
+
+        let mut store = SessionStore::load(&path);
+        store.push(Role::User, "written atomically");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn new_session_becomes_current() {

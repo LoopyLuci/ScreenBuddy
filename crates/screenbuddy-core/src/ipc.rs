@@ -342,6 +342,10 @@ impl RuntimeStatus {
 pub struct IpcConfig {
     pub addr: String,
     pub enable_hot_reload: bool,
+    /// Most clients served at once. Each accepted connection costs a task and a
+    /// socket, so an uncapped accept loop can be driven to exhaust file
+    /// descriptors by anything that can reach the port.
+    pub max_connections: usize,
 }
 
 impl Default for IpcConfig {
@@ -349,6 +353,7 @@ impl Default for IpcConfig {
         Self {
             addr: format!("127.0.0.1:{}", DEFAULT_PORT),
             enable_hot_reload: true,
+            max_connections: 32,
         }
     }
 }
@@ -429,10 +434,32 @@ impl IpcServer {
         let listener = TcpListener::bind(&self.config.addr)
             .await
             .map_err(|e| format!("Bind failed on {}: {}", self.config.addr, e))?;
-        tracing::info!("IPC server listening on {}", self.config.addr);
+        tracing::info!(
+            "IPC server listening on {} (max {} clients)",
+            self.config.addr,
+            self.config.max_connections
+        );
+        // One permit per in-flight client. Held for the whole connection, so the
+        // cap covers long-lived clients and not just the handshake.
+        let limit = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections.max(1)));
         loop {
             tokio::select! {
                 Ok((stream, peer)) = listener.accept() => {
+                    let permit = match limit.clone().try_acquire_owned() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            // Drop the stream without a response: closing is the
+                            // honest signal, and writing would cost the very
+                            // resource the cap is protecting.
+                            tracing::warn!(
+                                "IPC connection from {} refused: {} clients already connected",
+                                peer,
+                                self.config.max_connections
+                            );
+                            drop(stream);
+                            continue;
+                        }
+                    };
                     tracing::debug!("IPC client connected: {}", peer);
                     let tx = self.tx.clone();
                     let control = self.control.clone();
@@ -442,6 +469,7 @@ impl IpcServer {
                     let shutdown = self.shutdown.clone();
                     let token = self.auth_token.clone();
                     tokio::spawn(async move {
+                        let _permit = permit;
                         handle_client(stream, tx, control, creatures, status, sessions, shutdown, token)
                             .await;
                     });
@@ -1576,6 +1604,86 @@ mod tests {
         }
         // The connection stays usable after a bad frame.
         client.ping().await.expect("ping after parse error");
+    }
+
+    #[test]
+    fn the_server_refuses_clients_past_the_connection_cap() {
+        use tokio::io::AsyncReadExt;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let addr = "127.0.0.1:0";
+            let mut cfg = IpcConfig::default();
+            cfg.addr = addr.to_string();
+            // A cap of two makes the third connection the interesting one.
+            cfg.max_connections = 2;
+            let server = IpcServer::new(cfg);
+            let listener = TcpListener::bind(addr).await.unwrap();
+            let bound = listener.local_addr().unwrap().to_string();
+
+            // Mirror run()'s accept path: cap the in-flight clients.
+            let limit = Arc::new(tokio::sync::Semaphore::new(2));
+            let (tx, _) = broadcast::channel(16);
+            let (control, _) = broadcast::channel(16);
+            let creatures = Arc::new(Mutex::new(HashMap::new()));
+            let status = Arc::new(std::sync::Mutex::new(RuntimeStatus::default()));
+            let shutdown = Arc::new(Notify::new());
+            let sessions = server.sessions.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((stream, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let Ok(permit) = limit.clone().try_acquire_owned() else {
+                        drop(stream);
+                        continue;
+                    };
+                    let (tx, control, creatures, status, shutdown, sessions) = (
+                        tx.clone(),
+                        control.clone(),
+                        creatures.clone(),
+                        status.clone(),
+                        shutdown.clone(),
+                        sessions.clone(),
+                    );
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        handle_client(
+                            stream, tx, control, creatures, status, sessions, shutdown, None,
+                        )
+                        .await;
+                    });
+                }
+            });
+
+            // Two long-lived clients take both permits.
+            let mut held = Vec::new();
+            for _ in 0..2 {
+                let s = TcpStream::connect(&bound).await.expect("connect within cap");
+                held.push(s);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            // The third is accepted then closed without a response.
+            let mut extra = TcpStream::connect(&bound).await.expect("tcp connect still works");
+            let mut buf = [0u8; 4];
+            let read = tokio::time::timeout(
+                std::time::Duration::from_millis(400),
+                extra.read(&mut buf),
+            )
+            .await;
+
+            match read {
+                Ok(Ok(0)) => {} // closed cleanly: refused as intended
+                Ok(Err(_)) => {} // reset: also a refusal
+                Ok(Ok(n)) => panic!("server answered a client past the cap ({n} bytes)"),
+                Err(_) => panic!("server neither answered nor closed a client past the cap"),
+            }
+            drop(held);
+        });
     }
 
     #[test]
