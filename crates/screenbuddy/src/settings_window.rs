@@ -220,6 +220,8 @@ pub struct SettingsView {
     /// Real client size, updated each paint.
     surface_w: i32,
     surface_h: i32,
+    /// Whether Ctrl is held, tracked from key messages so injected input works.
+    ctrl_down: bool,
 }
 
 impl SettingsView {
@@ -244,9 +246,52 @@ impl SettingsView {
             notice: None,
             surface_w: WIN_WIDTH,
             surface_h: WIN_HEIGHT,
+            ctrl_down: false,
         };
         view.reload();
         view
+    }
+
+    /// Reverse the most recent setting change, if any.
+    pub fn undo(&mut self) {
+        let change = unsafe { (*self.store).undo() };
+        match change {
+            Some(c) => {
+                println!("[Settings] undo {} -> {}", c.name, describe(&c.before));
+                self.notice = Some(format!(
+                    "Undid {}: {} -> {}",
+                    c.name,
+                    describe(&c.after),
+                    describe(&c.before)
+                ));
+            }
+            None => {
+                println!("[Settings] undo requested with empty history");
+                self.notice = Some("Nothing to undo".to_string());
+            }
+        }
+        self.reload();
+    }
+
+    /// Reapply the most recently undone change, if any.
+    pub fn redo(&mut self) {
+        let change = unsafe { (*self.store).redo() };
+        match change {
+            Some(c) => {
+                println!("[Settings] redo {} -> {}", c.name, describe(&c.after));
+                self.notice = Some(format!(
+                    "Redid {}: {} -> {}",
+                    c.name,
+                    describe(&c.before),
+                    describe(&c.after)
+                ));
+            }
+            None => {
+                println!("[Settings] redo requested with empty history");
+                self.notice = Some("Nothing to redo".to_string());
+            }
+        }
+        self.reload();
     }
 
     /// Re-read the definitions and values for the current tab.
@@ -882,6 +927,23 @@ fn numeric(value: &SettingValue) -> f64 {
     }
 }
 
+/// A short human-readable form of a setting value, for the undo notice.
+fn describe(value: &SettingValue) -> String {
+    match value {
+        SettingValue::Bool(v) => {
+            if *v != 0.0 {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            }
+        }
+        SettingValue::Int(v) => v.to_string(),
+        SettingValue::Float(v) => format!("{v:.2}"),
+        SettingValue::String(v) => v.clone(),
+        SettingValue::Enum(v, _) => v.clone(),
+    }
+}
+
 /// Where a value sits in an enum's options.
 fn index_of(options: &[String], current: &str) -> usize {
     options.iter().position(|o| o == current).unwrap_or(0)
@@ -1008,9 +1070,37 @@ unsafe extern "system" fn settings_proc(
             0
         }
         WM_KEYDOWN => {
+            let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
             // Escape hides, as in the other windows.
             if wparam == VK_ESCAPE as usize {
                 ShowWindow(hwnd, SW_HIDE);
+            }
+            // Track Ctrl from the message stream so injected input works; see
+            // the note on ctrl_down.
+            if wparam == VK_CONTROL as usize || wparam == VK_LCONTROL as usize || wparam == VK_RCONTROL as usize
+            {
+                if !view_ptr.is_null() {
+                    (*view_ptr).ctrl_down = true;
+                }
+                return 0;
+            }
+            if !view_ptr.is_null() && (*view_ptr).ctrl_down {
+                // Ctrl+Z undoes, Ctrl+Y (and Ctrl+Shift+Z) redoes.
+                if wparam == 'Z' as usize {
+                    let shift = GetKeyState(VK_SHIFT) < 0;
+                    if shift {
+                        (*view_ptr).redo();
+                    } else {
+                        (*view_ptr).undo();
+                    }
+                    InvalidateRect(hwnd, ptr::null(), 0);
+                    return 0;
+                }
+                if wparam == 'Y' as usize {
+                    (*view_ptr).redo();
+                    InvalidateRect(hwnd, ptr::null(), 0);
+                    return 0;
+                }
             }
             // Tab / Shift+Tab: move focus between controls
             if wparam == VK_TAB as usize || wparam == VK_DOWN as usize || wparam == VK_UP as usize
@@ -1049,6 +1139,17 @@ unsafe extern "system" fn settings_proc(
                         }
                     }
                 }
+            }
+            0
+        }
+        WM_KEYUP => {
+            let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+            if !view_ptr.is_null()
+                && (wparam == VK_CONTROL as usize
+                    || wparam == VK_LCONTROL as usize
+                    || wparam == VK_RCONTROL as usize)
+            {
+                (*view_ptr).ctrl_down = false;
             }
             0
         }
@@ -1189,6 +1290,59 @@ mod tests {
     /// The index of a just-added setting, which lands last.
     fn last_index(view: &SettingsView) -> usize {
         view.rows.len() - 1
+    }
+
+    #[test]
+    fn undo_and_redo_through_the_view_report_and_revert() {
+        with_view(None, |view| {
+            // Change a known setting through the store the view points at.
+            unsafe {
+                (*view.store)
+                    .set("fps_target", SettingValue::Int(60))
+                    .expect("set fps_target");
+            }
+            view.reload();
+
+            view.undo();
+            let notice = view.notice.clone().unwrap_or_default();
+            assert!(notice.starts_with("Undid"), "notice said: {notice}");
+            assert_eq!(
+                unsafe { (*view.store).get("fps_target") },
+                Some(SettingValue::Int(30)),
+                "undo restored the previous value"
+            );
+
+            view.redo();
+            let notice = view.notice.clone().unwrap_or_default();
+            assert!(notice.starts_with("Redid"), "notice said: {notice}");
+            assert_eq!(
+                unsafe { (*view.store).get("fps_target") },
+                Some(SettingValue::Int(60)),
+                "redo reapplied the change"
+            );
+        });
+    }
+
+    #[test]
+    fn undo_with_no_history_says_so_instead_of_panicking() {
+        with_view(None, |view| {
+            view.undo();
+            assert_eq!(view.notice.as_deref(), Some("Nothing to undo"));
+            view.redo();
+            assert_eq!(view.notice.as_deref(), Some("Nothing to redo"));
+        });
+    }
+
+    #[test]
+    fn describe_renders_each_value_shape() {
+        assert_eq!(describe(&SettingValue::Int(5)), "5");
+        assert_eq!(describe(&SettingValue::Bool(1.0)), "on");
+        assert_eq!(describe(&SettingValue::Bool(0.0)), "off");
+        assert_eq!(describe(&SettingValue::String("hi".into())), "hi");
+        assert_eq!(
+            describe(&SettingValue::Enum("dark".into(), vec![])),
+            "dark"
+        );
     }
 
     #[test]

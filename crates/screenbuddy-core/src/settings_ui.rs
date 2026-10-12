@@ -47,7 +47,23 @@ pub struct SettingsUI {
     /// Where settings are written. Empty means "in memory only", which is what
     /// tests use so they never touch the real file.
     path: std::path::PathBuf,
+    /// Applied changes, oldest first, for undo.
+    undo_stack: Vec<Change>,
+    /// Undone changes, most recently undone last, for redo.
+    redo_stack: Vec<Change>,
 }
+
+/// One setting change, kept so it can be reversed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Change {
+    pub name: String,
+    pub before: SettingValue,
+    pub after: SettingValue,
+}
+
+/// How many changes to keep. A settings session is short; an unbounded history
+/// would only grow for the life of the process.
+const MAX_HISTORY: usize = 100;
 
 impl Default for SettingsUI {
     fn default() -> Self {
@@ -62,6 +78,8 @@ impl SettingsUI {
             definitions: Vec::new(),
             changed: false,
             path: crate::paths::data_file("settings.json"),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         s.register_defaults();
         // Restore what the user last chose; the defaults above remain the fallback.
@@ -76,6 +94,8 @@ impl SettingsUI {
             definitions: Vec::new(),
             changed: false,
             path: std::path::PathBuf::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         s.register_defaults();
         s
@@ -323,6 +343,61 @@ impl SettingsUI {
         }
     }
 
+    /// Record an applied change for undo, and drop the redo history because a
+    /// new change makes any undone branch unreachable.
+    fn record_change(&mut self, name: &str, before: SettingValue, after: SettingValue) {
+        self.undo_stack.push(Change {
+            name: name.to_string(),
+            before,
+            after,
+        });
+        if self.undo_stack.len() > MAX_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Whether there is anything to undo.
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// Whether there is anything to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Reverse the most recent change. Returns what was undone.
+    pub fn undo(&mut self) -> Option<Change> {
+        let change = self.undo_stack.pop()?;
+        // Write directly rather than through set(), which would record the undo
+        // itself as a new change and make the history grow on every reversal.
+        if let Ok(mut s) = self.settings.lock() {
+            s.insert(change.name.clone(), change.before.clone());
+        }
+        let _ = self.save();
+        self.redo_stack.push(change.clone());
+        Some(change)
+    }
+
+    /// Reapply the most recently undone change.
+    pub fn redo(&mut self) -> Option<Change> {
+        let change = self.redo_stack.pop()?;
+        if let Ok(mut s) = self.settings.lock() {
+            s.insert(change.name.clone(), change.after.clone());
+        }
+        let _ = self.save();
+        self.undo_stack.push(change.clone());
+        Some(change)
+    }
+
+    /// Forget the history, e.g. after a bulk reset that is not meant to be
+    /// reversible step by step.
+    pub fn clear_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+    }
+
     pub fn get(&self, name: &str) -> Option<SettingValue> {
         self.settings.lock().unwrap().get(name).cloned()
     }
@@ -350,12 +425,21 @@ impl SettingsUI {
                 }
                 _ => {}
             }
-            settings.insert(name.to_string(), value);
+            // Record the previous value for undo, but only when it actually
+            // changes: a no-op set must not fill the history with nothing.
+            let previous = settings.get(name).cloned();
+            if previous.as_ref() == Some(&value) {
+                return Ok(());
+            }
+            settings.insert(name.to_string(), value.clone());
+            drop(settings);
+            if let Some(prev) = previous {
+                self.record_change(name, prev, value);
+            }
             self.changed = true;
             // Persist immediately. The user will not press "save", and a setting
             // that only lives in memory is indistinguishable from one that does
             // not work.
-            drop(settings);
             let _ = self.save();
             Ok(())
         } else {
@@ -409,6 +493,9 @@ impl SettingsUI {
             }
         }
         self.changed = true;
+        // A bulk reset is not a step-by-step change, so the per-setting history
+        // no longer describes the state and must not be replayable.
+        self.clear_history();
         // Persist, or the next launch restores the old values and the reset
         // appears to have done nothing.
         let _ = self.save();
@@ -469,6 +556,63 @@ mod tests {
     fn test_settings_new() {
         let s = SettingsUI::in_memory();
         assert!(s.get("fps_target").is_some());
+    }
+
+    #[test]
+    fn undo_and_redo_reverse_changes() {
+        let mut s = SettingsUI::in_memory();
+        s.set("fps_target", SettingValue::Int(60)).unwrap();
+        assert!(s.can_undo(), "there is something to undo");
+        assert!(!s.can_redo());
+
+        // Undo should revert to 30.
+        s.undo();
+        assert_eq!(
+            s.get("fps_target").unwrap(),
+            SettingValue::Int(30),
+            "undo restored the previous value"
+        );
+        assert!(s.can_redo());
+
+        s.redo();
+        assert_eq!(
+            s.get("fps_target").unwrap(),
+            SettingValue::Int(60),
+            "redo reapplied the changed value"
+        );
+        assert!(!s.can_redo(), "nothing more to redo");
+    }
+
+    #[test]
+    fn undo_does_not_record_a_no_op() {
+        let mut s = SettingsUI::in_memory();
+        s.set("fps_target", SettingValue::Int(30)).unwrap(); // same as default
+        assert!(!s.can_undo(), "a no-op set must not be undoable");
+    }
+
+    #[test]
+    fn reset_clears_the_undo_history() {
+        let mut s = SettingsUI::in_memory();
+        s.set("fps_target", SettingValue::Int(60)).unwrap();
+        assert!(s.can_undo());
+        s.reset();
+        assert!(!s.can_undo(), "reset forgets the per-change history");
+        assert!(!s.can_redo());
+    }
+
+    #[test]
+    fn undo_stores_the_before_value_not_the_after() {
+        // A new setting, then an undo, should restore the previous value.
+        let mut s = SettingsUI::in_memory();
+        // The default is 30; change it.
+        s.set("volume_master", SettingValue::Float(0.9)).unwrap();
+        assert!(s.can_undo());
+        s.undo();
+        // The value after undo must be the previous one (0.7 default).
+        assert_eq!(
+            s.get("volume_master").unwrap(),
+            SettingValue::Float(0.7)
+        );
     }
 
     #[test]

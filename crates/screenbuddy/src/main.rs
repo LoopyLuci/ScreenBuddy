@@ -1147,6 +1147,19 @@ fn main() {
             applied_theme = want_theme;
         }
 
+        // Keep the published settings snapshot in step with the store.
+        //
+        // It used to be mirrored only on an IPC write, so undo and redo (which
+        // change values without going through that path) left the snapshot
+        // reporting the old value even though the store had reverted.
+        if let Ok(mut st) = status.lock() {
+            st.settings = theme_settings_reader
+                .snapshot()
+                .iter()
+                .map(|(k, v)| (k.clone(), setting_to_json(v)))
+                .collect();
+        }
+
         // Feed cross-session search results while a query is active. Recomputed
         // only when the query changes, not every frame.
         if main_ui.is_searching() {
