@@ -14,7 +14,7 @@ use std::ptr;
 
 use screenbuddy_core::session::{SessionStore, SessionSummary};
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::windef::{HBRUSH, HDC, HFONT, HWND};
+use winapi::shared::windef::{HBRUSH, HDC, HFONT, HWND, SIZE};
 use winapi::um::libloaderapi::GetModuleHandleW;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
@@ -25,6 +25,10 @@ use winapi::shared::windef::RECT;
 /// Window and layout metrics.
 const WIN_WIDTH: i32 = 900;
 const WIN_HEIGHT: i32 = 640;
+/// Smallest the window may be dragged to. Below this the sidebar and the input
+/// box overlap and no control is reachable.
+const MIN_WIDTH: i32 = 560;
+const MIN_HEIGHT: i32 = 420;
 const HEADER_H: i32 = 56;
 const SIDEBAR_W: i32 = 240;
 const INPUT_H: i32 = 44;
@@ -164,6 +168,11 @@ pub struct MainWindow {
     ctrl_down: bool,
     /// Whether the Shift key is currently held. Tracked for the same reason.
     shift_down: bool,
+    /// Current client width in pixels. Updated on WM_SIZE so the layout follows
+    /// a resize; the layout constants are only the initial size.
+    width: i32,
+    /// Current client height in pixels. Updated on WM_SIZE.
+    height: i32,
 }
 
 impl Default for MainWindow {
@@ -203,6 +212,8 @@ impl MainWindow {
             search_match_idx: 0,
             ctrl_down: false,
             shift_down: false,
+            width: WIN_WIDTH,
+            height: WIN_HEIGHT,
         }
     }
 
@@ -518,7 +529,7 @@ impl MainWindow {
     }
 
     fn view_height(&self) -> i32 {
-        WIN_HEIGHT - HEADER_H - INPUT_H - PADDING
+        self.height - HEADER_H - INPUT_H - PADDING
     }
 }
 
@@ -701,6 +712,38 @@ unsafe extern "system" fn main_window_proc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_SIZE => {
+            // Track the new client size so the layout follows a resize. The next
+            // paint reads GetClientRect, but storing it here keeps hit testing and
+            // scroll clamping correct before that paint lands.
+            let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
+            if !win.is_null() {
+                let w = (lparam & 0xFFFF) as i32;
+                let h = ((lparam >> 16) & 0xFFFF) as i32;
+                if w > 0 && h > 0 {
+                    let mw = &mut *win;
+                    mw.width = w;
+                    mw.height = h;
+                    // The content is taller or shorter now, so the clamp moves.
+                    if mw.scroll > mw.max_scroll() {
+                        mw.scroll = mw.max_scroll();
+                    }
+                    InvalidateRect(hwnd, ptr::null(), 0);
+                }
+            }
+            0
+        }
+        WM_GETMINMAXINFO => {
+            // Without a floor the window can be dragged small enough that the
+            // sidebar and input overlap and no control is reachable.
+            let mmi = lparam as *mut MINMAXINFO;
+            if !mmi.is_null() {
+                (*mmi).ptMinTrackSize.x = MIN_WIDTH;
+                (*mmi).ptMinTrackSize.y = MIN_HEIGHT;
+            }
+            0
+        }
+        WM_ERASEBKGND => 1,
         WM_CLOSE => {
             let win = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MainWindow;
             if !win.is_null() {
@@ -728,6 +771,15 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     let mut ps = mem::zeroed::<PAINTSTRUCT>();
     let hdc = BeginPaint(hwnd, &mut ps);
 
+    // Read the real client size rather than the layout constants: the window is
+    // resizable, so the surface must match what the user actually has.
+    let mut client: RECT = mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    let w = (client.right - client.left).max(1);
+    let h = (client.bottom - client.top).max(1);
+    win.width = w;
+    win.height = h;
+
     // Render into an off-screen DIB, then blit once. Drawing straight to the
     // window flickers badly at these sizes.
     let screen = GetDC(ptr::null_mut());
@@ -735,9 +787,9 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
 
     let mut bmi: BITMAPINFO = mem::zeroed();
     bmi.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi.bmiHeader.biWidth = WIN_WIDTH;
+    bmi.bmiHeader.biWidth = w;
     // Negative height means a top-down bitmap, so row 0 is the top.
-    bmi.bmiHeader.biHeight = -WIN_HEIGHT;
+    bmi.bmiHeader.biHeight = -h;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -752,7 +804,7 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     }
     let old = select_obj(mem_dc, bitmap as *mut _);
 
-    let total = (WIN_WIDTH * WIN_HEIGHT) as usize;
+    let total = (w * h) as usize;
     let buf: &mut [u32] = std::slice::from_raw_parts_mut(raw as *mut u32, total);
     // Publish the DC alongside the buffer: GDI writes text to a DC, so the text
     // must land on this same surface to appear in the bitmap.
@@ -760,7 +812,7 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     draw_ui(win, buf);
     win.draw_dc = None;
 
-    BitBlt(hdc, 0, 0, WIN_WIDTH, WIN_HEIGHT, mem_dc, 0, 0, SRCCOPY);
+    BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY);
 
     select_obj(mem_dc, old as *mut _);
     del_obj(bitmap as *mut _);
@@ -790,12 +842,12 @@ fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
 /// Draw the search bar below the header.
 fn draw_search_bar(win: &mut MainWindow, buf: &mut [u32]) {
     let left = SIDEBAR_W + PADDING;
-    let right = WIN_WIDTH - PADDING;
+    let right = win.width - PADDING;
     let top = HEADER_H + 4;
     let h = 28;
     let rect = Rect::new(left, top, right, top + h);
-    fill_rect(buf, rect, win.theme.header_bg);
-    draw_rect_outline(buf, rect, win.theme.border);
+    fill_rect(buf, win.width, rect, win.theme.header_bg);
+    draw_rect_outline(buf, win.width, rect, win.theme.border);
 
     win.hits.push(HitTarget {
         rect: Rect::new(left, top, right - 60, top + h),
@@ -837,13 +889,13 @@ fn draw_search_bar(win: &mut MainWindow, buf: &mut [u32]) {
 
 /// Draw a floating stop button when the AI is generating.
 fn draw_stop_button(win: &mut MainWindow, buf: &mut [u32]) {
-    let right = WIN_WIDTH - PADDING;
-    let bottom = WIN_HEIGHT - INPUT_H - PADDING - 28;
+    let right = win.width - PADDING;
+    let bottom = win.height - INPUT_H - PADDING - 28;
     let left = right - 100;
     let top = bottom - 28;
     let rect = Rect::new(left, top, right, bottom);
-    fill_rect(buf, rect, 0x00501010);
-    draw_rect_outline(buf, rect, 0x0020A0A0);
+    fill_rect(buf, win.width, rect, 0x00501010);
+    draw_rect_outline(buf, win.width, rect, 0x0020A0A0);
 
     win.hits.push(HitTarget {
         rect,
@@ -862,14 +914,14 @@ fn draw_stop_button(win: &mut MainWindow, buf: &mut [u32]) {
     }
 }
 
-fn fill_rect(buf: &mut [u32], rect: Rect, colour: u32) {
+fn fill_rect(buf: &mut [u32], w: i32, rect: Rect, colour: u32) {
     let l = rect.left.max(0);
     let t = rect.top.max(0);
-    let r = rect.right.min(WIN_WIDTH);
-    let b = rect.bottom.min(WIN_HEIGHT);
+    let r = rect.right.min(w);
+    let b = rect.bottom;
     for y in t..b {
         for x in l..r {
-            let idx = (y * WIN_WIDTH + x) as usize;
+            let idx = (y * w + x) as usize;
             if idx < buf.len() {
                 buf[idx] = colour;
             }
@@ -877,10 +929,10 @@ fn fill_rect(buf: &mut [u32], rect: Rect, colour: u32) {
     }
 }
 
-fn draw_rect_outline(buf: &mut [u32], rect: Rect, colour: u32) {
-    for x in rect.left..rect.right {
+fn draw_rect_outline(buf: &mut [u32], w: i32, rect: Rect, colour: u32) {
+    for x in rect.left..rect.right.min(w) {
         for y in [rect.top, rect.bottom - 1] {
-            let idx = (y * WIN_WIDTH + x) as usize;
+            let idx = (y * w + x) as usize;
             if (0..buf.len()).contains(&idx) {
                 buf[idx] = colour;
             }
@@ -888,7 +940,10 @@ fn draw_rect_outline(buf: &mut [u32], rect: Rect, colour: u32) {
     }
     for y in rect.top..rect.bottom {
         for x in [rect.left, rect.right - 1] {
-            let idx = (y * WIN_WIDTH + x) as usize;
+            if x >= w {
+                continue;
+            }
+            let idx = (y * w + x) as usize;
             if (0..buf.len()).contains(&idx) {
                 buf[idx] = colour;
             }
@@ -897,10 +952,9 @@ fn draw_rect_outline(buf: &mut [u32], rect: Rect, colour: u32) {
 }
 
 fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
-    fill_rect(buf, Rect::new(0, 0, WIN_WIDTH, HEADER_H), win.theme.header_bg);
-    draw_rect_outline(
-        buf,
-        Rect::new(0, HEADER_H - 1, WIN_WIDTH, HEADER_H),
+    fill_rect(buf, win.width, Rect::new(0, 0, win.width, HEADER_H), win.theme.header_bg);
+    draw_rect_outline(buf, win.width,
+        Rect::new(0, HEADER_H - 1, win.width, HEADER_H),
         win.theme.border,
     );
 
@@ -916,7 +970,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
             "ScreenBuddy",
             16,
             12,
-            WIN_WIDTH - 260,
+            win.width - 260,
             font_height(18, true),
         );
 
@@ -930,7 +984,7 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
             &win.status,
             300,
             20,
-            WIN_WIDTH - 316,
+            win.width - 316,
             font_height(13, false),
         );
         select_obj(dc, old_font as *mut _);
@@ -940,12 +994,12 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
 
     // Minimise and quit, top right. Hiding to the tray has to be reachable from
     // inside the app, not only from the window's own title bar.
-    let min = Rect::new(WIN_WIDTH - 78, 8, WIN_WIDTH - 44, HEADER_H - 8);
+    let min = Rect::new(win.width - 78, 8, win.width - 44, HEADER_H - 8);
     win.hits.push(HitTarget {
         rect: min,
         action: UiAction::Minimise,
     });
-    let q = Rect::new(WIN_WIDTH - 44, 8, WIN_WIDTH - 8, HEADER_H - 8);
+    let q = Rect::new(win.width - 44, 8, win.width - 8, HEADER_H - 8);
     win.hits.push(HitTarget {
         rect: q,
         action: UiAction::Quit,
@@ -980,11 +1034,10 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
 }
 
 fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
-    let side = Rect::new(0, HEADER_H, SIDEBAR_W, WIN_HEIGHT);
-    fill_rect(buf, side, C_SIDEBAR);
-    draw_rect_outline(
-        buf,
-        Rect::new(SIDEBAR_W - 1, HEADER_H, SIDEBAR_W, WIN_HEIGHT),
+    let side = Rect::new(0, HEADER_H, SIDEBAR_W, win.height);
+    fill_rect(buf, win.width, side, C_SIDEBAR);
+    draw_rect_outline(buf, win.width,
+        Rect::new(SIDEBAR_W - 1, HEADER_H, SIDEBAR_W, win.height),
         win.theme.border,
     );
 
@@ -992,8 +1045,8 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
 
     // "New chat" button.
     let btn = Rect::new(PADDING, y, SIDEBAR_W - PADDING, y + 32);
-    fill_rect(buf, btn, C_ROW_ACTIVE);
-    draw_rect_outline(buf, btn, win.theme.accent);
+    fill_rect(buf, win.width, btn, C_ROW_ACTIVE);
+    draw_rect_outline(buf, win.width, btn, win.theme.accent);
     win.hits.push(HitTarget {
         rect: btn,
         action: UiAction::NewSession,
@@ -1020,15 +1073,14 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
 
     // Session rows.
     for summary in win.sessions.clone() {
-        if y + 40 > WIN_HEIGHT {
+        if y + 40 > win.height {
             break;
         }
         let row = Rect::new(8, y, SIDEBAR_W - 8, y + 38);
         if summary.is_current {
-            fill_rect(buf, row, C_ROW_ACTIVE);
+            fill_rect(buf, win.width, row, C_ROW_ACTIVE);
             // Accent bar marking the selected session.
-            fill_rect(
-                buf,
+            fill_rect(buf, win.width,
                 Rect::new(row.left, row.top, row.left + 3, row.bottom),
                 win.theme.accent,
             );
@@ -1112,12 +1164,12 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     // Clear button at the bottom of the sidebar.
     let clear = Rect::new(
         PADDING,
-        WIN_HEIGHT - INPUT_H - 40,
+        win.height - INPUT_H - 40,
         SIDEBAR_W - PADDING,
-        WIN_HEIGHT - INPUT_H - 12,
+        win.height - INPUT_H - 12,
     );
-    fill_rect(buf, clear, C_SIDEBAR);
-    draw_rect_outline(buf, clear, C_BORDER);
+    fill_rect(buf, win.width, clear, C_SIDEBAR);
+    draw_rect_outline(buf, win.width, clear, C_BORDER);
     win.hits.push(HitTarget {
         rect: clear,
         action: UiAction::Clear,
@@ -1144,42 +1196,38 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
 
 fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
     let left = SIDEBAR_W + PADDING;
-    let right = WIN_WIDTH - PADDING;
+    let right = win.width - PADDING;
     let top = HEADER_H + PADDING;
-    let bottom = WIN_HEIGHT - INPUT_H - PADDING;
+    let bottom = win.height - INPUT_H - PADDING;
     let width = right - left;
 
     let font = make_font(14, false);
     // User messages render bold so the two sides are distinguishable.
     let bold = make_font(14, true);
+    let head = make_font(17, true);
+    let mono = make_mono_font(13);
+
+    // Parse each message once: the same lines are measured, then drawn.
+    let parsed: Vec<Vec<crate::markdown::MdLine>> = win
+        .messages
+        .iter()
+        .map(|(_, text)| crate::markdown::parse(text))
+        .collect();
 
     // Measure first so the scroll position can be clamped to real content.
-    let mut heights = Vec::with_capacity(win.messages.len());
+    let mut heights = Vec::with_capacity(parsed.len());
     let mut total = 0;
     unsafe {
         let Some(dc) = win.draw_dc else { return };
-        let old = select_obj(dc, font as *mut _);
-        let mut rc = RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: 0,
-        };
-        for (_role, text) in &win.messages {
-            let wide: Vec<u16> = text.encode_utf16().collect();
-            rc.bottom = 4000;
-            DrawTextW(
-                dc,
-                wide.as_ptr(),
-                wide.len() as i32,
-                &mut rc,
-                DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
-            );
-            let h = (rc.bottom - rc.top).max(18) + 24;
+        for lines in &parsed {
+            let mut mh = 0;
+            for line in lines {
+                mh += md_line_height(dc, line, width - 20, font, head, mono);
+            }
+            let h = mh.max(18) + 24;
             heights.push(h);
             total += h;
         }
-        select_obj(dc, old as *mut _);
     }
     win.content_h = total;
     if win.scroll > win.max_scroll() {
@@ -1188,7 +1236,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
 
     let mut y = top - win.scroll;
     let messages = win.messages.clone();
-    for (i, (role, text)) in messages.iter().enumerate() {
+    for (i, (role, _text)) in messages.iter().enumerate() {
         let h = heights[i];
         if y + h >= top && y <= bottom {
             let is_user = role == "user";
@@ -1198,7 +1246,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 if is_user { right } else { left + width * 2 / 3 },
                 (y + h).min(bottom),
             );
-            fill_rect(buf, bubble, if is_user { C_ROW_ACTIVE } else { C_SIDEBAR });
+            fill_rect(buf, win.width, bubble, if is_user { C_ROW_ACTIVE } else { C_SIDEBAR });
             let is_current_match = win
                 .search_matches
                 .get(win.search_match_idx)
@@ -1211,29 +1259,27 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             } else {
                 C_BORDER
             };
-            draw_rect_outline(buf, bubble, outline);
+            draw_rect_outline(buf, win.width, bubble, outline);
 
             unsafe {
                 let Some(dc) = win.draw_dc else { return };
-                let f = if is_user { bold } else { font };
-                let old = select_obj(dc, f as *mut _);
                 SetBkMode(dc, TRANSPARENT as i32);
-                set_text_colour(buf, dc, win.theme.text);
-                let mut rc = RECT {
-                    left: bubble.left + 10,
-                    top: bubble.top + 8,
-                    right: bubble.right - 10,
-                    bottom: bubble.bottom - 8,
-                };
-                let wide: Vec<u16> = text.encode_utf16().collect();
-                DrawTextW(
-                    dc,
-                    wide.as_ptr(),
-                    wide.len() as i32,
-                    &mut rc,
-                    DT_WORDBREAK | DT_NOPREFIX,
-                );
-                select_obj(dc, old as *mut _);
+                let text_w = bubble.width() - 20;
+                let mut ly = bubble.top + 8;
+                for line in &parsed[i] {
+                    ly = draw_md_line(
+                        dc,
+                        win,
+                        line,
+                        bubble.left + 10,
+                        ly,
+                        text_w,
+                        font,
+                        bold,
+                        head,
+                        mono,
+                    );
+                }
             }
         }
         y += h;
@@ -1285,15 +1331,17 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
 
     del_obj(font as *mut _);
     del_obj(bold as *mut _);
+    del_obj(head as *mut _);
+    del_obj(mono as *mut _);
 }
 
 fn draw_input(win: &mut MainWindow, buf: &mut [u32]) {
     let left = SIDEBAR_W + PADDING;
-    let right = WIN_WIDTH - PADDING;
-    let top = WIN_HEIGHT - INPUT_H - 6;
-    let rect = Rect::new(left, top, right, WIN_HEIGHT - PADDING);
-    fill_rect(buf, rect, C_INPUT_BG);
-    draw_rect_outline(buf, rect, if win.focus { C_ACCENT } else { C_BORDER });
+    let right = win.width - PADDING;
+    let top = win.height - INPUT_H - 6;
+    let rect = Rect::new(left, top, right, win.height - PADDING);
+    fill_rect(buf, win.width, rect, C_INPUT_BG);
+    draw_rect_outline(buf, win.width, rect, if win.focus { C_ACCENT } else { C_BORDER });
 
     let send_w = 72;
     win.hits.push(HitTarget {
@@ -1388,6 +1436,270 @@ fn make_font(size: i32, bold: bool) -> HFONT {
             ptr::null(),
         )
     }
+}
+
+/// A monospace font for code. Consolas is present on every supported Windows;
+/// if it were missing, GDI substitutes a face and the code still reads as code
+/// because its colour and indent differ from body text.
+fn make_mono_font(size: i32) -> HFONT {
+    let face: Vec<u16> = "Consolas\0".encode_utf16().collect();
+    unsafe {
+        CreateFontW(
+            -(size + 4),
+            0,
+            0,
+            0,
+            FW_NORMAL,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            0,
+            face.as_ptr(),
+        )
+    }
+}
+
+/// Height of `text` wrapped to `max_w` with `font`.
+unsafe fn wrapped_height(dc: HDC, text: &str, max_w: i32, font: HFONT) -> i32 {
+    let old = select_obj(dc, font as *mut _);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: max_w.max(20),
+        bottom: 0,
+    };
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    DrawTextW(
+        dc,
+        wide.as_ptr(),
+        wide.len() as i32,
+        &mut rc,
+        DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+    );
+    select_obj(dc, old as *mut _);
+    (rc.bottom - rc.top).max(16)
+}
+
+/// Height one markdown line occupies at this width.
+unsafe fn md_line_height(
+    dc: HDC,
+    line: &crate::markdown::MdLine,
+    max_w: i32,
+    font: HFONT,
+    _head: HFONT,
+    _mono: HFONT,
+) -> i32 {
+    use crate::markdown::BlockKind;
+    match line.kind {
+        BlockKind::Heading => font_height(17, true) + 6,
+        // Code does not wrap, so its height is one line whatever the width.
+        BlockKind::Code => font_height(13, false) + 4,
+        BlockKind::Bullet => wrapped_height(dc, &line.plain(), max_w - 16, font) + 4,
+        BlockKind::Paragraph => {
+            if line.plain().trim().is_empty() {
+                8
+            } else {
+                wrapped_height(dc, &line.plain(), max_w, font) + 4
+            }
+        }
+    }
+}
+
+/// Draw one markdown line at `(x, y)`; returns the y for the next line.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_md_line(
+    dc: HDC,
+    win: &MainWindow,
+    line: &crate::markdown::MdLine,
+    x: i32,
+    y: i32,
+    max_w: i32,
+    font: HFONT,
+    bold: HFONT,
+    head: HFONT,
+    mono: HFONT,
+) -> i32 {
+    use crate::markdown::BlockKind;
+    match line.kind {
+        BlockKind::Code => {
+            let old = select_obj(dc, mono as *mut _);
+            SetTextColor(dc, win.theme.accent);
+            let wide: Vec<u16> = line.plain().encode_utf16().collect();
+            let mut rc = RECT {
+                left: x + 6,
+                top: y,
+                right: x + max_w,
+                bottom: y + font_height(13, false),
+            };
+            DrawTextW(
+                dc,
+                wide.as_ptr(),
+                wide.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+            select_obj(dc, old as *mut _);
+            y + font_height(13, false) + 4
+        }
+        BlockKind::Heading => {
+            let old = select_obj(dc, head as *mut _);
+            SetTextColor(dc, win.theme.text);
+            let wide: Vec<u16> = line.plain().encode_utf16().collect();
+            let mut rc = RECT {
+                left: x,
+                top: y,
+                right: x + max_w,
+                bottom: y + font_height(17, true),
+            };
+            DrawTextW(
+                dc,
+                wide.as_ptr(),
+                wide.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+            select_obj(dc, old as *mut _);
+            y + font_height(17, true) + 6
+        }
+        BlockKind::Bullet => {
+            let old = select_obj(dc, font as *mut _);
+            SetTextColor(dc, win.theme.accent);
+            let dot: Vec<u16> = "\u{2022}".encode_utf16().collect();
+            let mut rc = RECT {
+                left: x,
+                top: y,
+                right: x + 14,
+                bottom: y + font_height(14, false),
+            };
+            DrawTextW(
+                dc,
+                dot.as_ptr(),
+                dot.len() as i32,
+                &mut rc,
+                DT_SINGLELINE | DT_NOPREFIX,
+            );
+            select_obj(dc, old as *mut _);
+            draw_runs(dc, win, &line.runs, x + 16, y, max_w - 16, font, bold, mono) + 4
+        }
+        BlockKind::Paragraph => {
+            if line.plain().trim().is_empty() {
+                return y + 8;
+            }
+            draw_runs(dc, win, &line.runs, x, y, max_w, font, bold, mono) + 4
+        }
+    }
+}
+
+/// Draw a line's runs left to right; returns the y after the line.
+unsafe fn draw_runs(
+    dc: HDC,
+    win: &MainWindow,
+    runs: &[crate::markdown::Run],
+    x: i32,
+    y: i32,
+    max_w: i32,
+    font: HFONT,
+    bold: HFONT,
+    mono: HFONT,
+) -> i32 {
+    use crate::markdown::RunStyle;
+
+    // A single unstyled run is the common case and wraps correctly in one call.
+    if runs.len() == 1 && runs[0].style == RunStyle::Normal {
+        let old = select_obj(dc, font as *mut _);
+        SetTextColor(dc, win.theme.text);
+        let wide: Vec<u16> = runs[0].text.encode_utf16().collect();
+        let mut rc = RECT {
+            left: x,
+            top: y,
+            right: x + max_w.max(20),
+            bottom: y + 4000,
+        };
+        let h = DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_WORDBREAK | DT_NOPREFIX,
+        );
+        select_obj(dc, old as *mut _);
+        return y + h.max(16);
+    }
+
+    // Measure every run so the styled case can be drawn run by run.
+    let mut total_w = 0;
+    let mut extents: Vec<i32> = Vec::with_capacity(runs.len());
+    for run in runs {
+        let f = match run.style {
+            RunStyle::Normal => font,
+            RunStyle::Bold => bold,
+            RunStyle::Code => mono,
+        };
+        let old = select_obj(dc, f as *mut _);
+        let wide: Vec<u16> = run.text.encode_utf16().collect();
+        let mut size: SIZE = mem::zeroed();
+        GetTextExtentPoint32W(dc, wide.as_ptr(), wide.len() as i32, &mut size);
+        select_obj(dc, old as *mut _);
+        extents.push(size.cx);
+        total_w += size.cx;
+    }
+
+    // If the styled line would not fit, draw the plain text wrapped instead of
+    // letting it run past the bubble. Styling is lost on that one line; the
+    // alternative is unreadable overflow.
+    if total_w > max_w {
+        let plain: String = runs.iter().map(|r| r.text.as_str()).collect();
+        let old = select_obj(dc, font as *mut _);
+        SetTextColor(dc, win.theme.text);
+        let wide: Vec<u16> = plain.encode_utf16().collect();
+        let mut rc = RECT {
+            left: x,
+            top: y,
+            right: x + max_w.max(20),
+            bottom: y + 4000,
+        };
+        let h = DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_WORDBREAK | DT_NOPREFIX,
+        );
+        select_obj(dc, old as *mut _);
+        return y + h.max(16);
+    }
+
+    let mut cx = x;
+    for (run, w) in runs.iter().zip(extents.iter()) {
+        let (f, colour) = match run.style {
+            RunStyle::Normal => (font, win.theme.text),
+            RunStyle::Bold => (bold, win.theme.text),
+            RunStyle::Code => (mono, win.theme.accent),
+        };
+        let old = select_obj(dc, f as *mut _);
+        SetTextColor(dc, colour);
+        let wide: Vec<u16> = run.text.encode_utf16().collect();
+        let mut rc = RECT {
+            left: cx,
+            top: y,
+            right: cx + w + 4,
+            bottom: y + font_height(14, false),
+        };
+        DrawTextW(
+            dc,
+            wide.as_ptr(),
+            wide.len() as i32,
+            &mut rc,
+            DT_SINGLELINE | DT_NOPREFIX,
+        );
+        select_obj(dc, old as *mut _);
+        cx += w;
+    }
+    y + font_height(14, false)
 }
 
 /// Select a GDI object into a DC, hiding the *mut c_void cast this winapi
@@ -1991,6 +2303,104 @@ mod tests {
         assert!(
             win.poll_event().is_none(),
             "Enter in search must not send a message"
+        );
+    }
+
+    #[test]
+    fn resizing_relayouts_the_controls() {
+        let mut win = w();
+        render(&mut win);
+        let send_default = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::Send)
+            .expect("send target at default size")
+            .rect;
+
+        // Shrink the client area, as WM_SIZE would.
+        win.width = 640;
+        win.height = 480;
+        render(&mut win);
+        let send_small = win
+            .hits
+            .iter()
+            .find(|h| h.action == UiAction::Send)
+            .expect("send target after resize")
+            .rect;
+
+        assert_ne!(
+            send_default.right, send_small.right,
+            "the input row must follow the new width"
+        );
+        assert!(
+            send_small.right <= win.width,
+            "controls stay inside the client area"
+        );
+    }
+
+    #[test]
+    fn view_height_follows_the_window_height() {
+        let mut win = w();
+        win.height = WIN_HEIGHT;
+        let tall = win.view_height();
+        win.height = WIN_HEIGHT + 200;
+        let taller = win.view_height();
+        assert_eq!(taller - tall, 200, "the message view grows with the window");
+    }
+
+    #[test]
+    fn a_code_block_renders_in_the_accent_colour() {
+        let mut win = w();
+        win.messages = vec![(
+            "assistant".into(),
+            "Here you go:\n```\nlet x = 1;\n```\nDone.".into(),
+        )];
+        let rendered = render(&mut win);
+        // The code line is drawn in the accent colour, which body text never uses.
+        let accent = win.theme.accent;
+        let near = |p: u32, t: u32| {
+            let d = |s: u32| (((p >> s) & 0xFF) as i32 - ((t >> s) & 0xFF) as i32).abs();
+            d(0) <= 60 && d(8) <= 60 && d(16) <= 60
+        };
+        let hits = rendered
+            .surface
+            .iter()
+            .filter(|&&p| near(p, accent))
+            .count();
+        assert!(
+            hits > 20,
+            "code text should paint in the accent colour; found {hits} such pixels"
+        );
+    }
+
+    #[test]
+    fn markdown_markers_are_not_drawn_literally() {
+        let mut win = w();
+        win.messages = vec![("assistant".into(), "**bold** and `code`".into())];
+        // The parser strips the markers, so the drawn text must not contain them.
+        let lines = crate::markdown::parse(&win.messages[0].1);
+        let plain: String = lines.iter().map(|l| l.plain()).collect();
+        assert!(!plain.contains('*'));
+        assert!(!plain.contains('`'));
+        assert!(plain.contains("bold"));
+        assert!(plain.contains("code"));
+    }
+
+    #[test]
+    fn a_heading_and_bullets_change_the_measured_height() {
+        let mut win = w();
+        win.messages = vec![("assistant".into(), "# Title\n- one\n- two".into())];
+        render(&mut win);
+        let with_md = win.content_h;
+
+        win.messages = vec![("assistant".into(), "Title\none\ntwo".into())];
+        render(&mut win);
+        let without_md = win.content_h;
+
+        assert!(with_md > 0 && without_md > 0);
+        assert_ne!(
+            with_md, without_md,
+            "headings and bullets must affect the layout"
         );
     }
 

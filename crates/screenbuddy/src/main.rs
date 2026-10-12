@@ -13,6 +13,7 @@ mod chat_window;
 mod composite_renderer;
 mod gdi;
 mod main_window;
+mod markdown;
 mod settings_window;
 mod theme;
 
