@@ -685,6 +685,12 @@ fn main() {
     }
 
     let mut last_frame = Instant::now();
+    // Raise the timer resolution for this process. Windows' default is ~15.6ms,
+    // so a request to sleep 11ms actually sleeps ~15.6ms and a 13ms frame lands
+    // at 17ms. 1ms resolution makes the sleep honour what it was asked for.
+    unsafe {
+        winapi::um::timeapi::timeBeginPeriod(1);
+    }
     // Declared outside the loop so the message pump can set it before the tray
     // section reads it.
     let mut should_quit = false;
@@ -737,6 +743,8 @@ fn main() {
         let elapsed = start_time.elapsed();
         let dt = last_frame.elapsed().as_secs_f64().clamp(0.0, 0.1);
         last_frame = Instant::now();
+        // Start of this frame, used as the pacing deadline's origin.
+        let frame_start = Instant::now();
         // Record the real frame interval so stutter shows up in the percentiles.
         frame_metrics.record(dt * 1000.0);
 
@@ -1327,15 +1335,19 @@ fn main() {
         }
 
         // Hybrid sleep: sleep for most of the duration, then busy-wait for the
-        // remainder. std::thread::sleep on Windows has ~15ms granularity; this
-        // achieves sub-2ms precision for consistent frame pacing.
+        // remainder. std::thread::sleep on Windows has ~15ms granularity, so the
+        // sleep alone overshoots a short frame; the spin finishes the wait.
+        //
+        // The deadline is measured from the START of the frame. Measuring from
+        // after the sleep added the whole target again, so every frame cost about
+        // twice its budget (13ms target produced ~30ms frames).
         let target_ms = 1000.0 / read_target_fps(&settings) as f64;
+        let frame_deadline = frame_start + Duration::from_secs_f64(target_ms / 1000.0);
         let sleep_ms = (target_ms - 2.0).max(0.0) as u64;
         if sleep_ms > 0 {
             std::thread::sleep(Duration::from_millis(sleep_ms));
         }
-        let spin_start = Instant::now();
-        while spin_start.elapsed().as_secs_f64() * 1000.0 < target_ms {
+        while Instant::now() < frame_deadline {
             std::hint::spin_loop();
         }
     }
@@ -1343,6 +1355,12 @@ fn main() {
     // Stop any in-flight speech before exit.
     if let Some(engine) = tts.take() {
         engine.stop();
+    }
+
+    // Release the raised timer resolution; leaving it set affects the rest of
+    // the system.
+    unsafe {
+        winapi::um::timeapi::timeEndPeriod(1);
     }
 
     // Land any deferred session write; a change made in the last second would

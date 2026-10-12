@@ -6,7 +6,7 @@ use image::RgbaImage;
 use std::mem;
 use std::ptr;
 use std::sync::Arc;
-use winapi::shared::windef::{HBITMAP, HDC, POINT, RECT, SIZE};
+use winapi::shared::windef::{HBITMAP, HDC, HGDIOBJ, POINT, RECT, SIZE};
 use winapi::um::wingdi::{BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION};
 
 /// A renderable creature instance (uses Arc to avoid per-frame clones)
@@ -26,6 +26,15 @@ pub struct CompositeRenderer {
     h_bitmap: HBITMAP,
     h_dc: HDC,
     window_hwnd: *mut core::ffi::c_void,
+    /// Pointer to the DIB's pixel memory, kept so the surface can be reused
+    /// instead of reallocated every frame.
+    dib_bits: *mut core::ffi::c_void,
+    /// Size of the currently allocated DIB, so a resize reallocates and an
+    /// ordinary frame does not.
+    bitmap_w: u32,
+    bitmap_h: u32,
+    /// The DC's original bitmap, restored before the DIB is freed.
+    old_bitmap: HGDIOBJ,
 }
 
 impl CompositeRenderer {
@@ -37,6 +46,10 @@ impl CompositeRenderer {
             h_bitmap: ptr::null_mut(),
             h_dc: ptr::null_mut(),
             window_hwnd,
+            dib_bits: ptr::null_mut(),
+            bitmap_w: 0,
+            bitmap_h: 0,
+            old_bitmap: ptr::null_mut(),
         }
     }
 
@@ -130,34 +143,53 @@ impl CompositeRenderer {
             if self.h_dc.is_null() {
                 self.h_dc = winapi::um::wingdi::CreateCompatibleDC(ptr::null_mut());
             }
-            if !self.h_bitmap.is_null() {
-                winapi::um::wingdi::DeleteObject(self.h_bitmap as *mut _);
+            // Reuse the DIB unless the size changed. It used to be deleted and
+            // recreated on every present, which is a full allocation and a
+            // whole-buffer copy per frame for a surface that almost never
+            // changes size.
+            if self.h_bitmap.is_null() || self.bitmap_w != self.width || self.bitmap_h != self.height
+            {
+                if !self.h_bitmap.is_null() {
+                    // The old bitmap must be out of the DC before it is freed.
+                    winapi::um::wingdi::SelectObject(self.h_dc, self.old_bitmap);
+                    winapi::um::wingdi::DeleteObject(self.h_bitmap as *mut _);
+                    self.h_bitmap = ptr::null_mut();
+                }
+                let mut bmi: BITMAPINFO = mem::zeroed();
+                bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                bmi.bmiHeader.biWidth = self.width as i32;
+                bmi.bmiHeader.biHeight = -(self.height as i32);
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = winapi::um::wingdi::BI_RGB;
+                let mut bits: *mut core::ffi::c_void = ptr::null_mut();
+                self.h_bitmap = winapi::um::wingdi::CreateDIBSection(
+                    self.h_dc,
+                    &bmi,
+                    winapi::um::wingdi::DIB_RGB_COLORS,
+                    &mut bits,
+                    ptr::null_mut(),
+                    0,
+                );
+                if self.h_bitmap.is_null() {
+                    return;
+                }
+                self.old_bitmap =
+                    winapi::um::wingdi::SelectObject(self.h_dc, self.h_bitmap as *mut _);
+                self.dib_bits = bits;
+                self.bitmap_w = self.width;
+                self.bitmap_h = self.height;
             }
-            let mut bmi: BITMAPINFO = mem::zeroed();
-            bmi.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = self.width as i32;
-            bmi.bmiHeader.biHeight = -(self.height as i32);
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = winapi::um::wingdi::BI_RGB;
-            let mut bits: *mut core::ffi::c_void = ptr::null_mut();
-            self.h_bitmap = winapi::um::wingdi::CreateDIBSection(
-                self.h_dc,
-                &bmi,
-                winapi::um::wingdi::DIB_RGB_COLORS,
-                &mut bits,
-                ptr::null_mut(),
-                0,
-            );
-            if self.h_bitmap.is_null() {
+            // Copy the composed pixels into the surface every frame; only the
+            // allocation is avoided, the content still changes.
+            if self.dib_bits.is_null() {
                 return;
             }
             ptr::copy_nonoverlapping(
                 self.composite_buffer.as_ptr(),
-                bits as *mut u8,
+                self.dib_bits as *mut u8,
                 (self.width * self.height * 4) as usize,
             );
-            let old = winapi::um::wingdi::SelectObject(self.h_dc, self.h_bitmap as *mut _);
             let mut blend = BLENDFUNCTION {
                 BlendOp: winapi::um::wingdi::AC_SRC_OVER,
                 BlendFlags: 0,
@@ -186,7 +218,8 @@ impl CompositeRenderer {
                 &mut blend,
                 winapi::um::winuser::ULW_ALPHA,
             );
-            winapi::um::wingdi::SelectObject(self.h_dc, old as *mut _);
+            // The DIB stays selected: it is reused next frame and only swapped
+            // out when the surface is reallocated on a resize.
         }
     }
 }
@@ -195,6 +228,11 @@ impl Drop for CompositeRenderer {
     fn drop(&mut self) {
         unsafe {
             if !self.h_bitmap.is_null() {
+                // A bitmap selected into a DC must not be freed; put the DC's
+                // original bitmap back first.
+                if !self.h_dc.is_null() && !self.old_bitmap.is_null() {
+                    winapi::um::wingdi::SelectObject(self.h_dc, self.old_bitmap);
+                }
                 winapi::um::wingdi::DeleteObject(self.h_bitmap as *mut _);
             }
             if !self.h_dc.is_null() {
