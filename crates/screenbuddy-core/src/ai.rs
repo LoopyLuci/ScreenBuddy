@@ -196,6 +196,10 @@ pub struct AiEngine {
     /// requests. A clone would be a separate engine and the change would land on
     /// one that never did.
     pinned_model: std::sync::Arc<std::sync::RwLock<Option<String>>>,
+    /// LRU response cache: hash of (model, messages, temperature) -> (response, timestamp)
+    response_cache: std::sync::Arc<std::sync::Mutex<lru::LruCache<u64, (AiResponse, std::time::Instant)>>>,
+    /// Concurrent request limiter
+    request_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl AiEngine {
@@ -210,7 +214,44 @@ impl AiEngine {
             models: std::sync::Arc::new(std::sync::RwLock::new(models)),
             client,
             pinned_model: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            response_cache: std::sync::Arc::new(std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(128).unwrap(),
+            ))),
+            request_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(4)),
         }
+    }
+
+    /// Retry an async operation with exponential backoff.
+    /// Only retries on transient errors (429, 503, 529).
+    async fn retry<F, Fut, T>(&self, operation: F) -> Result<T>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut attempts = 0;
+        let max_attempts = 3;
+        let mut delay = Duration::from_millis(500);
+        loop {
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(e) if attempts < max_attempts && Self::is_retryable(&e) => {
+                    attempts += 1;
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Whether an error is transient and worth retrying.
+    fn is_retryable(error: &crate::error::Error) -> bool {
+        let text = error.to_string().to_ascii_lowercase();
+        text.contains("429")
+            || text.contains("503")
+            || text.contains("529")
+            || text.contains("rate limit")
+            || text.contains("too many requests")
     }
 
     /// Build a ModelInfo for a name the provider serves but the catalogue does
@@ -289,6 +330,26 @@ impl AiEngine {
     }
 
     pub async fn generate(&self, req: AiRequest) -> Result<AiResponse> {
+        // Check cache first (only for non-streaming requests)
+        if !req.stream {
+            let cache_key = Self::cache_key(&req);
+            {
+                let mut cache = self.response_cache.lock().unwrap();
+                if let Some((response, timestamp)) = cache.get(&cache_key) {
+                    if timestamp.elapsed() < Duration::from_secs(300) {
+                        return Ok(response.clone());
+                    }
+                }
+            }
+        }
+
+        // Acquire semaphore permit for rate limiting
+        let _permit = self
+            .request_semaphore
+            .acquire()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
+
         // A named model wins over the tier: that is the whole point of a profile
         // being able to pin one.
         // A named model may be one the provider was never told to serve, so ask
@@ -306,32 +367,107 @@ impl AiEngine {
             }
         };
         let model = &model;
-        match model.backend {
-            // A name from the fixed catalogue can resolve and still 404, because
-            // the catalogue says nothing about what is installed. On that, ask
-            // the provider what it serves and retry once with a real model.
-            Backend::Ollama => match self.gen_ollama(&req, model).await {
-                Err(e) if Self::is_missing_model(&e) => {
-                    let available = self.discover_ollama_models().await?;
-                    if let Some(replacement) = available.first() {
-                        if replacement != &model.name {
-                            let resolved = self.resolved_local(replacement.clone());
-                            self.gen_ollama(&req, &resolved).await
-                        } else {
-                            Err(e)
-                        }
-                    } else {
-                        Err(e)
-                    }
+
+        // Execute with retry
+        let result = self
+            .retry(|| async {
+                match model.backend {
+                    Backend::Ollama => self.gen_ollama(&req, model).await,
+                    Backend::LlamaCpp => self.gen_llama(&req, model).await,
+                    Backend::OpenAi => self.gen_openai(&req, model).await,
+                    Backend::Anthropic => self.gen_anthropic(&req, model).await,
+                    Backend::NineRouter => self.gen_nine_router(&req, model).await,
+                    Backend::Custom => self.gen_custom(&req, model).await,
                 }
-                other => other,
-            },
-            Backend::LlamaCpp => self.gen_llama(&req, model).await,
-            Backend::OpenAi => self.gen_openai(&req, model).await,
-            Backend::Anthropic => self.gen_anthropic(&req, model).await,
-            Backend::NineRouter => self.gen_nine_router(&req, model).await,
-            Backend::Custom => self.gen_custom(&req, model).await,
+            })
+            .await;
+
+        // Store in cache on success (only for non-streaming)
+        if !req.stream {
+            if let Ok(ref response) = result {
+                let cache_key = Self::cache_key(&req);
+                let mut cache = self.response_cache.lock().unwrap();
+                cache.put(cache_key, (response.clone(), std::time::Instant::now()));
+            }
         }
+
+        result
+    }
+
+    /// Compute a cache key from request parameters.
+    fn cache_key(req: &AiRequest) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        req.prompt.hash(&mut hasher);
+        req.force_model.hash(&mut hasher);
+        req.temperature.map(|t| t.to_bits()).hash(&mut hasher);
+        req.max_tokens.hash(&mut hasher);
+        req.force_tier.hash(&mut hasher);
+        if let Some(ref history) = req.history {
+            for msg in history {
+                format!("{:?}", msg.role).hash(&mut hasher);
+                msg.content.hash(&mut hasher);
+            }
+        }
+        hasher.finish()
+    }
+
+    /// Stream a chat completion, yielding partial responses as they arrive.
+    pub async fn generate_stream(
+        &self,
+        req: AiRequest,
+    ) -> Result<impl futures::Stream<Item = Result<String>>> {
+        use futures::StreamExt;
+
+        let model: ModelInfo = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
+            Some(name) => self.find_model_by_name(name)?,
+            None => {
+                let tier = req
+                    .force_tier
+                    .unwrap_or_else(|| self.auto_select_tier(&req));
+                self.select_model(tier)?
+            }
+        };
+
+        // Acquire semaphore permit
+        let _permit = self
+            .request_semaphore
+            .acquire()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
+
+        let ep = self
+            .config
+            .ollama_endpoint
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::InvalidConfig("No Ollama endpoint".into()))?;
+        let url = format!("{}/api/chat", ep);
+        let body = serde_json::json!({
+            "model": model.name,
+            "messages": self.build_messages(&req),
+            "stream": true,
+            "options": {
+                "num_predict": req.max_tokens.unwrap_or(self.config.max_tokens_default),
+                "temperature": req.temperature.unwrap_or(0.7),
+            }
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
+
+        let byte_stream = response.bytes_stream();
+        let stream = byte_stream.map(|chunk| {
+            chunk
+                .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                .map_err(|e| crate::error::Error::Network(e.to_string()))
+        });
+
+        Ok(stream)
     }
 
     fn auto_select_tier(&self, req: &AiRequest) -> ModelTier {
