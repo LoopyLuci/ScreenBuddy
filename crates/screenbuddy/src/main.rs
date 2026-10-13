@@ -165,6 +165,28 @@ fn main() {
     unsafe {
         winapi::um::winuser::SetProcessDPIAware();
     }
+
+    // Install crash handler before anything else so even early crashes
+    // produce a minidump.
+    let crash_handler_installed = screenbuddy_core::crash::install_crash_handler();
+    if crash_handler_installed {
+        println!("Crash handler installed");
+    } else {
+        println!("Crash handler: disabled or already installed");
+    }
+
+    // --benchmark: run headless performance measurement and exit.
+    if std::env::args().any(|a| a == "--benchmark") {
+        run_benchmark_mode();
+        return;
+    }
+
+    // --soak: run headless stability/soak test and exit.
+    if std::env::args().any(|a| a == "--soak") {
+        run_soak_mode();
+        return;
+    }
+
     println!("ScreenBuddy starting...");
     let hw = screenbuddy_core::hardware_profile();
     println!("Hardware:\n{}", hw.summary());
@@ -451,6 +473,43 @@ fn main() {
     if let Some(profile) = agent_store.active_id().and_then(|id| agent_store.get(&id)) {
         agent.apply_profile(&profile);
         println!("[Agent] Restored active agent '{}'", profile.name);
+    }
+
+    // ---- Auto-update check ---------------------------------------------------
+    // Check for updates in the background. Non-blocking: the app starts
+    // immediately and the result is logged when it arrives.
+    {
+        let current_version = screenbuddy_core::update::Version::parse(
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap_or_else(|| {
+            screenbuddy_core::update::Version::parse("0.0.0").unwrap()
+        });
+        let manifest_url = screenbuddy_core::update::default_manifest_url();
+        tokio::spawn(async move {
+            match screenbuddy_core::update::check_for_update(
+                manifest_url,
+                &current_version,
+            )
+            .await
+            {
+                screenbuddy_core::update::UpdateCheck::UpToDate => {
+                    println!("[Update] Up to date (v{})", current_version);
+                }
+                screenbuddy_core::update::UpdateCheck::Available(manifest) => {
+                    println!(
+                        "[Update] New version available: v{} (current: v{})",
+                        manifest.version, current_version
+                    );
+                    if !manifest.notes.is_empty() {
+                        println!("[Update] Release notes: {}", manifest.notes);
+                    }
+                }
+                screenbuddy_core::update::UpdateCheck::Failed(reason) => {
+                    println!("[Update] Check failed: {}", reason);
+                }
+            }
+        });
     }
 
     // ---- IPC control surface -------------------------------------------------
@@ -1795,6 +1854,141 @@ fn to_anim_state(state: screenbuddy_core::AnimStateCtl) -> AnimState {
         screenbuddy_core::AnimStateCtl::Fly => AnimState::Fly,
         screenbuddy_core::AnimStateCtl::Sleep => AnimState::Sleep,
         screenbuddy_core::AnimStateCtl::Celebrate => AnimState::Celebrate,
+    }
+}
+
+/// Run a headless performance benchmark and print results to stdout.
+///
+/// Activated by `--benchmark` CLI flag. Does not create a window or
+/// render anything — drives the same FrameMetrics and timing logic the
+/// real render loop uses, so numbers are directly comparable.
+fn run_benchmark_mode() {
+    use std::time::Instant;
+
+    println!("ScreenBuddy benchmark mode");
+    println!("==========================");
+
+    // Parse optional CLI args: --benchmark [duration_secs] [creature_count]
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let duration_secs = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10u64);
+    let creature_count = args
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4usize);
+
+    let config = screenbuddy_core::bench::BenchConfig {
+        duration_secs,
+        creature_count,
+        fps_target: 60,
+        simulate_ipc: true,
+        simulate_ai: true,
+    };
+
+    println!(
+        "Running: {}s, {} creatures, {}fps target",
+        config.duration_secs, config.creature_count, config.fps_target
+    );
+
+    let start = Instant::now();
+    let result = screenbuddy_core::bench::run_benchmark(&config);
+    let elapsed = start.elapsed();
+
+    println!();
+    println!("Results (wall time: {:.1}s):", elapsed.as_secs_f64());
+    println!("  Frames rendered:    {}", result.frame_count);
+    println!(
+        "  Effective FPS:      {:.1}",
+        result.fps_effective
+    );
+    println!("  Frame time p50:     {:.2} ms", result.p50_ms);
+    println!("  Frame time p95:     {:.2} ms", result.p95_ms);
+    println!("  Frame time p99:     {:.2} ms", result.p99_ms);
+    println!("  Frame time mean:    {:.2} ms", result.mean_ms);
+    println!("  Frame time worst:   {:.2} ms", result.worst_ms);
+    println!(
+        "  Memory start:       {:.1} MB",
+        result.memory_start_mb
+    );
+    println!(
+        "  Memory end:         {:.1} MB",
+        result.memory_end_mb
+    );
+    println!(
+        "  Memory delta:       {:.1} MB",
+        result.memory_end_mb - result.memory_start_mb
+    );
+    println!("  CPU avg:            {:.1}%", result.cpu_avg_percent);
+
+    // Verdict: did we hold the target?
+    let budget_ms = 1000.0 / config.fps_target as f64;
+    if result.p95_ms <= budget_ms {
+        println!("\nPASS: p95 frame time ({:.2}ms) within budget ({:.2}ms)", result.p95_ms, budget_ms);
+    } else {
+        println!("\nFAIL: p95 frame time ({:.2}ms) exceeds budget ({:.2}ms)", result.p95_ms, budget_ms);
+        std::process::exit(1);
+    }
+}
+
+/// Run a headless soak test and print results to stdout.
+///
+/// Activated by `--soak` CLI flag. Does not create a window or render
+/// anything — drives the same timing and metrics logic the real render
+/// loop uses, sampling memory and handle count at regular intervals.
+fn run_soak_mode() {
+    use std::time::Instant;
+
+    println!("ScreenBuddy soak test mode");
+    println!("==========================");
+
+    // Parse optional CLI args: --soak [duration_secs] [sample_interval_secs]
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let duration_secs = args
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(86400u64);
+    let sample_interval_secs = args
+        .get(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60u64);
+
+    let config = screenbuddy_core::bench::SoakConfig {
+        duration_secs,
+        sample_interval_secs,
+        creature_count: 4,
+        simulate_ipc: true,
+        simulate_ai: true,
+    };
+
+    println!(
+        "Running: {}s, sample every {}s",
+        config.duration_secs, config.sample_interval_secs
+    );
+
+    let start = Instant::now();
+    let result = screenbuddy_core::bench::run_soak_test(&config);
+    let elapsed = start.elapsed();
+
+    println!();
+    println!("Results (wall time: {:.1}s):", elapsed.as_secs_f64());
+    println!("  Duration:          {}s", result.duration_secs);
+    println!("  Samples collected: {}", result.samples.len());
+    println!("  Avg FPS:           {:.1}", result.avg_fps);
+    println!("  Memory start:      {:.1} MB", result.memory_start_mb);
+    println!("  Memory end:        {:.1} MB", result.memory_end_mb);
+    println!("  Memory growth:     {:.1} MB", result.memory_growth_mb);
+    println!("  Handle start:      {}", result.handle_start);
+    println!("  Handle end:        {}", result.handle_end);
+    println!("  Handle growth:     {}", result.handle_growth);
+
+    if result.leak_detected {
+        println!("\nFAIL: Leak detected (memory +{:.1} MB, handles +{})",
+            result.memory_growth_mb, result.handle_growth);
+        std::process::exit(1);
+    } else {
+        println!("\nPASS: No leaks detected");
     }
 }
 

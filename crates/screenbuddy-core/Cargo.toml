@@ -52,7 +52,9 @@ winapi = { version = "0.3", features = ["winuser",
     "winuser", "wingdi", "windef", "minwindef",
     "libloaderapi", "shellapi", "processthreadsapi",
     "handleapi", "sysinfoapi", "winbase", "winnt", "d3d11", "dxgi",
+    "psapi", "dbghelp", "errhandlingapi", "winreg", "fileapi", "evntprov",
 ] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"

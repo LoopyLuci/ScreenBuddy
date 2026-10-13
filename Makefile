@@ -26,9 +26,7 @@ apk:
 
 # Staged release artifacts for GitHub Releases
 stage-release:
-	mkdir -p dist
-	cp target/release/screenbuddy.exe dist/ScreenBuddy-v$(VERSION)-windows-x64.exe
-	cp ScreenBuddy-Android/app/build/outputs/apk/release/app-release.apk dist/ScreenBuddy-v$(VERSION)-android.apk
+	./tools/release.sh $(VERSION) $(if $(SIGN),--sign,) $(if $(NOTES),--notes "$(NOTES)",)
 
 clean:
 	cargo clean

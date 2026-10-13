@@ -1,6 +1,12 @@
 pub mod agent;
 pub mod agent_profile;
 pub mod ai;
+pub mod bench;
+pub mod crash;
+pub mod dpi;
+pub mod accessibility;
+pub mod eventlog;
+pub mod update;
 pub mod ai_bridge;
 pub mod animation;
 pub mod audio;
