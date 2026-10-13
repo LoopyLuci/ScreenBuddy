@@ -203,9 +203,13 @@ pub enum GodotCommand {
     ///
     /// A profile is how a user moves a setup between machines; without this the
     /// only copy is the app's own file, which has to be found by hand.
-    ExportSettings { path: String },
+    ExportSettings {
+        path: String,
+    },
     /// Read a settings file and apply the keys this build knows.
-    ImportSettings { path: String },
+    ImportSettings {
+        path: String,
+    },
     /// Frame-time percentiles and frame counts.
     ///
     /// Separate from `get_status` because the full status snapshot is large and
@@ -278,9 +282,13 @@ pub enum ControlRequest {
         limit: usize,
     },
     /// Write the current settings to a file, so a setup can move between machines.
-    ExportSettings { path: String },
+    ExportSettings {
+        path: String,
+    },
     /// Read a settings file and apply the keys this build knows.
-    ImportSettings { path: String },
+    ImportSettings {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,7 +452,10 @@ impl IpcServer {
     ///
     /// The render loop keeps its own handle to the same object, so a value
     /// imported over IPC is picked up by the loop on its next read.
-    pub fn set_settings(&mut self, settings: Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>) {
+    pub fn set_settings(
+        &mut self,
+        settings: Arc<std::sync::Mutex<crate::settings_ui::SettingsUI>>,
+    ) {
         self.settings = Some(settings);
     }
 
@@ -487,7 +498,9 @@ impl IpcServer {
         );
         // One permit per in-flight client. Held for the whole connection, so the
         // cap covers long-lived clients and not just the handshake.
-        let limit = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections.max(1)));
+        let limit = Arc::new(tokio::sync::Semaphore::new(
+            self.config.max_connections.max(1),
+        ));
         loop {
             tokio::select! {
                 Ok((stream, peer)) = listener.accept() => {
@@ -667,12 +680,8 @@ async fn handle_client(
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&payload) {
                 if v.get("auth").and_then(|t| t.as_str()) == auth_token.as_deref() {
                     authenticated = true;
-                    let _ = write_frame(
-                        &mut stream,
-                        &Response::Success { data: None },
-                        request_id,
-                    )
-                    .await;
+                    let _ = write_frame(&mut stream, &Response::Success { data: None }, request_id)
+                        .await;
                     continue;
                 }
             }
@@ -690,15 +699,9 @@ async fn handle_client(
 
         match serde_json::from_slice::<GodotCommand>(&payload) {
             Ok(cmd) => {
-                let resp = process_command(
-                    &cmd,
-                    &creatures,
-                    &control,
-                    &status,
-                    &sessions,
-                    &settings,
-                )
-                .await;
+                let resp =
+                    process_command(&cmd, &creatures, &control, &status, &sessions, &settings)
+                        .await;
                 let _ = write_frame(&mut stream, &resp, request_id).await;
                 // `send` fails only when there are no subscribers, which is fine:
                 // the app may not be draining this channel.
@@ -767,7 +770,9 @@ fn control_request_for(cmd: &GodotCommand) -> Option<ControlRequest> {
                 .unwrap_or(DEFAULT_SEARCH_LIMIT)
                 .clamp(1, MAX_SEARCH_LIMIT),
         },
-        GodotCommand::ExportSettings { path } => ControlRequest::ExportSettings { path: path.clone() },
+        GodotCommand::ExportSettings { path } => {
+            ControlRequest::ExportSettings { path: path.clone() }
+        }
         GodotCommand::ImportSettings { path } => {
             ControlRequest::ImportSettings { path: path.clone() }
         }
@@ -1552,7 +1557,10 @@ mod tests {
         // Every declared setting is exported, so a profile is complete rather
         // than holding only what has been changed.
         let written_count = d["exported"].as_u64().unwrap();
-        assert!(written_count >= 1, "expected the full set, got {written_count}");
+        assert!(
+            written_count >= 1,
+            "expected the full set, got {written_count}"
+        );
         let written = std::fs::read_to_string(&path).expect("export file exists");
         assert!(written.contains("creature_count"), "got: {written}");
 
@@ -1711,10 +1719,7 @@ mod tests {
         );
         assert_eq!(d["count"], 1);
         assert_eq!(d["hits"][0]["role"], "user");
-        assert!(d["hits"][0]["snippet"]
-            .as_str()
-            .unwrap()
-            .contains("dragon"));
+        assert!(d["hits"][0]["snippet"].as_str().unwrap().contains("dragon"));
     }
 
     #[tokio::test]
@@ -2126,8 +2131,7 @@ mod tests {
                     tokio::spawn(async move {
                         let _permit = permit;
                         handle_client(
-                            stream, tx, control, creatures, status, sessions, shutdown, None,
-                            None,
+                            stream, tx, control, creatures, status, sessions, shutdown, None, None,
                         )
                         .await;
                     });
@@ -2137,22 +2141,24 @@ mod tests {
             // Two long-lived clients take both permits.
             let mut held = Vec::new();
             for _ in 0..2 {
-                let s = TcpStream::connect(&bound).await.expect("connect within cap");
+                let s = TcpStream::connect(&bound)
+                    .await
+                    .expect("connect within cap");
                 held.push(s);
             }
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
             // The third is accepted then closed without a response.
-            let mut extra = TcpStream::connect(&bound).await.expect("tcp connect still works");
+            let mut extra = TcpStream::connect(&bound)
+                .await
+                .expect("tcp connect still works");
             let mut buf = [0u8; 4];
-            let read = tokio::time::timeout(
-                std::time::Duration::from_millis(400),
-                extra.read(&mut buf),
-            )
-            .await;
+            let read =
+                tokio::time::timeout(std::time::Duration::from_millis(400), extra.read(&mut buf))
+                    .await;
 
             match read {
-                Ok(Ok(0)) => {} // closed cleanly: refused as intended
+                Ok(Ok(0)) => {}  // closed cleanly: refused as intended
                 Ok(Err(_)) => {} // reset: also a refusal
                 Ok(Ok(n)) => panic!("server answered a client past the cap ({n} bytes)"),
                 Err(_) => panic!("server neither answered nor closed a client past the cap"),

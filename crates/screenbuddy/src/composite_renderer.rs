@@ -147,7 +147,9 @@ impl CompositeRenderer {
             // recreated on every present, which is a full allocation and a
             // whole-buffer copy per frame for a surface that almost never
             // changes size.
-            if self.h_bitmap.is_null() || self.bitmap_w != self.width || self.bitmap_h != self.height
+            if self.h_bitmap.is_null()
+                || self.bitmap_w != self.width
+                || self.bitmap_h != self.height
             {
                 if !self.h_bitmap.is_null() {
                     // The old bitmap must be out of the DC before it is freed.

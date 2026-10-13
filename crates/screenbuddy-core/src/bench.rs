@@ -149,10 +149,7 @@ fn get_handle_count() -> u32 {
     unsafe {
         let process = winapi::um::processthreadsapi::GetCurrentProcess();
         let mut count: u32 = 0;
-        winapi::um::processthreadsapi::GetProcessHandleCount(
-            process,
-            &mut count,
-        );
+        winapi::um::processthreadsapi::GetProcessHandleCount(process, &mut count);
         count
     }
 }
@@ -302,9 +299,7 @@ fn simulate_ipc_work(frame: u64) {
 
 /// Simulates AI bridge traffic: a small LRU cache lookup + token count.
 fn simulate_ai_work() {
-    let mut cache = lru::LruCache::<String, String>::new(
-        std::num::NonZeroUsize::new(10).unwrap()
-    );
+    let mut cache = lru::LruCache::<String, String>::new(std::num::NonZeroUsize::new(10).unwrap());
     for i in 0..5 {
         cache.put(format!("key{}", i), format!("value{}", i));
     }
@@ -315,10 +310,8 @@ fn simulate_ai_work() {
 
 fn get_memory_usage_mb() -> f64 {
     unsafe {
-        let mut mem_info: winapi::um::psapi::PROCESS_MEMORY_COUNTERS =
-            std::mem::zeroed();
-        let cb = std::mem::size_of::<winapi::um::psapi::PROCESS_MEMORY_COUNTERS>()
-            as u32;
+        let mut mem_info: winapi::um::psapi::PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        let cb = std::mem::size_of::<winapi::um::psapi::PROCESS_MEMORY_COUNTERS>() as u32;
         if winapi::um::psapi::GetProcessMemoryInfo(
             winapi::um::processthreadsapi::GetCurrentProcess(),
             &mut mem_info,
@@ -341,7 +334,11 @@ fn get_cpu_usage() -> f64 {
         let mut user: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
 
         if winapi::um::processthreadsapi::GetProcessTimes(
-            process, &mut creation, &mut exit, &mut kernel, &mut user,
+            process,
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
         ) == 0
         {
             return 0.0;
@@ -371,23 +368,22 @@ fn filetime_to_u64(ft: winapi::shared::minwindef::FILETIME) -> u64 {
 
 fn process_start_tick() -> u64 {
     static START_TICK: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *START_TICK.get_or_init(|| {
-        unsafe {
-            let mut creation: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
-            let mut exit: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
-            let mut kernel: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
-            let mut user: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
-            let process = winapi::um::processthreadsapi::GetCurrentProcess();
-            winapi::um::processthreadsapi::GetProcessTimes(
-                process, &mut creation, &mut exit, &mut kernel, &mut user,
-            );
-            winapi::um::sysinfoapi::GetTickCount64()
-                .saturating_sub(filetime_to_u64(creation) / 10_000)
-        }
+    *START_TICK.get_or_init(|| unsafe {
+        let mut creation: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
+        let mut exit: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
+        let mut kernel: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
+        let mut user: winapi::shared::minwindef::FILETIME = std::mem::zeroed();
+        let process = winapi::um::processthreadsapi::GetCurrentProcess();
+        winapi::um::processthreadsapi::GetProcessTimes(
+            process,
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        );
+        winapi::um::sysinfoapi::GetTickCount64().saturating_sub(filetime_to_u64(creation) / 10_000)
     })
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -448,7 +444,11 @@ mod tests {
         };
         let result = run_benchmark(&config);
         // 30fps = 33.3ms budget. Mean should be under that.
-        assert!(result.mean_ms <= 35.0, "mean {}ms exceeds budget", result.mean_ms);
+        assert!(
+            result.mean_ms <= 35.0,
+            "mean {}ms exceeds budget",
+            result.mean_ms
+        );
     }
 
     #[test]

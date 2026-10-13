@@ -339,7 +339,9 @@ impl SessionStore {
     }
 
     fn write_now(&mut self) {
-        let Some(path) = self.path.clone() else { return };
+        let Some(path) = self.path.clone() else {
+            return;
+        };
         let list: Vec<Session> = self
             .order
             .iter()
@@ -673,7 +675,10 @@ mod tests {
         let reloaded = SessionStore::load(&path);
         assert!(reloaded
             .current()
-            .map(|s| s.transcript().iter().any(|(_, t)| t == "pending then flushed"))
+            .map(|s| s
+                .transcript()
+                .iter()
+                .any(|(_, t)| t == "pending then flushed"))
             .unwrap_or(false));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -695,7 +700,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

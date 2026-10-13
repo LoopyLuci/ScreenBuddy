@@ -53,10 +53,8 @@ impl EventLog {
     pub fn register() -> Result<Self, String> {
         unsafe {
             let source_name = widestring::Hstring::from(Self::SOURCE_NAME);
-            let handle = winapi::um::winbase::RegisterEventSourceW(
-                std::ptr::null(),
-                source_name.as_ptr(),
-            );
+            let handle =
+                winapi::um::winbase::RegisterEventSourceW(std::ptr::null(), source_name.as_ptr());
             if handle.is_null() {
                 return Err("RegisterEventSourceW failed".to_string());
             }
@@ -85,11 +83,11 @@ impl EventLog {
             winapi::um::winbase::ReportEventW(
                 self.handle,
                 level.as_word(),
-                0,       // category
-                event_id, // event ID
+                0,                    // category
+                event_id,             // event ID
                 std::ptr::null_mut(), // user SID
-                1,       // string count
-                0,       // binary data size
+                1,                    // string count
+                0,                    // binary data size
                 desc.as_ptr() as *mut *const u16,
                 std::ptr::null_mut(), // binary data
             ) != 0

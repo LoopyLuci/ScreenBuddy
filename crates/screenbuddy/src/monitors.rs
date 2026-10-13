@@ -8,7 +8,7 @@
 //! negative coordinates for monitors placed left of or above the primary one.
 
 use winapi::shared::minwindef::{BOOL, LPARAM};
-use winapi::shared::windef::{HMONITOR, HDC, LPRECT, RECT};
+use winapi::shared::windef::{HDC, HMONITOR, LPRECT, RECT};
 use winapi::um::winuser::{EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO};
 
 /// One monitor's bounds in virtual-screen coordinates.
@@ -66,12 +66,7 @@ pub fn enumerate() -> Vec<MonitorInfo> {
     }
 
     unsafe {
-        EnumDisplayMonitors(
-            std::ptr::null_mut(),
-            std::ptr::null(),
-            Some(cb),
-            ptr,
-        );
+        EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(cb), ptr);
     }
     // Primary first so callers can use `.first()` for a sensible default.
     out.sort_by_key(|m| !m.is_primary);

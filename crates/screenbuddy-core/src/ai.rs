@@ -197,7 +197,8 @@ pub struct AiEngine {
     /// one that never did.
     pinned_model: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// LRU response cache: hash of (model, messages, temperature) -> (response, timestamp)
-    response_cache: std::sync::Arc<std::sync::Mutex<lru::LruCache<u64, (AiResponse, std::time::Instant)>>>,
+    response_cache:
+        std::sync::Arc<std::sync::Mutex<lru::LruCache<u64, (AiResponse, std::time::Instant)>>>,
     /// Concurrent request limiter
     request_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }

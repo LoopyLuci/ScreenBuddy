@@ -325,8 +325,16 @@ pub fn show_balloon(title: &str, message: &str) {
         data.uFlags = NIF_INFO;
         let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
         let msg_wide: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
-        ptr::copy_nonoverlapping(title_wide.as_ptr(), data.szInfoTitle.as_mut_ptr(), title_wide.len().min(63));
-        ptr::copy_nonoverlapping(msg_wide.as_ptr(), data.szInfo.as_mut_ptr(), msg_wide.len().min(255));
+        ptr::copy_nonoverlapping(
+            title_wide.as_ptr(),
+            data.szInfoTitle.as_mut_ptr(),
+            title_wide.len().min(63),
+        );
+        ptr::copy_nonoverlapping(
+            msg_wide.as_ptr(),
+            data.szInfo.as_mut_ptr(),
+            msg_wide.len().min(255),
+        );
         Shell_NotifyIconW(NIM_MODIFY, &mut data as *mut _);
     }
 }
@@ -351,7 +359,10 @@ unsafe fn remove_icon(hwnd: winapi::shared::windef::HWND) {
 /// after an Explorer restart. Returns the message ID.
 fn register_taskbar_message() -> u32 {
     use std::os::windows::ffi::OsStrExt;
-    let name: Vec<u16> = std::ffi::OsStr::new("TaskbarCreated").encode_wide().chain(std::iter::once(0)).collect();
+    let name: Vec<u16> = std::ffi::OsStr::new("TaskbarCreated")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     unsafe { winapi::um::winuser::RegisterWindowMessageW(name.as_ptr()) }
 }
 
@@ -367,7 +378,12 @@ unsafe extern "system" fn tray_window_proc(
             0
         }
         msg if msg == register_taskbar_message() => {
-            unsafe { add_icon(hwnd, winapi::um::libloaderapi::GetModuleHandleW(std::ptr::null_mut())) };
+            unsafe {
+                add_icon(
+                    hwnd,
+                    winapi::um::libloaderapi::GetModuleHandleW(std::ptr::null_mut()),
+                )
+            };
             0
         }
         WM_TRAY_CALLBACK => {
@@ -380,11 +396,8 @@ unsafe extern "system" fn tray_window_proc(
                 winapi::um::winuser::WM_RBUTTONUP | winapi::um::winuser::WM_CONTEXTMENU => {
                     // The chosen id used to be discarded, so every menu item was
                     // a no-op. Route it to the render loop now.
-                    let chosen = show_context_menu(
-                        hwnd,
-                        crate::always_on_top(),
-                        crate::creature_count(),
-                    );
+                    let chosen =
+                        show_context_menu(hwnd, crate::always_on_top(), crate::creature_count());
                     if let Some(event) = event_for_command(chosen) {
                         deliver(event);
                     }

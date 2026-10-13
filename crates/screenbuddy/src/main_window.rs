@@ -83,7 +83,10 @@ pub enum UiEvent {
     /// Re-run the last user message to get a fresh reply.
     Regenerate,
     /// Replace the user message at this index with new text and re-ask.
-    EditMessage { index: usize, text: String },
+    EditMessage {
+        index: usize,
+        text: String,
+    },
 }
 
 /// A clickable region, rebuilt each paint and hit-tested on click.
@@ -307,20 +310,26 @@ impl MainWindow {
     /// Set the on-screen render stats overlay text.
     pub fn set_stats_overlay(&mut self, text: &str) {
         self.stats_overlay = Some(text.to_string());
-        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
+        unsafe {
+            InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0);
+        }
     }
 
     /// Switch between dark and light themes.
     pub fn set_theme(&mut self, dark: bool) {
         self.theme = crate::theme::Theme::from_setting(dark);
-        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
+        unsafe {
+            InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0);
+        }
     }
 
     /// Apply a theme by the name stored in the `theme` setting (dark, light,
     /// high_contrast). An unknown name resolves to dark.
     pub fn set_theme_by_name(&mut self, name: &str) {
         self.theme = crate::theme::Theme::from_name(name);
-        unsafe { InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0); }
+        unsafe {
+            InvalidateRect(self.hwnd.unwrap_or(ptr::null_mut()), ptr::null_mut(), 0);
+        }
     }
 
     /// The active theme's name, for tests and for reporting.
@@ -1094,7 +1103,14 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
-    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, ptr::null_mut(), 0);
+    let bitmap = CreateDIBSection(
+        screen,
+        &bmi,
+        DIB_RGB_COLORS,
+        &mut raw as *mut _ as *mut _,
+        ptr::null_mut(),
+        0,
+    );
     ReleaseDC(ptr::null_mut(), screen);
     if bitmap.is_null() || raw.is_null() {
         DeleteDC(mem_dc);
@@ -1139,11 +1155,7 @@ fn draw_ui(win: &mut MainWindow, buf: &mut [u32]) {
     draw_input(win, buf);
     if win.generating {
         draw_stop_button(win, buf);
-    } else if win
-        .messages
-        .iter()
-        .any(|(role, _)| role == "assistant")
-    {
+    } else if win.messages.iter().any(|(role, _)| role == "assistant") {
         draw_regenerate_button(win, buf);
     }
     draw_toast(win, buf);
@@ -1359,7 +1371,15 @@ fn draw_search_bar(win: &mut MainWindow, buf: &mut [u32]) {
             query.as_str()
         };
         set_text_colour(buf, dc, win.theme.muted_text);
-        draw_text(buf, dc, shown, left + 8, top + 6, right - left - 70, font_height(12, false));
+        draw_text(
+            buf,
+            dc,
+            shown,
+            left + 8,
+            top + 6,
+            right - left - 70,
+            font_height(12, false),
+        );
 
         // Match count
         let count_text = format!(
@@ -1372,7 +1392,15 @@ fn draw_search_bar(win: &mut MainWindow, buf: &mut [u32]) {
             win.search_matches.len()
         );
         set_text_colour(buf, dc, win.theme.accent);
-        draw_text(buf, dc, &count_text, right - 56, top + 6, 48, font_height(12, false));
+        draw_text(
+            buf,
+            dc,
+            &count_text,
+            right - 56,
+            top + 6,
+            48,
+            font_height(12, false),
+        );
 
         select_obj(dc, old as *mut _);
         del_obj(f as *mut _);
@@ -1400,7 +1428,15 @@ fn draw_stop_button(win: &mut MainWindow, buf: &mut [u32]) {
         let old = select_obj(dc, f as *mut _);
         SetBkMode(dc, TRANSPARENT as i32);
         set_text_colour(buf, dc, 0x0020A0A0);
-        draw_text(buf, dc, "Stop", left + 30, top + 6, 40, font_height(12, true));
+        draw_text(
+            buf,
+            dc,
+            "Stop",
+            left + 30,
+            top + 6,
+            40,
+            font_height(12, true),
+        );
         select_obj(dc, old as *mut _);
         del_obj(f as *mut _);
     }
@@ -1444,8 +1480,15 @@ fn draw_rect_outline(buf: &mut [u32], w: i32, rect: Rect, colour: u32) {
 }
 
 fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
-    fill_rect(buf, win.width, Rect::new(0, 0, win.width, HEADER_H), win.theme.header_bg);
-    draw_rect_outline(buf, win.width,
+    fill_rect(
+        buf,
+        win.width,
+        Rect::new(0, 0, win.width, HEADER_H),
+        win.theme.header_bg,
+    );
+    draw_rect_outline(
+        buf,
+        win.width,
         Rect::new(0, HEADER_H - 1, win.width, HEADER_H),
         win.theme.border,
     );
@@ -1528,7 +1571,9 @@ fn draw_header(win: &mut MainWindow, buf: &mut [u32]) {
 fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
     let side = Rect::new(0, HEADER_H, SIDEBAR_W, win.height);
     fill_rect(buf, win.width, side, win.theme.sidebar_bg);
-    draw_rect_outline(buf, win.width,
+    draw_rect_outline(
+        buf,
+        win.width,
         Rect::new(SIDEBAR_W - 1, HEADER_H, SIDEBAR_W, win.height),
         win.theme.border,
     );
@@ -1572,7 +1617,9 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
         if summary.is_current {
             fill_rect(buf, win.width, row, C_ROW_ACTIVE);
             // Accent bar marking the selected session.
-            fill_rect(buf, win.width,
+            fill_rect(
+                buf,
+                win.width,
                 Rect::new(row.left, row.top, row.left + 3, row.bottom),
                 win.theme.accent,
             );
@@ -1602,7 +1649,15 @@ fn draw_sidebar(win: &mut MainWindow, buf: &mut [u32]) {
             let f = make_font(13, false);
             let old = select_obj(dc, f as *mut _);
             SetBkMode(dc, TRANSPARENT as i32);
-            set_text_colour(buf, dc, if summary.is_current { win.theme.text } else { win.theme.muted_text });
+            set_text_colour(
+                buf,
+                dc,
+                if summary.is_current {
+                    win.theme.text
+                } else {
+                    win.theme.muted_text
+                },
+            );
             draw_text(
                 buf,
                 dc,
@@ -1753,11 +1808,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                     win.theme.sidebar_bg
                 },
             );
-            let is_current_match = win
-                .search_matches
-                .get(win.search_match_idx)
-                .copied()
-                == Some(i);
+            let is_current_match = win.search_matches.get(win.search_match_idx).copied() == Some(i);
             let is_selected = win.selected_message == Some(i);
             let outline = if is_selected || is_current_match || is_user {
                 win.theme.accent
@@ -1802,7 +1853,8 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis()
-            / 500) as usize % 4;
+            / 500) as usize
+            % 4;
         let dots = ".".repeat(dot_count);
         let typing_text = format!("ScreenBuddy is thinking{}", dots);
         unsafe {
@@ -1811,7 +1863,15 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
             let old = select_obj(dc, f as *mut _);
             SetBkMode(dc, TRANSPARENT as i32);
             set_text_colour(buf, dc, win.theme.muted_text);
-            draw_text(buf, dc, &typing_text, left + 8, top + 4, width - 16, font_height(13, false));
+            draw_text(
+                buf,
+                dc,
+                &typing_text,
+                left + 8,
+                top + 4,
+                width - 16,
+                font_height(13, false),
+            );
             select_obj(dc, old as *mut _);
             del_obj(f as *mut _);
         }
@@ -2311,8 +2371,14 @@ impl DrawTarget {
             bmi.bmiHeader.biBitCount = 32;
             bmi.bmiHeader.biCompression = BI_RGB;
             let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
-            let bitmap =
-                CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, ptr::null_mut(), 0);
+            let bitmap = CreateDIBSection(
+                screen,
+                &bmi,
+                DIB_RGB_COLORS,
+                &mut raw as *mut _ as *mut _,
+                ptr::null_mut(),
+                0,
+            );
             ReleaseDC(ptr::null_mut(), screen);
             if bitmap.is_null() || raw.is_null() {
                 DeleteDC(dc);
@@ -2713,7 +2779,10 @@ mod tests {
             win.on_char(c as u16);
         }
         assert_eq!(win.search_query, "hello");
-        assert!(win.input_buffer().is_empty(), "input untouched while searching");
+        assert!(
+            win.input_buffer().is_empty(),
+            "input untouched while searching"
+        );
         assert_eq!(win.search_matches.len(), 1);
     }
 
@@ -2822,7 +2891,10 @@ mod tests {
         let mut win = w();
         win.ctrl_down = true;
         win.on_key('S' as i32);
-        assert!(matches!(win.poll_event(), Some(UiEvent::ExportConversation)));
+        assert!(matches!(
+            win.poll_event(),
+            Some(UiEvent::ExportConversation)
+        ));
     }
 
     #[test]
@@ -3031,7 +3103,9 @@ mod tests {
         win.set_search_hits(vec![]);
         render(&mut win);
         assert!(
-            !win.hits.iter().any(|h| matches!(h.action, UiAction::OpenHit(_))),
+            !win.hits
+                .iter()
+                .any(|h| matches!(h.action, UiAction::OpenHit(_))),
             "no rows when there are no hits"
         );
         // The rest of the chrome must still be present.
@@ -3215,7 +3289,10 @@ mod tests {
         win.begin_edit(0);
         win.on_key(VK_ESCAPE);
         assert!(!win.is_editing(), "escape leaves edit mode");
-        assert!(win.is_visible(), "escape must not hide the window while editing");
+        assert!(
+            win.is_visible(),
+            "escape must not hide the window while editing"
+        );
         assert!(win.input_buffer().is_empty(), "the draft is discarded");
     }
 
@@ -3261,7 +3338,11 @@ mod tests {
 
         win.shift_down = true;
         win.on_key(VK_TAB);
-        assert_eq!(win.focus_region(), FocusRegion::Conversation, "Shift+Tab goes back");
+        assert_eq!(
+            win.focus_region(),
+            FocusRegion::Conversation,
+            "Shift+Tab goes back"
+        );
     }
 
     #[test]
@@ -3324,7 +3405,10 @@ mod tests {
         win.cycle_focus(true); // -> Sidebar
         render(&mut win);
         // The focus outline uses the accent colour; the row is also a hit target.
-        assert!(win.hits.iter().any(|h| matches!(h.action, UiAction::Select(_))));
+        assert!(win
+            .hits
+            .iter()
+            .any(|h| matches!(h.action, UiAction::Select(_))));
         assert_eq!(win.focus_region(), FocusRegion::Sidebar);
 
         win.cycle_focus(true); // -> Conversation
@@ -3339,7 +3423,11 @@ mod tests {
         assert!(win.search_focused);
         let before = win.focus_region();
         win.on_key(VK_TAB);
-        assert_eq!(win.focus_region(), before, "Tab in the search bar must not move focus");
+        assert_eq!(
+            win.focus_region(),
+            before,
+            "Tab in the search bar must not move focus"
+        );
     }
 
     /// Render the whole UI into a real GDI surface, as `paint()` does, so tests

@@ -28,7 +28,13 @@ const LIB_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
 const CONSUMER_ALLOWLIST: &[(&str, &[&str])] = &[
     // Newly wired production modules. These were dead code until this gate
     // forced their integration.
-    ("dpi", &["crates/screenbuddy/src/main.rs", "crates/screenbuddy-core/src/per_pet_window.rs"]),
+    (
+        "dpi",
+        &[
+            "crates/screenbuddy/src/main.rs",
+            "crates/screenbuddy-core/src/per_pet_window.rs",
+        ],
+    ),
     ("accessibility", &["crates/screenbuddy/src/main.rs"]),
     ("eventlog", &["crates/screenbuddy/src/main.rs"]),
     ("bench", &["crates/screenbuddy/src/main.rs"]),
@@ -44,9 +50,18 @@ const CONSUMER_ALLOWLIST: &[(&str, &[&str])] = &[
 /// crate's own files not covered elsewhere. Every exempt module must carry a
 /// reason; an unexplained exemption is the same as dead code.
 const CONSUMER_EXEMPT: &[(&str, &str)] = &[
-    ("agent", "consumed via `use screenbuddy_core::agent::...` imports"),
-    ("agent_profile", "type definitions consumed through SettingsUI"),
-    ("ai", "consumed via `use screenbuddy_core::AiEngine` re-export"),
+    (
+        "agent",
+        "consumed via `use screenbuddy_core::agent::...` imports",
+    ),
+    (
+        "agent_profile",
+        "type definitions consumed through SettingsUI",
+    ),
+    (
+        "ai",
+        "consumed via `use screenbuddy_core::AiEngine` re-export",
+    ),
     ("ai_bridge", "consumed via re-export at crate root"),
     ("animation", "consumed via re-export at crate root"),
     ("audio", "consumed via re-export at crate root"),
@@ -158,8 +173,8 @@ fn count_call_sites(module: &str, workspace_root: &str) -> Vec<(String, usize)> 
 
 #[test]
 fn every_listed_module_has_a_consumer() {
-    let lib_source = std::fs::read_to_string(LIB_RS)
-        .unwrap_or_else(|e| panic!("could not read {LIB_RS}: {e}"));
+    let lib_source =
+        std::fs::read_to_string(LIB_RS).unwrap_or_else(|e| panic!("could not read {LIB_RS}: {e}"));
     let modules = parse_modules(&lib_source);
 
     // The module universe must be non-empty and must contain the wired ones.
@@ -179,10 +194,11 @@ fn every_listed_module_has_a_consumer() {
     // Every declared module must be either consumed or explicitly exempt. A
     // module added to lib.rs but forgotten in both lists is exactly the drift
     // this gate exists to catch.
-    let allowlisted: BTreeSet<String> =
-        CONSUMER_ALLOWLIST.iter().map(|(m, _)| m.to_string()).collect();
-    let exempt: BTreeSet<String> =
-        CONSUMER_EXEMPT.iter().map(|(m, _)| m.to_string()).collect();
+    let allowlisted: BTreeSet<String> = CONSUMER_ALLOWLIST
+        .iter()
+        .map(|(m, _)| m.to_string())
+        .collect();
+    let exempt: BTreeSet<String> = CONSUMER_EXEMPT.iter().map(|(m, _)| m.to_string()).collect();
     let mut unclassified = Vec::new();
     for module in &modules {
         if !allowlisted.contains(module) && !exempt.contains(module) {
@@ -221,7 +237,10 @@ fn every_listed_module_has_a_consumer() {
             failures.push(format!("{module}: NO CONSUMER (0 call sites)"));
         } else {
             let total: usize = call_sites.iter().map(|(_, c)| c).sum();
-            report.push(format!("{module}: {total} call site(s) in {}", call_sites.len()));
+            report.push(format!(
+                "{module}: {total} call site(s) in {}",
+                call_sites.len()
+            ));
         }
     }
 

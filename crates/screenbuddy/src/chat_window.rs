@@ -279,7 +279,8 @@ pub mod platform {
                     }
                     0x43 if unsafe { GetKeyState(VK_CONTROL) < 0 } => {
                         if let Some((_, text, _)) = (*chat).messages.last() {
-                            let _ = clipboard_win::set_clipboard(clipboard_win::formats::Unicode, text);
+                            let _ =
+                                clipboard_win::set_clipboard(clipboard_win::formats::Unicode, text);
                         }
                         0
                     }
@@ -293,7 +294,8 @@ pub mod platform {
                     let lines = 3;
                     unsafe {
                         if delta > 0 {
-                            (*chat_ptr).scroll_offset = (*chat_ptr).scroll_offset.saturating_sub(lines);
+                            (*chat_ptr).scroll_offset =
+                                (*chat_ptr).scroll_offset.saturating_sub(lines);
                         } else {
                             (*chat_ptr).scroll_offset = ((*chat_ptr).scroll_offset + lines)
                                 .min((*chat_ptr).messages.len().saturating_sub(1));
@@ -304,7 +306,9 @@ pub mod platform {
             }
             WM_MOUSEMOVE => {
                 let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
-                if chat.is_null() { return 0; }
+                if chat.is_null() {
+                    return 0;
+                }
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
                 if let Some((rx, ry, rw, rh)) = (*chat).send_btn_rect {
@@ -318,7 +322,9 @@ pub mod platform {
             }
             WM_LBUTTONDOWN => {
                 let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;
-                if chat.is_null() { return 0; }
+                if chat.is_null() {
+                    return 0;
+                }
                 let x = (lparam & 0xFFFF) as i32;
                 let y = ((lparam >> 16) & 0xFFFF) as i32;
                 if let Some((rx, ry, rw, rh)) = (*chat).send_btn_rect {
@@ -337,10 +343,15 @@ pub mod platform {
             WM_DPICHANGED => {
                 let rect = *(lparam as *const RECT);
                 unsafe {
-                    SetWindowPos(hwnd, ptr::null_mut(),
-                        rect.left, rect.top,
-                        rect.right - rect.left, rect.bottom - rect.top,
-                        SWP_NOZORDER | SWP_NOACTIVATE);
+                    SetWindowPos(
+                        hwnd,
+                        ptr::null_mut(),
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
                 }
                 0
             }
@@ -418,7 +429,12 @@ pub mod platform {
         let msg_area_bottom = CHAT_HEIGHT - INPUT_HEIGHT - PADDING;
         let mut y = msg_area_bottom;
 
-        let visible_msgs: Vec<_> = chat.messages.iter().rev().skip(chat.scroll_offset).collect();
+        let visible_msgs: Vec<_> = chat
+            .messages
+            .iter()
+            .rev()
+            .skip(chat.scroll_offset)
+            .collect();
         for (role, text, ts) in visible_msgs {
             if y < PADDING {
                 break;
@@ -426,8 +442,19 @@ pub mod platform {
             // Draw timestamp in muted color
             SetTextColor(hdc_mem, RGB(150, 150, 170));
             let ts_wide: Vec<u16> = ts.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut ts_rect = RECT { left: PADDING, top: y - 14, right: PADDING + 40, bottom: y };
-            DrawTextW(hdc_mem, ts_wide.as_ptr(), -1, &mut ts_rect, DT_LEFT | DT_SINGLELINE);
+            let mut ts_rect = RECT {
+                left: PADDING,
+                top: y - 14,
+                right: PADDING + 40,
+                bottom: y,
+            };
+            DrawTextW(
+                hdc_mem,
+                ts_wide.as_ptr(),
+                -1,
+                &mut ts_rect,
+                DT_LEFT | DT_SINGLELINE,
+            );
 
             let label = if role == "user" {
                 "You"
@@ -526,8 +553,19 @@ pub mod platform {
             };
             SetTextColor(hdc_mem, RGB(150, 255, 150));
             let dots_wide: Vec<u16> = dots.encode_utf16().chain(std::iter::once(0)).collect();
-            let mut dots_rect = RECT { left: PADDING, top: y - 20, right: PADDING + 60, bottom: y };
-            DrawTextW(hdc_mem, dots_wide.as_ptr(), -1, &mut dots_rect, DT_LEFT | DT_SINGLELINE);
+            let mut dots_rect = RECT {
+                left: PADDING,
+                top: y - 20,
+                right: PADDING + 60,
+                bottom: y,
+            };
+            DrawTextW(
+                hdc_mem,
+                dots_wide.as_ptr(),
+                -1,
+                &mut dots_rect,
+                DT_LEFT | DT_SINGLELINE,
+            );
         }
 
         // Draw send button
@@ -552,15 +590,38 @@ pub mod platform {
                 }
             }
         }
-        let btn_rect = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+        let btn_rect = RECT {
+            left: btn_x,
+            top: btn_y,
+            right: btn_x + btn_w,
+            bottom: btn_y + btn_h,
+        };
         let btn_border = CreateSolidBrush(RGB(100, 150, 220));
         FrameRect(hdc_mem, &btn_rect, btn_border);
         DeleteObject(btn_border as _);
-        SetTextColor(hdc_mem, if has_input { RGB(255, 255, 255) } else { RGB(150, 150, 150) });
+        SetTextColor(
+            hdc_mem,
+            if has_input {
+                RGB(255, 255, 255)
+            } else {
+                RGB(150, 150, 150)
+            },
+        );
         let label = "Send";
         let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut btn_text_rect = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
-        DrawTextW(hdc_mem, wide.as_ptr(), -1, &mut btn_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        let mut btn_text_rect = RECT {
+            left: btn_x,
+            top: btn_y,
+            right: btn_x + btn_w,
+            bottom: btn_y + btn_h,
+        };
+        DrawTextW(
+            hdc_mem,
+            wide.as_ptr(),
+            -1,
+            &mut btn_text_rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
         // Store rect for hit testing
         unsafe {
             let chat = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChatWindow;

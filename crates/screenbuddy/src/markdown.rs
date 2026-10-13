@@ -90,10 +90,7 @@ pub fn parse(text: &str) -> Vec<MdLine> {
                 kind: BlockKind::Heading,
                 runs: parse_runs(lead.strip_prefix("## ").unwrap()),
             });
-        } else if let Some(rest) = lead
-            .strip_prefix("- ")
-            .or_else(|| lead.strip_prefix("* "))
-        {
+        } else if let Some(rest) = lead.strip_prefix("- ").or_else(|| lead.strip_prefix("* ")) {
             out.push(MdLine {
                 kind: BlockKind::Bullet,
                 runs: parse_runs(rest),
@@ -249,7 +246,9 @@ mod tests {
     fn inline_code_becomes_a_code_run() {
         let lines = parse("call `parse()` now");
         let runs = &lines[0].runs;
-        assert!(runs.iter().any(|r| r.style == RunStyle::Code && r.text == "parse()"));
+        assert!(runs
+            .iter()
+            .any(|r| r.style == RunStyle::Code && r.text == "parse()"));
         assert!(!lines[0].plain().contains('`'));
     }
 

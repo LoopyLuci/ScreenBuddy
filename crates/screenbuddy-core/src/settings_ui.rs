@@ -182,11 +182,9 @@ impl SettingsUI {
                 Some(SettingValue::Float(lo)),
                 Some(SettingValue::Float(hi)),
             ) => SettingValue::Float(v.clamp(*lo, *hi)),
-            (
-                SettingValue::Int(v),
-                Some(SettingValue::Int(lo)),
-                Some(SettingValue::Int(hi)),
-            ) => SettingValue::Int(v.clamp(*lo, *hi)),
+            (SettingValue::Int(v), Some(SettingValue::Int(lo)), Some(SettingValue::Int(hi))) => {
+                SettingValue::Int(v.clamp(*lo, *hi))
+            }
             (other, _, _) => other,
         }
     }
@@ -196,18 +194,12 @@ impl SettingsUI {
     /// Unknown keys are counted and skipped rather than rejected, so a profile
     /// written by a newer build still loads on an older one. Returns
     /// `(applied, skipped)`.
-    pub fn import_from(
-        &mut self,
-        path: &std::path::Path,
-    ) -> Result<(usize, Vec<String>), String> {
+    pub fn import_from(&mut self, path: &std::path::Path) -> Result<(usize, Vec<String>), String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let stored =
-            serde_json::from_str::<HashMap<String, SettingValue>>(&text).map_err(|e| e.to_string())?;
-        let known: std::collections::HashSet<String> = self
-            .definitions
-            .iter()
-            .map(|d| d.name.clone())
-            .collect();
+        let stored = serde_json::from_str::<HashMap<String, SettingValue>>(&text)
+            .map_err(|e| e.to_string())?;
+        let known: std::collections::HashSet<String> =
+            self.definitions.iter().map(|d| d.name.clone()).collect();
         let mut applied = 0usize;
         let mut skipped = Vec::new();
         for (key, value) in stored {
@@ -704,10 +696,7 @@ mod tests {
         assert!(s.can_undo());
         s.undo();
         // The value after undo must be the previous one (0.7 default).
-        assert_eq!(
-            s.get("volume_master").unwrap(),
-            SettingValue::Float(0.7)
-        );
+        assert_eq!(s.get("volume_master").unwrap(), SettingValue::Float(0.7));
     }
 
     #[test]

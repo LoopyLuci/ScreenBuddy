@@ -269,8 +269,14 @@ impl DrawTarget {
             info.bmiHeader.biCompression = BI_RGB;
 
             let mut raw: *mut winapi::ctypes::c_void = std::ptr::null_mut();
-            let bitmap =
-                CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, std::ptr::null_mut(), 0);
+            let bitmap = CreateDIBSection(
+                dc,
+                &info,
+                DIB_RGB_COLORS,
+                &mut raw as *mut _ as *mut _,
+                std::ptr::null_mut(),
+                0,
+            );
             let old_bitmap = SelectObject(dc, bitmap as *mut _);
 
             Self {

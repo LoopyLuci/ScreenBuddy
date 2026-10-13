@@ -43,9 +43,7 @@ pub fn install_crash_handler() -> bool {
     }
 
     unsafe {
-        winapi::um::errhandlingapi::SetUnhandledExceptionFilter(Some(
-            unhandled_exception_filter,
-        ));
+        winapi::um::errhandlingapi::SetUnhandledExceptionFilter(Some(unhandled_exception_filter));
     }
 
     true
@@ -104,9 +102,7 @@ unsafe extern "system" fn unhandled_exception_filter(
 ///
 /// `MiniDumpWriteDump` is not in winapi 0.3.9's dbghelp module, so we
 /// declare it manually and load it from dbghelp.dll at runtime.
-fn write_minidump(
-    exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
-) -> Option<PathBuf> {
+fn write_minidump(exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS) -> Option<PathBuf> {
     let dir = crash_dir()?;
 
     let timestamp = std::time::SystemTime::now()
@@ -125,8 +121,7 @@ fn write_minidump(
             winapi::um::winnt::FILE_ATTRIBUTE_NORMAL,
             std::ptr::null_mut(),
         );
-        if file.is_null() || file == winapi::um::handleapi::INVALID_HANDLE_VALUE
-        {
+        if file.is_null() || file == winapi::um::handleapi::INVALID_HANDLE_VALUE {
             return None;
         }
 
@@ -157,8 +152,7 @@ fn write_minidump(
             *mut winapi::um::winnt::VOID,
         ) -> i32;
 
-        let mini_dump_write_dump: MiniDumpWriteDumpFn =
-            std::mem::transmute(func);
+        let mini_dump_write_dump: MiniDumpWriteDumpFn = std::mem::transmute(func);
 
         let mut exception = MiniDumpExceptionInformation {
             ThreadId: winapi::um::processthreadsapi::GetCurrentThreadId(),
@@ -244,11 +238,7 @@ mod widestring {
     pub struct Hstring(Vec<u16>);
     impl Hstring {
         pub fn from(s: &str) -> Self {
-            Self(
-                s.encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect(),
-            )
+            Self(s.encode_utf16().chain(std::iter::once(0)).collect())
         }
         pub fn as_ptr(&self) -> *const u16 {
             self.0.as_ptr()
@@ -286,10 +276,7 @@ mod tests {
         // On a clean test machine there's no registry key, so this should
         // return false. If someone has set the key, this test would fail,
         // but that's an acceptable tradeoff for not mocking the registry.
-        assert!(
-            !crash_dumps_disabled(),
-            "should not be disabled by default"
-        );
+        assert!(!crash_dumps_disabled(), "should not be disabled by default");
     }
 
     #[test]

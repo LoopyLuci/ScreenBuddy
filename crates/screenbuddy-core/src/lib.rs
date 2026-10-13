@@ -1,22 +1,22 @@
+pub mod accessibility;
 pub mod agent;
 pub mod agent_profile;
 pub mod ai;
-pub mod bench;
-pub mod crash;
-pub mod dpi;
-pub mod accessibility;
-pub mod eventlog;
-pub mod update;
 pub mod ai_bridge;
 pub mod animation;
 pub mod audio;
+pub mod bench;
 pub mod chat_overlay;
 pub mod chat_ui;
 pub mod config;
+pub mod crash;
 pub mod creature;
 pub mod creature_catalogue;
+pub mod dpi;
 pub mod error;
+pub mod eventlog;
 pub mod hardware;
+pub mod update;
 /// Returns whether creatures are currently visible on screen.
 /// Uses a process-wide atomic that the render loop updates each frame.
 pub fn creature_visibility() -> bool {

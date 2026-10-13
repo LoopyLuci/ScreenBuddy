@@ -114,10 +114,7 @@ pub fn notify_name_changed(hwnd: winapi::shared::windef::HWND) {
 ///
 /// This sets the window's text, which screen readers will announce.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn set_accessible_name(
-    hwnd: winapi::shared::windef::HWND,
-    name: &str,
-) {
+pub fn set_accessible_name(hwnd: winapi::shared::windef::HWND, name: &str) {
     unsafe {
         let wide = widestring::Hstring::from(name);
         winapi::um::winuser::SetWindowTextW(hwnd, wide.as_ptr());
@@ -126,9 +123,7 @@ pub fn set_accessible_name(
 
 /// Get the accessible name (window text) for a window.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub fn get_accessible_name(
-    hwnd: winapi::shared::windef::HWND,
-) -> String {
+pub fn get_accessible_name(hwnd: winapi::shared::windef::HWND) -> String {
     unsafe {
         let len = winapi::um::winuser::GetWindowTextLengthW(hwnd);
         if len == 0 {

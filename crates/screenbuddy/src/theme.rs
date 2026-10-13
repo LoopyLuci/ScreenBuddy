@@ -139,14 +139,20 @@ impl Theme {
     #[allow(dead_code)]
     pub fn create_font(&self, size: i32) -> Option<*mut winapi::ctypes::c_void> {
         unsafe {
-            let family: Vec<u16> = self.font_family
+            let family: Vec<u16> = self
+                .font_family
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
             let hfont = winapi::um::wingdi::CreateFontW(
-                size, 0, 0, 0,
+                size,
+                0,
+                0,
+                0,
                 winapi::um::wingdi::FW_NORMAL,
-                0, 0, 0,
+                0,
+                0,
+                0,
                 winapi::um::wingdi::DEFAULT_CHARSET,
                 winapi::um::wingdi::OUT_DEFAULT_PRECIS,
                 winapi::um::wingdi::CLIP_DEFAULT_PRECIS,
@@ -165,9 +171,7 @@ impl Theme {
     /// Create a solid brush from a theme color.
     #[allow(dead_code)]
     pub fn create_brush(&self, color: u32) -> *mut winapi::ctypes::c_void {
-        unsafe {
-            winapi::um::wingdi::CreateSolidBrush(color) as *mut winapi::ctypes::c_void
-        }
+        unsafe { winapi::um::wingdi::CreateSolidBrush(color) as *mut winapi::ctypes::c_void }
     }
 }
 

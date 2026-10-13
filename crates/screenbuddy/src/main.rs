@@ -438,7 +438,9 @@ fn main() {
             use std::os::windows::io::AsRawHandle;
             const FILE_TYPE_CHAR: u32 = 2;
             unsafe {
-                winapi::um::fileapi::GetFileType(std::io::stdin().as_raw_handle() as *mut winapi::ctypes::c_void) == FILE_TYPE_CHAR
+                winapi::um::fileapi::GetFileType(
+                    std::io::stdin().as_raw_handle() as *mut winapi::ctypes::c_void
+                ) == FILE_TYPE_CHAR
             }
         }
         #[cfg(not(windows))]
@@ -536,20 +538,11 @@ fn main() {
     // Check for updates in the background. Non-blocking: the app starts
     // immediately and the result is logged when it arrives.
     {
-        let current_version = screenbuddy_core::update::Version::parse(
-            env!("CARGO_PKG_VERSION"),
-        )
-        .unwrap_or_else(|| {
-            screenbuddy_core::update::Version::parse("0.0.0").unwrap()
-        });
+        let current_version = screenbuddy_core::update::Version::parse(env!("CARGO_PKG_VERSION"))
+            .unwrap_or_else(|| screenbuddy_core::update::Version::parse("0.0.0").unwrap());
         let manifest_url = screenbuddy_core::update::default_manifest_url();
         tokio::spawn(async move {
-            match screenbuddy_core::update::check_for_update(
-                manifest_url,
-                &current_version,
-            )
-            .await
-            {
+            match screenbuddy_core::update::check_for_update(manifest_url, &current_version).await {
                 screenbuddy_core::update::UpdateCheck::UpToDate => {
                     println!("[Update] Up to date (v{})", current_version);
                 }
@@ -691,9 +684,7 @@ fn main() {
             .clamp(5, 120) as u32
     };
     let read_theme = |settings: &screenbuddy_core::SettingsReader| -> String {
-        settings
-            .text("theme")
-            .unwrap_or_else(|| "dark".to_string())
+        settings.text("theme").unwrap_or_else(|| "dark".to_string())
     };
 
     // Shareable read handles. Cloned before the settings window takes a mutable
@@ -753,7 +744,8 @@ fn main() {
     // Apply the AI settings the engine was built before settings were loaded.
     // These report what they did rather than failing silently.
     {
-        if let Some(screenbuddy_core::SettingValue::String(provider)) = settings.lock().unwrap().get("ai_provider")
+        if let Some(screenbuddy_core::SettingValue::String(provider)) =
+            settings.lock().unwrap().get("ai_provider")
         {
             match screenbuddy_core::AiEngine::parse_backend(provider.as_str()) {
                 Ok(backend) => {
@@ -763,7 +755,9 @@ fn main() {
                 Err(e) => println!("[AI] {e}; keeping the default model list"),
             }
         }
-        if let Some(screenbuddy_core::SettingValue::String(model)) = settings.lock().unwrap().get("ai_model") {
+        if let Some(screenbuddy_core::SettingValue::String(model)) =
+            settings.lock().unwrap().get("ai_model")
+        {
             // An unknown model must say so: silently using a different one is
             // exactly the defect this audit turned up.
             match ai.set_default_model(model.as_str()) {
@@ -774,14 +768,20 @@ fn main() {
     }
 
     // Apply initial settings to audio
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_master") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) =
+        settings.lock().unwrap().get("volume_master")
+    {
         audio.set_master_volume(vol as f32);
     }
     // The two bus levels had no path from settings to playback.
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_effects") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) =
+        settings.lock().unwrap().get("volume_effects")
+    {
         audio.set_effects_volume(vol as f32);
     }
-    if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_music") {
+    if let Some(screenbuddy_core::SettingValue::Float(vol)) =
+        settings.lock().unwrap().get("volume_music")
+    {
         audio.set_music_volume(vol as f32);
     }
 
@@ -824,10 +824,9 @@ fn main() {
     // created after it and given a raw pointer plus a reader handle.
     // The window borrows the store the render loop owns. The reader was cloned
     // above, before this mutable borrow begins.
-    let mut settings_win =
-        Box::new(unsafe {
-            settings_window::SettingsView::new(settings_reader, &mut *settings.lock().unwrap())
-        });
+    let mut settings_win = Box::new(unsafe {
+        settings_window::SettingsView::new(settings_reader, &mut *settings.lock().unwrap())
+    });
     unsafe {
         settings_window::create_settings_window(settings_win.as_mut());
     }
@@ -999,7 +998,9 @@ fn main() {
                 } else {
                     cursor_pos
                 };
-                creature.physics.update(dt as f32, &screen, cursor, &all_positions);
+                creature
+                    .physics
+                    .update(dt as f32, &screen, cursor, &all_positions);
                 if dragged_creature == Some(i) {
                     if let Some(ref pos) = cursor_pos {
                         creature.physics.position = *pos;
@@ -1013,14 +1014,23 @@ fn main() {
         }
 
         // Render stats overlay (drawn on screen in main window)
-        if settings.lock().unwrap().get("show_render_stats").and_then(|v| match v {
-            screenbuddy_core::SettingValue::Bool(b) => Some(b != 0.0),
-            _ => None,
-        }).unwrap_or(false) {
+        if settings
+            .lock()
+            .unwrap()
+            .get("show_render_stats")
+            .and_then(|v| match v {
+                screenbuddy_core::SettingValue::Bool(b) => Some(b != 0.0),
+                _ => None,
+            })
+            .unwrap_or(false)
+        {
             let fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
-            let stats = format!("FPS: {:.1} | creatures: {} | visible: {}",
-                fps, creatures.len(),
-                creatures.values().filter(|c| c.visible).count());
+            let stats = format!(
+                "FPS: {:.1} | creatures: {} | visible: {}",
+                fps,
+                creatures.len(),
+                creatures.values().filter(|c| c.visible).count()
+            );
             // Forward to main window for on-screen rendering
             main_ui.set_stats_overlay(&stats);
         }
@@ -1072,20 +1082,21 @@ fn main() {
 
         // Check for settings changes
         if settings.lock().unwrap().changed() {
-            if let Some(screenbuddy_core::SettingValue::Float(vol)) = settings.lock().unwrap().get("volume_master")
+            if let Some(screenbuddy_core::SettingValue::Float(vol)) =
+                settings.lock().unwrap().get("volume_master")
             {
                 audio.set_master_volume(vol as f32);
             }
         }
-            anim_speed = settings
-              .lock()
-              .unwrap()
-              .get("animation_speed")
-                .and_then(|v| match v {
-                    screenbuddy_core::SettingValue::Float(f) => Some(f as f32),
-                    _ => None,
-                })
-                .unwrap_or(1.0);
+        anim_speed = settings
+            .lock()
+            .unwrap()
+            .get("animation_speed")
+            .and_then(|v| match v {
+                screenbuddy_core::SettingValue::Float(f) => Some(f as f32),
+                _ => None,
+            })
+            .unwrap_or(1.0);
 
         // Tray events. The tray window runs on its own thread and posts through
         // a process-wide slot, so drain everything it queued rather than taking
@@ -1182,15 +1193,7 @@ fn main() {
                             } else {
                                 winapi::um::winuser::HWND_NOTOPMOST
                             };
-                            winapi::um::winuser::SetWindowPos(
-                                hwnd,
-                                z_order,
-                                0,
-                                0,
-                                0,
-                                0,
-                                flags,
-                            );
+                            winapi::um::winuser::SetWindowPos(hwnd, z_order, 0, 0, 0, 0, flags);
                         }
                         tray.set_always_on_top(new_state);
                         println!("[Tray] always-on-top: {}", new_state);
@@ -1310,12 +1313,10 @@ fn main() {
                     println!("[Chat] Stop requested");
                     main_ui.set_generating(false);
                 }
-                UiEvent::ExportConversation => {
-                    match main_ui.export_conversation() {
-                        Ok(path) => println!("[Chat] Exported conversation to {path}"),
-                        Err(e) => eprintln!("[Chat] Export failed: {e}"),
-                    }
-                }
+                UiEvent::ExportConversation => match main_ui.export_conversation() {
+                    Ok(path) => println!("[Chat] Exported conversation to {path}"),
+                    Err(e) => eprintln!("[Chat] Export failed: {e}"),
+                },
                 UiEvent::ToggleSearch => {
                     main_ui.toggle_search();
                 }
@@ -1951,14 +1952,8 @@ fn run_benchmark_mode() {
 
     // Parse optional CLI args: --benchmark [duration_secs] [creature_count]
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let duration_secs = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10u64);
-    let creature_count = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4usize);
+    let duration_secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10u64);
+    let creature_count = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4usize);
 
     let config = screenbuddy_core::bench::BenchConfig {
         duration_secs,
@@ -1980,23 +1975,14 @@ fn run_benchmark_mode() {
     println!();
     println!("Results (wall time: {:.1}s):", elapsed.as_secs_f64());
     println!("  Frames rendered:    {}", result.frame_count);
-    println!(
-        "  Effective FPS:      {:.1}",
-        result.fps_effective
-    );
+    println!("  Effective FPS:      {:.1}", result.fps_effective);
     println!("  Frame time p50:     {:.2} ms", result.p50_ms);
     println!("  Frame time p95:     {:.2} ms", result.p95_ms);
     println!("  Frame time p99:     {:.2} ms", result.p99_ms);
     println!("  Frame time mean:    {:.2} ms", result.mean_ms);
     println!("  Frame time worst:   {:.2} ms", result.worst_ms);
-    println!(
-        "  Memory start:       {:.1} MB",
-        result.memory_start_mb
-    );
-    println!(
-        "  Memory end:         {:.1} MB",
-        result.memory_end_mb
-    );
+    println!("  Memory start:       {:.1} MB", result.memory_start_mb);
+    println!("  Memory end:         {:.1} MB", result.memory_end_mb);
     println!(
         "  Memory delta:       {:.1} MB",
         result.memory_end_mb - result.memory_start_mb
@@ -2006,9 +1992,15 @@ fn run_benchmark_mode() {
     // Verdict: did we hold the target?
     let budget_ms = 1000.0 / config.fps_target as f64;
     if result.p95_ms <= budget_ms {
-        println!("\nPASS: p95 frame time ({:.2}ms) within budget ({:.2}ms)", result.p95_ms, budget_ms);
+        println!(
+            "\nPASS: p95 frame time ({:.2}ms) within budget ({:.2}ms)",
+            result.p95_ms, budget_ms
+        );
     } else {
-        println!("\nFAIL: p95 frame time ({:.2}ms) exceeds budget ({:.2}ms)", result.p95_ms, budget_ms);
+        println!(
+            "\nFAIL: p95 frame time ({:.2}ms) exceeds budget ({:.2}ms)",
+            result.p95_ms, budget_ms
+        );
         std::process::exit(1);
     }
 }
@@ -2026,14 +2018,8 @@ fn run_soak_mode() {
 
     // Parse optional CLI args: --soak [duration_secs] [sample_interval_secs]
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let duration_secs = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(86400u64);
-    let sample_interval_secs = args
-        .get(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60u64);
+    let duration_secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(86400u64);
+    let sample_interval_secs = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(60u64);
 
     let config = screenbuddy_core::bench::SoakConfig {
         duration_secs,
@@ -2065,8 +2051,10 @@ fn run_soak_mode() {
     println!("  Handle growth:     {}", result.handle_growth);
 
     if result.leak_detected {
-        println!("\nFAIL: Leak detected (memory +{:.1} MB, handles +{})",
-            result.memory_growth_mb, result.handle_growth);
+        println!(
+            "\nFAIL: Leak detected (memory +{:.1} MB, handles +{})",
+            result.memory_growth_mb, result.handle_growth
+        );
         std::process::exit(1);
     } else {
         println!("\nPASS: No leaks detected");
@@ -2231,15 +2219,17 @@ fn publish_status(
     // Drop entries for creatures that no longer exist.
     let live: std::collections::HashSet<&String> = creatures.keys().collect();
     snapshot.creatures.retain(|id, _| live.contains(id));
-    snapshot.chat_history = ai_bridge.overlay().lock().unwrap().messages()
+    snapshot.chat_history = ai_bridge
+        .overlay()
+        .lock()
+        .unwrap()
+        .messages()
         .iter()
         .map(|m| (m.role.to_string(), m.content.clone()))
         .collect();
     // Sync to process-wide atomics so the tray thread reads fresh state.
     screenbuddy_core::set_creature_count(creatures.len());
-    screenbuddy_core::set_always_on_top(
-        snapshot.always_on_top,
-    );
+    screenbuddy_core::set_always_on_top(snapshot.always_on_top);
 }
 
 fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) {
@@ -2292,8 +2282,6 @@ fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) 
         }
     }
 }
-
-
 
 unsafe extern "system" fn window_proc(
     hwnd: winapi::shared::windef::HWND,
@@ -2397,10 +2385,19 @@ mod tests {
     #[test]
     fn a_bool_setting_is_published_as_a_real_bool() {
         // Stored as 1.0/0.0; a consumer reading JSON must not get a number.
-        assert_eq!(setting_to_json(&SettingValue::Bool(1.0)), serde_json::json!(true));
-        assert_eq!(setting_to_json(&SettingValue::Bool(0.0)), serde_json::json!(false));
+        assert_eq!(
+            setting_to_json(&SettingValue::Bool(1.0)),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            setting_to_json(&SettingValue::Bool(0.0)),
+            serde_json::json!(false)
+        );
         assert_eq!(setting_to_json(&SettingValue::Int(3)), serde_json::json!(3));
-        assert_eq!(setting_to_json(&SettingValue::Float(0.5)), serde_json::json!(0.5));
+        assert_eq!(
+            setting_to_json(&SettingValue::Float(0.5)),
+            serde_json::json!(0.5)
+        );
         assert_eq!(
             setting_to_json(&SettingValue::String("light".into())),
             serde_json::json!("light")

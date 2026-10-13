@@ -7,8 +7,6 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 
-
-
 /// A display device with its DPI and bounds.
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
@@ -56,13 +54,7 @@ pub fn enumerate_displays() -> Vec<DisplayInfo> {
         dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
 
         let mut index = 0;
-        while winapi::um::winuser::EnumDisplayDevicesW(
-            std::ptr::null(),
-            index,
-            &mut dev,
-            0,
-        ) != 0
-        {
+        while winapi::um::winuser::EnumDisplayDevicesW(std::ptr::null(), index, &mut dev, 0) != 0 {
             let is_primary =
                 (dev.StateFlags & winapi::um::wingdi::DISPLAY_DEVICE_PRIMARY_DEVICE) != 0;
 
@@ -173,10 +165,7 @@ pub fn get_dpi_for_display(device_name: *const u16) -> (u32, f32) {
             std::ptr::null(),
         );
         if !hdc.is_null() {
-            let dpi_x = winapi::um::wingdi::GetDeviceCaps(
-                hdc,
-                winapi::um::wingdi::LOGPIXELSX,
-            );
+            let dpi_x = winapi::um::wingdi::GetDeviceCaps(hdc, winapi::um::wingdi::LOGPIXELSX);
             winapi::um::wingdi::DeleteDC(hdc);
             if dpi_x > 0 {
                 return (dpi_x as u32, dpi_x as f32 / 96.0);
@@ -296,7 +285,12 @@ mod tests {
 
     #[test]
     fn rect_contains_works() {
-        let r = Rect { left: 0, top: 0, right: 100, bottom: 100 };
+        let r = Rect {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 100,
+        };
         assert!(r.contains(50, 50));
         assert!(r.contains(0, 0));
         assert!(!r.contains(100, 50));
@@ -306,8 +300,18 @@ mod tests {
 
     #[test]
     fn clamp_to_display_moves_rect_inside() {
-        let display = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
-        let rect = Rect { left: -50, top: -50, right: 200, bottom: 200 };
+        let display = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let rect = Rect {
+            left: -50,
+            top: -50,
+            right: 200,
+            bottom: 200,
+        };
         let clamped = clamp_to_display(&rect, &display);
         assert!(clamped.left >= display.left);
         assert!(clamped.top >= display.top);
@@ -315,8 +319,18 @@ mod tests {
 
     #[test]
     fn clamp_to_display_shifts_back_inside() {
-        let display = Rect { left: 0, top: 0, right: 1920, bottom: 1080 };
-        let rect = Rect { left: 1800, top: 1000, right: 2000, bottom: 1200 };
+        let display = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let rect = Rect {
+            left: 1800,
+            top: 1000,
+            right: 2000,
+            bottom: 1200,
+        };
         let clamped = clamp_to_display(&rect, &display);
         assert!(clamped.right <= display.right);
         assert!(clamped.bottom <= display.bottom);

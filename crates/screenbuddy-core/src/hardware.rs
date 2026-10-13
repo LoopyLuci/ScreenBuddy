@@ -174,20 +174,15 @@ impl HardwareProfile {
             dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
             let mut idx = 0u32;
             while unsafe {
-                winapi::um::winuser::EnumDisplayDevicesW(
-                    std::ptr::null_mut(),
-                    idx,
-                    &mut dev,
-                    0,
-                )
+                winapi::um::winuser::EnumDisplayDevicesW(std::ptr::null_mut(), idx, &mut dev, 0)
             } != 0
             {
                 let name = String::from_utf16_lossy(
-                    &dev.DeviceString[..dev.DeviceString.iter().position(|&c| c == 0).unwrap_or(32)],
+                    &dev.DeviceString
+                        [..dev.DeviceString.iter().position(|&c| c == 0).unwrap_or(32)],
                 );
                 // Skip mirroring drivers and other pseudo-devices.
-                if dev.StateFlags & 0x1 == 0 || name.is_empty()
-                {
+                if dev.StateFlags & 0x1 == 0 || name.is_empty() {
                     idx += 1;
                     dev = unsafe { std::mem::zeroed() };
                     dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
@@ -394,20 +389,29 @@ fn graphics_apis_for(device_type: GpuDeviceType, macos: bool) -> Vec<GraphicsApi
 /// every portable GPU-detection library does under the hood.
 fn classify_gpu_name(name: &str) -> (GpuVendor, GpuDeviceType) {
     let lower = name.to_lowercase();
-    let vendor = if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("quadro") {
-        GpuVendor::Nvidia
-    } else if lower.contains("amd") || lower.contains("radeon") || lower.contains("firepro") {
-        GpuVendor::Amd
-    } else if lower.contains("intel") || lower.contains("iris") || lower.contains("hd graphics") || lower.contains("uhd") {
-        GpuVendor::Intel
-    } else if lower.contains("apple") {
-        GpuVendor::Apple
-    } else {
-        GpuVendor::Unknown
-    };
+    let vendor =
+        if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("quadro") {
+            GpuVendor::Nvidia
+        } else if lower.contains("amd") || lower.contains("radeon") || lower.contains("firepro") {
+            GpuVendor::Amd
+        } else if lower.contains("intel")
+            || lower.contains("iris")
+            || lower.contains("hd graphics")
+            || lower.contains("uhd")
+        {
+            GpuVendor::Intel
+        } else if lower.contains("apple") {
+            GpuVendor::Apple
+        } else {
+            GpuVendor::Unknown
+        };
     let device_type = if lower.contains("basic render") || lower.contains("microsoft basic") {
         GpuDeviceType::CpuSoftware
-    } else if lower.contains("virtual") || lower.contains("vbox") || lower.contains("vmware") || lower.contains("hyper-v") {
+    } else if lower.contains("virtual")
+        || lower.contains("vbox")
+        || lower.contains("vmware")
+        || lower.contains("hyper-v")
+    {
         GpuDeviceType::Virtual
     } else if vendor == GpuVendor::Intel {
         // Intel GPUs in laptops are almost always integrated; discrete Intel
@@ -419,7 +423,10 @@ fn classify_gpu_name(name: &str) -> (GpuVendor, GpuDeviceType) {
         }
     } else {
         // AMD and NVIDIA GPUs are discrete unless explicitly named otherwise.
-        if lower.contains("integrated") || lower.contains("vega graphics") || lower.contains("radeon graphics") {
+        if lower.contains("integrated")
+            || lower.contains("vega graphics")
+            || lower.contains("radeon graphics")
+        {
             GpuDeviceType::Integrated
         } else {
             GpuDeviceType::Discrete

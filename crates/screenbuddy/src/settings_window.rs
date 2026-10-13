@@ -339,7 +339,10 @@ impl SettingsView {
                 state,
                 name: def.name.clone(),
                 description: format!("{} · {}", def.category.as_str(), def.description),
-                value: self.reader.get(&def.name).unwrap_or_else(|| def.default.clone()),
+                value: self
+                    .reader
+                    .get(&def.name)
+                    .unwrap_or_else(|| def.default.clone()),
                 min: def.min.as_ref().map(numeric),
                 max: def.max.as_ref().map(numeric),
             });
@@ -645,8 +648,11 @@ impl SettingsView {
             self.rows.clone()
         } else {
             let q = self.search_query.to_lowercase();
-            self.rows.iter()
-                .filter(|r| r.name.to_lowercase().contains(&q) || r.description.to_lowercase().contains(&q))
+            self.rows
+                .iter()
+                .filter(|r| {
+                    r.name.to_lowercase().contains(&q) || r.description.to_lowercase().contains(&q)
+                })
                 .cloned()
                 .collect()
         };
@@ -986,9 +992,7 @@ impl SettingsView {
             ofn.lStructSize = std::mem::size_of::<winapi::um::commdlg::OPENFILENAMEW>() as u32;
             ofn.hwndOwner = owner;
             // "JSON\0*.json\0All files\0*.*\0\0" as UTF-16.
-            let filter: Vec<u16> = "JSON\0*.json\0All files\0*.*\0\0"
-                .encode_utf16()
-                .collect();
+            let filter: Vec<u16> = "JSON\0*.json\0All files\0*.*\0\0".encode_utf16().collect();
             ofn.lpstrFilter = filter.as_ptr();
             ofn.lpstrFile = buf.as_mut_ptr();
             ofn.nMaxFile = buf.len() as u32;
@@ -1132,7 +1136,14 @@ fn next_value(value: &SettingValue) -> SettingValue {
         SettingValue::String(s) => {
             // Cycle through known AI models. The settings window has no direct
             // access to the AI engine, so we cycle through a static list.
-            let models = ["llama3.2", "mistral", "gemma2", "qwen2.5", "phi3", "codellama"];
+            let models = [
+                "llama3.2",
+                "mistral",
+                "gemma2",
+                "qwen2.5",
+                "phi3",
+                "codellama",
+            ];
             if models.is_empty() {
                 SettingValue::String("No models".into())
             } else {
@@ -1240,7 +1251,9 @@ unsafe extern "system" fn settings_proc(
             }
             // Track Ctrl from the message stream so injected input works; see
             // the note on ctrl_down.
-            if wparam == VK_CONTROL as usize || wparam == VK_LCONTROL as usize || wparam == VK_RCONTROL as usize
+            if wparam == VK_CONTROL as usize
+                || wparam == VK_LCONTROL as usize
+                || wparam == VK_RCONTROL as usize
             {
                 if !view_ptr.is_null() {
                     (*view_ptr).ctrl_down = true;
@@ -1266,10 +1279,8 @@ unsafe extern "system" fn settings_proc(
                 }
             }
             // Tab / Shift+Tab: move focus between controls
-            if wparam == VK_TAB as usize || wparam == VK_DOWN as usize || wparam == VK_UP as usize
-            {
-                let view_ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+            if wparam == VK_TAB as usize || wparam == VK_DOWN as usize || wparam == VK_UP as usize {
+                let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
                 if !view_ptr.is_null() {
                     unsafe {
                         let shift = GetKeyState(VK_SHIFT) < 0;
@@ -1277,7 +1288,11 @@ unsafe extern "system" fn settings_proc(
                         if count > 0 {
                             let current = (*view_ptr).focused_row.unwrap_or(0);
                             let next = if wparam == VK_UP as usize || shift {
-                                if current == 0 { count - 1 } else { current - 1 }
+                                if current == 0 {
+                                    count - 1
+                                } else {
+                                    current - 1
+                                }
                             } else {
                                 (current + 1) % count
                             };
@@ -1289,8 +1304,7 @@ unsafe extern "system" fn settings_proc(
             }
             // Enter/Space: activate focused control
             if wparam == VK_RETURN as usize || wparam == VK_SPACE as usize {
-                let view_ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
+                let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
                 if !view_ptr.is_null() {
                     unsafe {
                         if let Some(row) = (*view_ptr).focused_row {
@@ -1339,10 +1353,15 @@ unsafe extern "system" fn settings_proc(
             let rect = *(lparam as *const RECT);
             let _new_dpi = (wparam & 0xFFFF) as u32;
             unsafe {
-                SetWindowPos(hwnd, ptr::null_mut(),
-                    rect.left, rect.top,
-                    rect.right - rect.left, rect.bottom - rect.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
                 // Re-layout controls at new scale
                 let view_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsView;
                 if !view_ptr.is_null() {
@@ -1498,10 +1517,7 @@ mod tests {
         assert_eq!(describe(&SettingValue::Bool(1.0)), "on");
         assert_eq!(describe(&SettingValue::Bool(0.0)), "off");
         assert_eq!(describe(&SettingValue::String("hi".into())), "hi");
-        assert_eq!(
-            describe(&SettingValue::Enum("dark".into(), vec![])),
-            "dark"
-        );
+        assert_eq!(describe(&SettingValue::Enum("dark".into(), vec![])), "dark");
     }
 
     #[test]

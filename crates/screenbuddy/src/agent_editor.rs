@@ -1638,10 +1638,15 @@ unsafe extern "system" fn editor_proc(hwnd: HWND, msg: u32, wparam: usize, lpara
         WM_DPICHANGED => {
             let rect = *(lparam as *const RECT);
             unsafe {
-                SetWindowPos(hwnd, ptr::null_mut(),
-                    rect.left, rect.top,
-                    rect.right - rect.left, rect.bottom - rect.top,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(
+                    hwnd,
+                    ptr::null_mut(),
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
             }
             0
         }
