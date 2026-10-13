@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --notes)
-            NOTES="$2"
+            NOTES="${2:-}"
             shift 2
             ;;
         -*)
@@ -78,28 +78,45 @@ echo "[2/7] Generating changelog entry..."
 generate_changelog() {
     local date_str
     date_str=$(date +%Y-%m-%d)
-    local entry="## [$VERSION] - $date_str"
-    if [[ -n "$NOTES" ]]; then
-        entry="$entry
 
-$NOTES"
-    else
-        entry="$entry
-
-- See commit log for details."
-    fi
+    # Build the entry block in a temp file and splice it in before the first
+    # existing version heading. The old sed program broke when $NOTES
+    # contained slashes or other metacharacters, aborting the release.
+    local tmp_entry tmp_out
+    tmp_entry="$(mktemp)"
+    tmp_out="$(mktemp)"
+    {
+        echo "## [$VERSION] - $date_str"
+        echo ""
+        if [[ -n "$NOTES" ]]; then
+            echo "$NOTES"
+        else
+            echo "- See commit log for details."
+        fi
+        echo ""
+    } > "$tmp_entry"
 
     if [[ -f "$CHANGELOG_FILE" ]]; then
-        # Insert after the first line (# Changelog)
-        sed -i "1a\\
-\\
-$entry\\
-" "$CHANGELOG_FILE"
+        awk -v ef="$tmp_entry" '
+            BEGIN { ins = 0 }
+            {
+                if (!ins && $0 ~ /^## \[/) {
+                    while ((getline l < ef) > 0) print l
+                    ins = 1
+                }
+                print
+            }
+            END {
+                if (!ins) { while ((getline l < ef) > 0) print l }
+            }
+        ' "$CHANGELOG_FILE" > "$tmp_out"
+        mv "$tmp_out" "$CHANGELOG_FILE"
     else
         echo "# Changelog" > "$CHANGELOG_FILE"
         echo "" >> "$CHANGELOG_FILE"
-        echo "$entry" >> "$CHANGELOG_FILE"
+        cat "$tmp_entry" >> "$CHANGELOG_FILE"
     fi
+    rm -f "$tmp_entry"
     echo "  Changelog updated"
 }
 generate_changelog
@@ -111,10 +128,15 @@ echo "  Desktop binary built"
 
 # 4. Build Android APK
 echo "[4/7] Building Android APK..."
+APK_PATH="$ROOT_DIR/ScreenBuddy-Android/app/build/outputs/apk/release/app-release.apk"
 if [[ -f "$ROOT_DIR/ScreenBuddy-Android/gradlew" ]]; then
-    cd "$ROOT_DIR/ScreenBuddy-Android"
-    ./gradlew assembleRelease
-    echo "  Android APK built"
+    # Remove any prior APK first, so a failed build cannot stage a stale one.
+    rm -f "$APK_PATH"
+    if (cd "$ROOT_DIR/ScreenBuddy-Android" && ./gradlew assembleRelease); then
+        echo "  Android APK built"
+    else
+        echo "  Warning: Android build failed; continuing with desktop only"
+    fi
 else
     echo "  Skipping Android APK (gradlew not found)"
 fi
@@ -124,16 +146,15 @@ echo "[5/7] Staging artifacts..."
 mkdir -p "$DIST_DIR"
 cp "$ROOT_DIR/target/release/screenbuddy.exe" "$DIST_DIR/ScreenBuddy-v$VERSION-windows-x64.exe"
 if [[ -f "$ROOT_DIR/ScreenBuddy-Android/app/build/outputs/apk/release/app-release.apk" ]]; then
-    cp "$ROOT_DIR/ScreenBuddy-Android/app/build/outputs/apk/release/app-release.apk" "$DIST_DIR/ScreenBuddy-v$VERSION-android.apk"
+    cp "$ROOT_DIR/ScreenBuddy-Android/app/build/outputs/apk/release/app-release.apk" \
+       "$DIST_DIR/ScreenBuddy-v$VERSION-android.apk"
 fi
 echo "  Artifacts staged in dist/"
 
 # 6. Sign binaries (optional)
 if [[ "$SIGN" == "true" ]]; then
     echo "[6/7] Signing binaries..."
-    # Windows signing requires signtool.exe (part of Windows SDK)
     if command -v signtool &> /dev/null; then
-        # Sign desktop binary
         signtool sign /fd SHA256 /tr http://timestamp.digicer.com /td SHA256 \
             "$DIST_DIR/ScreenBuddy-v$VERSION-windows-x64.exe" || \
             echo "  Warning: Desktop signing failed"
@@ -142,7 +163,6 @@ if [[ "$SIGN" == "true" ]]; then
         echo "  Warning: signtool not found, skipping Windows signing"
     fi
 
-    # Android APK signing
     if [[ -f "$ROOT_DIR/ScreenBuddy-Android/keystore.properties" ]]; then
         echo "  Android APK signed via Gradle"
     else
@@ -154,9 +174,15 @@ fi
 
 # 7. Create git tag
 echo "[7/7] Creating git tag..."
-git -C "$ROOT_DIR" add -A
-git -C "$ROOT_DIR" commit -m "Release v$VERSION" || echo "  Nothing to commit"
-git -C "$ROOT_DIR" tag -a "v$VERSION" -m "Release v$VERSION" || echo "  Tag already exists"
+# cd into the repo in a subshell rather than `git -C "$ROOT_DIR"`: on this
+# Windows/MSYS host ROOT_DIR is a POSIX path (/c/...) that native git cannot
+# `cd` to, which aborted the release. `cd` is a bash builtin and handles it.
+(
+    cd "$ROOT_DIR"
+    git add -A
+    git commit -m "Release v$VERSION" || echo "  Nothing to commit"
+    git tag -a "v$VERSION" -m "Release v$VERSION" || echo "  Tag already exists"
+)
 echo "  Git tag v$VERSION created"
 
 echo ""
