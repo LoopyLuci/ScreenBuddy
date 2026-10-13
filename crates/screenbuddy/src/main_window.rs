@@ -9,6 +9,7 @@
 //! Rendering is plain GDI into a DIBSection, matching the rest of the project;
 //! no new dependency is introduced.
 
+use winapi::ctypes;
 use std::mem;
 use std::ptr;
 
@@ -1084,8 +1085,8 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    let mut raw: *mut core::ffi::c_void = ptr::null_mut();
-    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw, ptr::null_mut(), 0);
+    let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
+    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &raw as *const _ as *mut _, ptr::null_mut(), 0);
     ReleaseDC(ptr::null_mut(), screen);
     if bitmap.is_null() || raw.is_null() {
         DeleteDC(mem_dc);
@@ -2251,12 +2252,12 @@ unsafe fn draw_runs(
 
 /// Select a GDI object into a DC, hiding the *mut c_void cast this winapi
 /// version's signature requires.
-fn select_obj(dc: HDC, obj: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+fn select_obj(dc: HDC, obj: *mut winapi::ctypes::c_void) -> *mut winapi::ctypes::c_void {
     unsafe { SelectObject(dc, obj) }
 }
 
 /// Delete a GDI object created by this module.
-fn del_obj(obj: *mut core::ffi::c_void) {
+fn del_obj(obj: *mut winapi::ctypes::c_void) {
     unsafe {
         DeleteObject(obj);
     }
@@ -2302,9 +2303,9 @@ impl DrawTarget {
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
             bmi.bmiHeader.biCompression = BI_RGB;
-            let mut raw: *mut core::ffi::c_void = ptr::null_mut();
+            let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
             let bitmap =
-                CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw, ptr::null_mut(), 0);
+                CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &raw as *const _ as *mut _, ptr::null_mut(), 0);
             ReleaseDC(ptr::null_mut(), screen);
             if bitmap.is_null() || raw.is_null() {
                 DeleteDC(dc);

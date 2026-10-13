@@ -14,6 +14,7 @@
 //! with no consumer, and the UI greys them out rather than implying they work.
 
 #![cfg(windows)]
+use winapi::ctypes;
 
 use crate::gdi::{
     del_obj, draw_rect, draw_text, fill_rect, font_height, measure_text, select_font, select_obj,
@@ -1043,12 +1044,12 @@ impl SettingsView {
 
             let screen_dc = GetDC(hwnd);
             let mem_dc = CreateCompatibleDC(screen_dc);
-            let mut raw: *mut core::ffi::c_void = ptr::null_mut();
+            let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
             let bitmap = CreateDIBSection(
                 screen_dc,
                 &info,
                 DIB_RGB_COLORS,
-                &mut raw,
+                &raw as *const _ as *mut _,
                 ptr::null_mut(),
                 0,
             );

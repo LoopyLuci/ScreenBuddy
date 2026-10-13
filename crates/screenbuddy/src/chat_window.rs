@@ -3,6 +3,7 @@
 //! A transparent layered window with message history display and input field.
 //! Uses GDI (TextOutW, DrawTextW) for text rendering and UpdateLayeredWindow
 //! for transparent compositing.
+use winapi::ctypes;
 
 use std::mem;
 use std::ptr;
@@ -199,7 +200,7 @@ pub mod platform {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 h_instance,
-                chat as *mut ChatWindow as *mut c_void,
+                chat as *mut ChatWindow as *mut winapi::ctypes::c_void,
             );
 
             if hwnd.is_null() {
@@ -370,7 +371,7 @@ pub mod platform {
             hdc_screen,
             &bmi,
             DIB_RGB_COLORS,
-            &mut pixel_data,
+            &pixel_data as *const _ as *mut _,
             ptr::null_mut(),
             0,
         );

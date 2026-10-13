@@ -4,6 +4,7 @@
 //! dark and light modes, and so changing a color touches one file instead of
 //! every window proc.
 
+use winapi::ctypes;
 /// A complete visual theme: colors, fonts, and spacing.
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -133,7 +134,7 @@ impl Theme {
     }
 
     /// Create a GDI font at the given size in points.
-    pub fn create_font(&self, size: i32) -> Option<*mut core::ffi::c_void> {
+    pub fn create_font(&self, size: i32) -> Option<*mut winapi::ctypes::c_void> {
         unsafe {
             let family: Vec<u16> = self.font_family
                 .encode_utf16()
@@ -153,15 +154,15 @@ impl Theme {
             if hfont.is_null() {
                 None
             } else {
-                Some(hfont as *mut core::ffi::c_void)
+                Some(hfont as *mut winapi::ctypes::c_void)
             }
         }
     }
 
     /// Create a solid brush from a theme color.
-    pub fn create_brush(&self, color: u32) -> *mut core::ffi::c_void {
+    pub fn create_brush(&self, color: u32) -> *mut winapi::ctypes::c_void {
         unsafe {
-            winapi::um::wingdi::CreateSolidBrush(color) as *mut core::ffi::c_void
+            winapi::um::wingdi::CreateSolidBrush(color) as *mut winapi::ctypes::c_void
         }
     }
 }

@@ -314,7 +314,7 @@ fn main() {
         }
     };
 
-    let mut renderer = CompositeRenderer::new(hwnd as *mut core::ffi::c_void, 800, 600);
+    let mut renderer = CompositeRenderer::new(hwnd as *mut winapi::ctypes::c_void, 800, 600);
     let start_time = Instant::now();
 
     let mut tray = screenbuddy_core::SystemTray::new();
@@ -359,7 +359,7 @@ fn main() {
             use std::os::windows::io::AsRawHandle;
             const FILE_TYPE_CHAR: u32 = 2;
             unsafe {
-                winapi::um::fileapi::GetFileType(std::io::stdin().as_raw_handle()) == FILE_TYPE_CHAR
+                winapi::um::fileapi::GetFileType(std::io::stdin().as_raw_handle() as *mut winapi::ctypes::c_void) == FILE_TYPE_CHAR
             }
         }
         #[cfg(not(windows))]

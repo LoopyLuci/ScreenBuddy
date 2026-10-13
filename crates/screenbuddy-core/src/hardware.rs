@@ -41,7 +41,7 @@ pub enum GpuVendor {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuDeviceType {
     Discrete,
     Integrated,
@@ -166,48 +166,54 @@ impl HardwareProfile {
     }
 
     fn detect_gpus() -> Vec<GpuInfo> {
-        // Try wgpu adapter enumeration for GPU info
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
         let mut gpus = Vec::new();
-        // Note: wgpu doesn't directly expose VRAM, but adapter info gives us names
-        // For full VRAM detection, we'd need DXGI on Windows, nvml for NVIDIA, etc.
-        for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
-            let info = adapter.get_info();
-            let vendor = match info.vendor {
-                0x10de => GpuVendor::Nvidia,
-                0x1002 => GpuVendor::Amd,
-                0x8086 => GpuVendor::Intel,
-                _ => GpuVendor::Unknown,
-            };
-            let device_type = match info.device_type {
-                wgpu::DeviceType::DiscreteGpu => GpuDeviceType::Discrete,
-                wgpu::DeviceType::IntegratedGpu => GpuDeviceType::Integrated,
-                wgpu::DeviceType::VirtualGpu => GpuDeviceType::Virtual,
-                wgpu::DeviceType::Cpu => GpuDeviceType::CpuSoftware,
-                _ => GpuDeviceType::Discrete,
-            };
-            gpus.push(GpuInfo {
-                name: info.name,
-                vendor,
-                device_type,
-                // wgpu exposes no VRAM figure. Reporting 0 with `vram_known`
-                // false is honest; the previous code implied a measured value it
-                // never had.
-                vram_mb: 0,
-                vram_known: false,
-                driver_version: info.driver,
-                // Derive the API list from what the backend actually is, instead
-                // of claiming Vulkan on a Metal-only machine.
-                api_support: graphics_apis_for(info.device_type, cfg!(target_os = "macos")),
-                // Rank by device class, which is a real signal, rather than a
-                // constant 100 that made every adapter look equally capable.
-                compute_score: compute_score_for(info.device_type),
-                is_primary: gpus.is_empty(),
-            });
+
+        #[cfg(target_os = "windows")]
+        {
+            let mut dev: winapi::um::wingdi::DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+            dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
+            let mut idx = 0u32;
+            while unsafe {
+                winapi::um::winuser::EnumDisplayDevicesW(
+                    std::ptr::null_mut(),
+                    idx,
+                    &mut dev,
+                    0,
+                )
+            } != 0
+            {
+                let name = String::from_utf16_lossy(
+                    &dev.DeviceString[..dev.DeviceString.iter().position(|&c| c == 0).unwrap_or(32)],
+                );
+                // Skip mirroring drivers and other pseudo-devices.
+                if dev.StateFlags & 0x1 == 0 || name.is_empty()
+                {
+                    idx += 1;
+                    dev = unsafe { std::mem::zeroed() };
+                    dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
+                    continue;
+                }
+                let (vendor, device_type) = classify_gpu_name(&name);
+                let driver = String::from_utf16_lossy(
+                    &dev.DeviceKey[..dev.DeviceKey.iter().position(|&c| c == 0).unwrap_or(255)],
+                );
+                gpus.push(GpuInfo {
+                    name,
+                    vendor,
+                    device_type,
+                    // EnumDisplayDevices exposes no VRAM figure. Reporting 0 with
+                    // `vram_known` false is honest about that.
+                    vram_mb: 0,
+                    vram_known: false,
+                    driver_version: driver,
+                    api_support: graphics_apis_for(device_type, cfg!(target_os = "macos")),
+                    compute_score: compute_score_for(device_type),
+                    is_primary: gpus.is_empty(),
+                });
+                idx += 1;
+                dev = unsafe { std::mem::zeroed() };
+                dev.cb = std::mem::size_of::<winapi::um::wingdi::DISPLAY_DEVICEW>() as u32;
+            }
         }
 
         // If no adapters found, add a placeholder for software rendering
@@ -365,9 +371,9 @@ impl HardwareProfile {
 ///
 /// Derived from the OS rather than hardcoded, so a macOS machine no longer
 /// claims Vulkan support it cannot have.
-fn graphics_apis_for(device_type: wgpu::DeviceType, macos: bool) -> Vec<GraphicsApi> {
+fn graphics_apis_for(device_type: GpuDeviceType, macos: bool) -> Vec<GraphicsApi> {
     let mut apis = Vec::new();
-    if device_type == wgpu::DeviceType::Cpu {
+    if device_type == GpuDeviceType::CpuSoftware {
         apis.push(GraphicsApi::WebGpu);
         return apis;
     }
@@ -381,16 +387,57 @@ fn graphics_apis_for(device_type: wgpu::DeviceType, macos: bool) -> Vec<Graphics
     apis
 }
 
+/// Classify a GPU from its display device name.
+///
+/// Win32 gives us the device name but not a clean vendor or device-type enum.
+/// This is a best-effort classification from the name string, which is what
+/// every portable GPU-detection library does under the hood.
+fn classify_gpu_name(name: &str) -> (GpuVendor, GpuDeviceType) {
+    let lower = name.to_lowercase();
+    let vendor = if lower.contains("nvidia") || lower.contains("geforce") || lower.contains("quadro") {
+        GpuVendor::Nvidia
+    } else if lower.contains("amd") || lower.contains("radeon") || lower.contains("firepro") {
+        GpuVendor::Amd
+    } else if lower.contains("intel") || lower.contains("iris") || lower.contains("hd graphics") || lower.contains("uhd") {
+        GpuVendor::Intel
+    } else if lower.contains("apple") {
+        GpuVendor::Apple
+    } else {
+        GpuVendor::Unknown
+    };
+    let device_type = if lower.contains("basic render") || lower.contains("microsoft basic") {
+        GpuDeviceType::CpuSoftware
+    } else if lower.contains("virtual") || lower.contains("vbox") || lower.contains("vmware") || lower.contains("hyper-v") {
+        GpuDeviceType::Virtual
+    } else if vendor == GpuVendor::Intel {
+        // Intel GPUs in laptops are almost always integrated; discrete Intel
+        // GPUs (Arc) are rare and explicitly named.
+        if lower.contains("arc") {
+            GpuDeviceType::Discrete
+        } else {
+            GpuDeviceType::Integrated
+        }
+    } else {
+        // AMD and NVIDIA GPUs are discrete unless explicitly named otherwise.
+        if lower.contains("integrated") || lower.contains("vega graphics") || lower.contains("radeon graphics") {
+            GpuDeviceType::Integrated
+        } else {
+            GpuDeviceType::Discrete
+        }
+    };
+    (vendor, device_type)
+}
+
 /// A coarse, honest capability rank by device class.
 ///
 /// This is a device-class ordering, not a benchmark. The old code returned a
 /// flat 100 for every real GPU, which made `best_compute_gpu` arbitrary.
-fn compute_score_for(device_type: wgpu::DeviceType) -> u32 {
+fn compute_score_for(device_type: GpuDeviceType) -> u32 {
     match device_type {
-        wgpu::DeviceType::DiscreteGpu => 100,
-        wgpu::DeviceType::IntegratedGpu => 60,
-        wgpu::DeviceType::VirtualGpu => 40,
-        wgpu::DeviceType::Cpu => 10,
+        GpuDeviceType::Discrete => 100,
+        GpuDeviceType::Integrated => 60,
+        GpuDeviceType::Virtual => 40,
+        GpuDeviceType::CpuSoftware => 10,
         _ => 30,
     }
 }

@@ -1,6 +1,7 @@
 //! Multi-Creature Composite Renderer for ScreenBuddy
 //!
 //! Renders multiple creatures into a single pixel buffer, then composites to screen.
+use winapi::ctypes;
 
 use image::RgbaImage;
 use std::mem;
@@ -25,10 +26,10 @@ pub struct CompositeRenderer {
     composite_buffer: Vec<u8>,
     h_bitmap: HBITMAP,
     h_dc: HDC,
-    window_hwnd: *mut core::ffi::c_void,
+    window_hwnd: *mut winapi::ctypes::c_void,
     /// Pointer to the DIB's pixel memory, kept so the surface can be reused
     /// instead of reallocated every frame.
-    dib_bits: *mut core::ffi::c_void,
+    dib_bits: *mut winapi::ctypes::c_void,
     /// Size of the currently allocated DIB, so a resize reallocates and an
     /// ordinary frame does not.
     bitmap_w: u32,
@@ -38,7 +39,7 @@ pub struct CompositeRenderer {
 }
 
 impl CompositeRenderer {
-    pub fn new(window_hwnd: *mut core::ffi::c_void, width: u32, height: u32) -> Self {
+    pub fn new(window_hwnd: *mut winapi::ctypes::c_void, width: u32, height: u32) -> Self {
         Self {
             width,
             height,
@@ -162,12 +163,12 @@ impl CompositeRenderer {
                 bmi.bmiHeader.biPlanes = 1;
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = winapi::um::wingdi::BI_RGB;
-                let mut bits: *mut core::ffi::c_void = ptr::null_mut();
+                let mut bits: *mut winapi::ctypes::c_void = ptr::null_mut();
                 self.h_bitmap = winapi::um::wingdi::CreateDIBSection(
                     self.h_dc,
                     &bmi,
                     winapi::um::wingdi::DIB_RGB_COLORS,
-                    &mut bits,
+                    &bits as *const _ as *mut _,
                     ptr::null_mut(),
                     0,
                 );

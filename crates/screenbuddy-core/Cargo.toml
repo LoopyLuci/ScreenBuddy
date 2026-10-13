@@ -17,11 +17,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 lru = "0.12"
 futures = "0.3"
 
-# Rendering
-wgpu = "0.20"
-winit = "0.30"
-raw-window-handle = "0.6"
-pollster = "0.3"
+
 
 # Image loading
 image = "0.25"
@@ -52,7 +48,7 @@ rodio = "0.17"
 
 # Windows-specific
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = [
+winapi = { version = "0.3", features = ["winuser",
     "winuser", "wingdi", "windef", "minwindef",
     "libloaderapi", "shellapi", "processthreadsapi",
     "handleapi", "sysinfoapi", "winbase", "winnt", "d3d11", "dxgi",

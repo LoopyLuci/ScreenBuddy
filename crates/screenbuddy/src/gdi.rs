@@ -11,6 +11,7 @@
 //! surface or the text vanishes.
 
 #![cfg(windows)]
+use winapi::ctypes;
 
 use winapi::shared::windef::{HDC, HFONT, RECT, SIZE};
 use winapi::um::wingdi::*;
@@ -79,12 +80,12 @@ pub fn make_font(size: i32, bold: bool) -> HFONT {
 
 /// Select a GDI object into a DC, hiding the `*mut c_void` cast this winapi
 /// version's signature requires.
-pub fn select_obj(dc: HDC, obj: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+pub fn select_obj(dc: HDC, obj: *mut winapi::ctypes::c_void) -> *mut winapi::ctypes::c_void {
     unsafe { SelectObject(dc, obj) }
 }
 
 /// Delete a GDI object created by this module.
-pub fn del_obj(obj: *mut core::ffi::c_void) {
+pub fn del_obj(obj: *mut winapi::ctypes::c_void) {
     unsafe {
         DeleteObject(obj);
     }
@@ -118,7 +119,7 @@ pub fn set_transparent_text(dc: HDC) {
 /// Select a font and make its text transparent in one step.
 ///
 /// Returns the previous GDI object so the caller can restore it.
-pub fn select_font(dc: HDC, size: i32, bold: bool) -> (HFONT, *mut core::ffi::c_void) {
+pub fn select_font(dc: HDC, size: i32, bold: bool) -> (HFONT, *mut winapi::ctypes::c_void) {
     let font = make_font(size, bold);
     let old = select_obj(dc, font as *mut _);
     set_transparent_text(dc);
@@ -242,7 +243,7 @@ pub fn measure_text(dc: HDC, text: &str) -> i32 {
 pub struct DrawTarget {
     dc: HDC,
     bitmap: winapi::shared::windef::HBITMAP,
-    old_bitmap: *mut core::ffi::c_void,
+    old_bitmap: *mut winapi::ctypes::c_void,
     raw: *mut u32,
     width: i32,
     height: i32,
@@ -268,9 +269,9 @@ impl DrawTarget {
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = BI_RGB;
 
-            let mut raw: *mut core::ffi::c_void = std::ptr::null_mut();
+            let mut raw: *mut winapi::ctypes::c_void = std::ptr::null_mut();
             let bitmap =
-                CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut raw, std::ptr::null_mut(), 0);
+                CreateDIBSection(dc, &info, DIB_RGB_COLORS, &raw as *const _ as *mut _, std::ptr::null_mut(), 0);
             let old_bitmap = SelectObject(dc, bitmap as *mut _);
 
             Self {

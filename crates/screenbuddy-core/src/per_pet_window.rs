@@ -2,6 +2,7 @@
 //!
 //! Each creature gets its own OS-level transparent window.
 //! This is the true desktop pet behavior.
+use winapi::ctypes;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -345,7 +346,7 @@ pub mod windows {
         hbitmap: HBITMAP,
         hdc_mem: HDC,
         hdc_screen: HDC,
-        pixel_data_ptr: *mut core::ffi::c_void,
+        pixel_data_ptr: *mut winapi::ctypes::c_void,
         width: u32,
         height: u32,
         running: Arc<AtomicBool>,
@@ -459,12 +460,12 @@ pub mod windows {
                 ..mem::zeroed()
             };
 
-            let mut pixel_data: *mut core::ffi::c_void = ptr::null_mut();
+            let mut pixel_data: *mut winapi::ctypes::c_void = ptr::null_mut();
             let hbitmap = CreateDIBSection(
                 hdc_screen,
                 &bmi,
                 DIB_RGB_COLORS,
-                &mut pixel_data,
+                &pixel_data as *const _ as *mut _,
                 ptr::null_mut(),
                 0,
             );

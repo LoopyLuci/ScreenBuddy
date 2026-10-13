@@ -40,7 +40,7 @@ pub mod per_pet_window;
 pub mod platform;
 pub mod providers;
 pub mod rag;
-pub mod render;
+
 pub mod scheduler;
 pub mod screen_physics;
 pub mod session;
@@ -70,7 +70,6 @@ pub use ipc::{
 pub use nine_router::{RouterModel, DEFAULT_BASE_URL as NINE_ROUTER_DEFAULT_URL};
 pub use per_pet_window::{PerPetWindowManager, PetWindowConfig, PetWindowEvent, PetWindowId};
 pub use rag::RagPipeline;
-pub use render::renderer::Renderer;
 pub use scheduler::{TaskPriority, ThreadPool};
 pub use screen_physics::{CreaturePersonality, CreaturePhysics, Monitor, ScreenManager};
 pub use settings_ui::{SettingValue, SettingsCategory, SettingsReader, SettingsUI};

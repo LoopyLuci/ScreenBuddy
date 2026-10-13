@@ -24,6 +24,7 @@ use crate::gdi::{
 use screenbuddy_core::agent_profile::{AgentProfile, AgentProvider, AgentStore, Persona};
 use screenbuddy_core::creature_catalogue::{creature_catalogue, CreatureInfo};
 use screenbuddy_core::screen_physics::CreaturePersonality;
+use winapi::ctypes;
 use std::ptr;
 use winapi::shared::windef::HWND;
 use winapi::shared::windef::{HBRUSH, HDC, RECT};
@@ -1500,12 +1501,12 @@ impl AgentEditor {
 
             let screen_dc = GetDC(hwnd);
             let mem_dc = CreateCompatibleDC(screen_dc);
-            let mut raw: *mut core::ffi::c_void = ptr::null_mut();
+            let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
             let bitmap = CreateDIBSection(
                 screen_dc,
                 &info,
                 DIB_RGB_COLORS,
-                &mut raw,
+                &raw as *const _ as *mut _,
                 ptr::null_mut(),
                 0,
             );
