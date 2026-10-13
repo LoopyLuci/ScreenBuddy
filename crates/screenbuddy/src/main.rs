@@ -1035,6 +1035,37 @@ fn main() {
                 screenbuddy_core::TrayEvent::About => {
                     show_about_dialog();
                 }
+                screenbuddy_core::TrayEvent::AlwaysOnTop => {
+                    let hwnd = main_ui.hwnd().unwrap_or(std::ptr::null_mut());
+                    if hwnd.is_null() {
+                        println!("[Tray] no main window to set always-on-top on");
+                    } else {
+                        let new_state = !screenbuddy_core::always_on_top();
+                        screenbuddy_core::set_always_on_top(new_state);
+                        unsafe {
+                            let flags = winapi::um::winuser::SWP_NOMOVE
+                                | winapi::um::winuser::SWP_NOSIZE
+                                | winapi::um::winuser::SWP_NOACTIVATE
+                                | winapi::um::winuser::SWP_NOOWNERZORDER;
+                            let z_order = if new_state {
+                                winapi::um::winuser::HWND_TOPMOST
+                            } else {
+                                winapi::um::winuser::HWND_NOTOPMOST
+                            };
+                            winapi::um::winuser::SetWindowPos(
+                                hwnd,
+                                z_order,
+                                0,
+                                0,
+                                0,
+                                0,
+                                flags,
+                            );
+                        }
+                        tray.set_always_on_top(new_state);
+                        println!("[Tray] always-on-top: {}", new_state);
+                    }
+                }
             }
         }
 
@@ -1929,6 +1960,11 @@ fn publish_status(
         .iter()
         .map(|m| (m.role.to_string(), m.content.clone()))
         .collect();
+    // Sync to process-wide atomics so the tray thread reads fresh state.
+    screenbuddy_core::set_creature_count(creatures.len());
+    screenbuddy_core::set_always_on_top(
+        snapshot.always_on_top,
+    );
 }
 
 fn create_window_and_run(hwnd_tx: mpsc::Sender<isize>, width: i32, height: i32) {

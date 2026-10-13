@@ -26,6 +26,8 @@ pub enum TrayEvent {
     OpenAgents,
     Quit,
     About,
+    /// Toggle the always-on-top window state.
+    AlwaysOnTop,
 }
 
 /// Message the shell posts to the tray window when the icon is clicked.
@@ -46,6 +48,7 @@ mod cmd {
     pub const OPEN_SETTINGS: u32 = 1007;
     pub const ABOUT: u32 = 1008;
     pub const QUIT: u32 = 1009;
+    pub const ALWAYS_ON_TOP: u32 = 1011;
 }
 
 /// Map a menu id onto the event it means.
@@ -62,6 +65,7 @@ fn event_for_command(command: u32) -> Option<TrayEvent> {
         cmd::OPEN_SETTINGS => TrayEvent::OpenSettings,
         cmd::ABOUT => TrayEvent::About,
         cmd::QUIT => TrayEvent::Quit,
+        cmd::ALWAYS_ON_TOP => TrayEvent::AlwaysOnTop,
         _ => return None,
     })
 }
@@ -80,7 +84,7 @@ pub struct SystemTray {
     hwnd: Option<TrayHwnd>,
     /// Whether the shell actually accepted the notification icon.
     ///
-    /// `start()` returning Ok and the icon existing are the same thing today,
+    /// `start()` returning Ok and the icon are the same thing today,
     /// but keeping them separate means the "minimise to tray" decision stays
     /// correct if the shell ever refuses the icon -- hiding the window with no
     /// tray to restore from would strand the app.
@@ -88,6 +92,8 @@ pub struct SystemTray {
     visible: bool,
     creature_visible: bool,
     chat_open: bool,
+    always_on_top: bool,
+    creature_count: usize,
 }
 
 impl Default for SystemTray {
@@ -107,6 +113,8 @@ impl SystemTray {
             visible: false,
             creature_visible: true,
             chat_open: false,
+            always_on_top: false,
+            creature_count: 0,
         }
     }
 
@@ -211,6 +219,18 @@ impl SystemTray {
     }
     pub fn is_chat_open(&self) -> bool {
         self.chat_open
+    }
+    pub fn set_always_on_top(&mut self, v: bool) {
+        self.always_on_top = v;
+    }
+    pub fn is_always_on_top(&self) -> bool {
+        self.always_on_top
+    }
+    pub fn set_creature_count(&mut self, n: usize) {
+        self.creature_count = n;
+    }
+    pub fn creature_count(&self) -> usize {
+        self.creature_count
     }
     pub fn hwnd(&self) -> Option<TrayHwnd> {
         self.hwnd
@@ -360,7 +380,11 @@ unsafe extern "system" fn tray_window_proc(
                 winapi::um::winuser::WM_RBUTTONUP | winapi::um::winuser::WM_CONTEXTMENU => {
                     // The chosen id used to be discarded, so every menu item was
                     // a no-op. Route it to the render loop now.
-                    let chosen = show_context_menu(hwnd);
+                    let chosen = show_context_menu(
+                        hwnd,
+                        crate::always_on_top(),
+                        crate::creature_count(),
+                    );
                     if let Some(event) = event_for_command(chosen) {
                         deliver(event);
                     }
@@ -405,48 +429,54 @@ pub fn take_pending_events() -> Vec<TrayEvent> {
 
 #[cfg(windows)]
 /// Build the context menu and return the id the user chose (0 if cancelled).
-unsafe fn show_context_menu(hwnd: winapi::shared::windef::HWND) -> u32 {
+///
+/// The menu is dynamic: it reflects current state with checkmarks and conditionally
+/// shows items that only make sense in the current context.
+unsafe fn show_context_menu(
+    hwnd: winapi::shared::windef::HWND,
+    always_on_top: bool,
+    creature_count: usize,
+) -> u32 {
     let h_menu = winapi::um::winuser::CreatePopupMenu();
     if h_menu.is_null() {
         return 0;
     }
 
-    // Dynamic menu: reflect current state with checkmarks and labels.
     let creatures_visible = crate::creature_visibility();
     let items = [
-        (cmd::OPEN_WINDOW, "Open ScreenBuddy"),
-        (cmd::MINIMIZE, "Minimise to tray"),
+        (cmd::OPEN_WINDOW, "Open ScreenBuddy", false),
+        (cmd::MINIMIZE, "Minimise to tray", false),
     ];
     let tail = if creatures_visible {
         [
-            (cmd::HIDE_CREATURE, "Hide creature"),
-            (cmd::OPEN_AGENTS, "Agents"),
-            (cmd::OPEN_CHAT, "Open chat"),
-            (cmd::NEXT_CREATURE, "Next creature"),
-            (cmd::OPEN_SETTINGS, "Settings"),
+            (cmd::HIDE_CREATURE, "Hide creature", false),
+            (cmd::OPEN_AGENTS, "Agents", false),
+            (cmd::OPEN_CHAT, "Open chat", false),
+            (cmd::NEXT_CREATURE, "Next creature", false),
+            (cmd::OPEN_SETTINGS, "Settings", false),
         ]
     } else {
         [
-            (cmd::SHOW_CREATURE, "Show creature"),
-            (cmd::OPEN_AGENTS, "Agents"),
-            (cmd::OPEN_CHAT, "Open chat"),
-            (cmd::NEXT_CREATURE, "Next creature"),
-            (cmd::OPEN_SETTINGS, "Settings"),
+            (cmd::SHOW_CREATURE, "Show creature", false),
+            (cmd::OPEN_AGENTS, "Agents", false),
+            (cmd::OPEN_CHAT, "Open chat", false),
+            (cmd::NEXT_CREATURE, "Next creature", false),
+            (cmd::OPEN_SETTINGS, "Settings", false),
         ]
     };
     let end = [
-        (cmd::ABOUT, "About ScreenBuddy"),
-        (cmd::QUIT, "Quit ScreenBuddy"),
+        (cmd::ABOUT, "About ScreenBuddy", false),
+        (cmd::QUIT, "Quit ScreenBuddy", false),
     ];
 
-    let push = |id: u32, text: &str| {
+    let push = |id: u32, text: &str, checked: bool| {
         let text_u16: Vec<u16> = format!("{text}\0").encode_utf16().collect();
-        winapi::um::winuser::AppendMenuW(
-            h_menu,
-            winapi::um::winuser::MF_STRING,
-            id as usize,
-            text_u16.as_ptr(),
-        );
+        let flags = if checked {
+            winapi::um::winuser::MF_STRING | winapi::um::winuser::MFS_CHECKED
+        } else {
+            winapi::um::winuser::MF_STRING
+        };
+        winapi::um::winuser::AppendMenuW(h_menu, flags, id as usize, text_u16.as_ptr())
     };
     let separator = || {
         winapi::um::winuser::AppendMenuW(
@@ -454,19 +484,26 @@ unsafe fn show_context_menu(hwnd: winapi::shared::windef::HWND) -> u32 {
             winapi::um::winuser::MF_SEPARATOR,
             0,
             std::ptr::null(),
-        );
+        )
     };
 
-    for (id, text) in items {
-        push(id, text);
+    for (id, text, checked) in items {
+        push(id, text, checked);
     }
     separator();
-    for (id, text) in tail {
-        push(id, text);
+    for (id, text, checked) in tail {
+        // Only show "Next creature" when there are multiple creatures to cycle through.
+        if id == cmd::NEXT_CREATURE && creature_count < 2 {
+            continue;
+        }
+        push(id, text, checked);
     }
     separator();
-    for (id, text) in end {
-        push(id, text);
+    // "Always on top" is a toggle, so it gets a checkmark reflecting current state.
+    push(cmd::ALWAYS_ON_TOP, "Always on top", always_on_top);
+    separator();
+    for (id, text, checked) in end {
+        push(id, text, checked);
     }
 
     let mut point: winapi::shared::windef::POINT = std::mem::zeroed();
@@ -537,6 +574,7 @@ mod tests {
             cmd::OPEN_SETTINGS,
             cmd::ABOUT,
             cmd::QUIT,
+            cmd::ALWAYS_ON_TOP,
         ] {
             assert!(
                 event_for_command(command).is_some(),

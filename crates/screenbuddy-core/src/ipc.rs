@@ -331,6 +331,7 @@ pub struct RuntimeStatus {
     pub model_count: usize,
     pub tool_count: usize,
     pub memory_chunks: usize,
+    pub always_on_top: bool,
     /// Creature id -> live state summary.
     pub creatures: HashMap<String, serde_json::Value>,
     /// Frame-time percentiles over a rolling window, for `get_metrics`.
@@ -363,6 +364,7 @@ impl RuntimeStatus {
             "model_count": self.model_count,
             "tool_count": self.tool_count,
             "memory_chunks": self.memory_chunks,
+            "always_on_top": self.always_on_top,
         })
     }
 }

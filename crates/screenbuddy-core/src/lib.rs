@@ -26,6 +26,36 @@ pub fn set_creature_visibility(visible: bool) {
     VISIBLE.store(visible, Ordering::Relaxed);
 }
 
+/// Returns the current always-on-top window state.
+/// Uses a process-wide atomic that the render loop updates each frame.
+pub fn always_on_top() -> bool {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
+    ALWAYS_ON_TOP.load(Ordering::Relaxed)
+}
+
+/// Set the always-on-top state (called by the render loop).
+pub fn set_always_on_top(v: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static ALWAYS_ON_TOP: AtomicBool = AtomicBool::new(false);
+    ALWAYS_ON_TOP.store(v, Ordering::Relaxed);
+}
+
+/// Returns the current creature count.
+/// Uses a process-wide atomic that the render loop updates each frame.
+pub fn creature_count() -> usize {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CREATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    CREATURE_COUNT.load(Ordering::Relaxed)
+}
+
+/// Set the creature count (called by the render loop).
+pub fn set_creature_count(n: usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CREATURE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    CREATURE_COUNT.store(n, Ordering::Relaxed);
+}
+
 /// Show a tray balloon notification (no-op if tray not available).
 pub fn notify(title: &str, message: &str) {
     system_tray::show_balloon(title, message);
