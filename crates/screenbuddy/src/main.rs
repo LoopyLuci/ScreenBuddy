@@ -161,9 +161,49 @@ impl CreatureInstance {
 }
 
 fn main() {
-    // Declare DPI awareness so the app renders correctly on high-DPI displays.
-    unsafe {
-        winapi::um::winuser::SetProcessDPIAware();
+    // Declare per-monitor DPI awareness (V2) so the app renders correctly on
+    // high-DPI and mixed-DPI displays. The legacy SetProcessDPIAware only makes
+    // the process system-DPI aware and ignores per-monitor scaling entirely, so
+    // a window dragged to a 144 DPI screen renders blurry. V2 makes the OS
+    // report the DPI of the monitor each window is actually on. Falls back to
+    // the legacy call on builds too old for V2.
+    let dpi_awareness = unsafe {
+        if winapi::um::winuser::SetProcessDpiAwarenessContext(
+            winapi::shared::windef::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        ) != 0
+        {
+            "per-monitor V2"
+        } else {
+            winapi::um::winuser::SetProcessDPIAware();
+            "system (legacy fallback)"
+        }
+    };
+    println!("DPI awareness: {dpi_awareness}");
+
+    // Report the display topology so a mixed-DPI layout bug is diagnosable
+    // without attaching a debugger.
+    let displays = screenbuddy_core::dpi::enumerate_displays();
+    if displays.is_empty() {
+        println!("[DPI] no displays enumerated");
+    } else {
+        for d in &displays {
+            println!(
+                "[DPI] {} ({}) {}x{} @ {} DPI (scale {:.2})",
+                d.name,
+                if d.is_primary { "primary" } else { "secondary" },
+                d.bounds.width(),
+                d.bounds.height(),
+                d.dpi,
+                d.dpi_scale
+            );
+        }
+    }
+
+    // Initialise accessibility before any window exists, so the first frame can
+    // already honour high-contrast mode and screen-reader notifications.
+    screenbuddy_core::accessibility::init();
+    if screenbuddy_core::accessibility::is_high_contrast() {
+        println!("[A11y] Windows high-contrast mode active");
     }
 
     // Install crash handler before anything else so even early crashes
@@ -174,6 +214,23 @@ fn main() {
     } else {
         println!("Crash handler: disabled or already installed");
     }
+
+    // Register the Windows Event Log source for structured lifecycle events.
+    // Console output is transient; the Application log survives a crash and is
+    // what an administrator actually reads after the fact.
+    let event_log = match screenbuddy_core::eventlog::EventLog::register() {
+        Ok(log) => {
+            log.info(
+                screenbuddy_core::eventlog::EVENT_APP_STARTED,
+                "ScreenBuddy starting",
+            );
+            Some(log)
+        }
+        Err(e) => {
+            println!("[EventLog] registration failed: {e}");
+            None
+        }
+    };
 
     // --benchmark: run headless performance measurement and exit.
     if std::env::args().any(|a| a == "--benchmark") {
@@ -654,6 +711,16 @@ fn main() {
     // used dark. Read it through the same reader the loop uses and apply it when
     // it changes.
     let mut applied_theme = read_theme(&theme_settings_reader);
+    // If Windows high-contrast mode is active and the user has not explicitly
+    // chosen a theme, honour the OS. The high_contrast theme existed but had no
+    // path to ever activate itself; this is that path. An explicit setting
+    // always wins, so the user can override the OS.
+    if screenbuddy_core::accessibility::is_high_contrast()
+        && theme_settings_reader.text("theme").is_none()
+    {
+        applied_theme = "high_contrast".to_string();
+        println!("[A11y] high-contrast mode: applying high_contrast theme");
+    }
     {
         let mut s = settings.lock().unwrap();
         s.set(
@@ -726,10 +793,14 @@ fn main() {
     let mut main_ui = MainWindow::new();
     let main_hwnd = create_main_window(&mut main_ui);
     match main_hwnd {
-        Ok(_) => {
+        Ok(hwnd) => {
             // Honour the saved theme from the first frame.
             main_ui.set_theme_by_name(&applied_theme);
             main_ui.show();
+            // Announce the window to screen readers. Without this a screen
+            // reader user hears nothing when the app starts, even though the
+            // window is fully visible.
+            screenbuddy_core::accessibility::notify_show(hwnd);
         }
         Err(e) => eprintln!("[UI] could not create main window: {e}"),
     }
@@ -1499,6 +1570,16 @@ fn main() {
     }
 
     println!("ScreenBuddy shutdown");
+
+    // Record the clean shutdown in the Application log. This is the last thing
+    // the process does, so it is the marker that distinguishes a clean exit
+    // from a crash for anyone reading the log later.
+    if let Some(log) = event_log.as_ref() {
+        log.info(
+            screenbuddy_core::eventlog::EVENT_APP_SHUTDOWN,
+            "ScreenBuddy shutdown",
+        );
+    }
 }
 
 /// Drain pending IPC control requests and apply them to live state.

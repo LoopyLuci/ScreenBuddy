@@ -127,6 +127,7 @@ pub fn display_at(x: i32, y: i32) -> Option<DisplayInfo> {
 /// Get the DPI scale factor for a display device name.
 ///
 /// Returns (dpi, scale). Falls back to (96, 1.0) on error.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_dpi_for_display(device_name: *const u16) -> (u32, f32) {
     unsafe {
         let mut dpi_x: u32 = 0;

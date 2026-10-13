@@ -1599,12 +1599,11 @@ mod tests {
             let target = crate::gdi::DrawTarget::new(WIN_WIDTH, WIN_HEIGHT);
             let mut buffer = vec![0u32; (WIN_WIDTH * WIN_HEIGHT) as usize];
             view.paint(&mut buffer, target.handle(), WIN_WIDTH, WIN_HEIGHT);
-            let target = view
+            let target = *view
                 .hits
                 .iter()
                 .find(|h| matches!(h.action, Action::Export))
-                .expect("an Export button")
-                .clone();
+                .expect("an Export button");
             view.on_click(target.rect.0 + 2, target.rect.1 + 2);
 
             // The window asked; it did not write anything itself.
@@ -1635,12 +1634,11 @@ mod tests {
             let target = crate::gdi::DrawTarget::new(WIN_WIDTH, WIN_HEIGHT);
             let mut buffer = vec![0u32; (WIN_WIDTH * WIN_HEIGHT) as usize];
             view.paint(&mut buffer, target.handle(), WIN_WIDTH, WIN_HEIGHT);
-            let target = view
+            let target = *view
                 .hits
                 .iter()
                 .find(|h| matches!(h.action, Action::Export))
-                .expect("an Export button")
-                .clone();
+                .expect("an Export button");
             view.on_click(target.rect.0 + 2, target.rect.1 + 2);
             assert!(
                 rx.try_recv().is_err(),

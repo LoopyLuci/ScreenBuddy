@@ -707,11 +707,37 @@ pub mod windows {
     /// Move a pet window
     pub fn move_pet_window(handle: &PetWindowHandle, x: i32, y: i32) -> Result<(), String> {
         unsafe {
+            // Clamp the target position to the display the pet is currently on.
+            // Without this, a drag that releases past the screen edge leaves the
+            // creature off-screen with no way to reach it again. The pet window
+            // has no caption bar, so the user cannot drag it back.
+            let mut rect: RECT = mem::zeroed();
+            GetWindowRect(handle.hwnd, &mut rect);
+            let pet_rect = crate::dpi::Rect {
+                left: x,
+                top: y,
+                right: x + (rect.right - rect.left),
+                bottom: y + (rect.bottom - rect.top),
+            };
+
+            // Use the primary display's bounds as the clamp region. A pet on a
+            // secondary monitor keeps that monitor's bounds via display_at.
+            let display = crate::dpi::display_at(x, y)
+                .or_else(|| crate::dpi::display_at(rect.left, rect.top))
+                .or_else(crate::dpi::primary_display);
+
+            let (cx, cy) = if let Some(d) = display {
+                let clamped = crate::dpi::clamp_to_display(&pet_rect, &d.bounds);
+                (clamped.left, clamped.top)
+            } else {
+                (x, y)
+            };
+
             SetWindowPos(
                 handle.hwnd,
                 ptr::null_mut(),
-                x,
-                y,
+                cx,
+                cy,
                 0,
                 0,
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,

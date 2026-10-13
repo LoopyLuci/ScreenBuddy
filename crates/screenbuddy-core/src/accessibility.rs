@@ -60,6 +60,7 @@ fn is_high_contrast_active() -> bool {
 /// `event` is the Win32 event constant (e.g., `EVENT_OBJECT_FOCUS`).
 /// `hwnd` is the window handle, `object_id` and `child_id` identify
 /// the UI element.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn notify(event: u32, hwnd: winapi::shared::windef::HWND, object_id: i32, child_id: i32) {
     if !is_enabled() {
         return;
@@ -112,6 +113,7 @@ pub fn notify_name_changed(hwnd: winapi::shared::windef::HWND) {
 /// Set the accessible name for a window.
 ///
 /// This sets the window's text, which screen readers will announce.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn set_accessible_name(
     hwnd: winapi::shared::windef::HWND,
     name: &str,
@@ -123,6 +125,7 @@ pub fn set_accessible_name(
 }
 
 /// Get the accessible name (window text) for a window.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_accessible_name(
     hwnd: winapi::shared::windef::HWND,
 ) -> String {
@@ -141,6 +144,7 @@ pub fn get_accessible_name(
 }
 
 /// Move focus to the next control in tab order.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn focus_next(hwnd: winapi::shared::windef::HWND) {
     unsafe {
         winapi::um::winuser::PostMessageW(
@@ -153,6 +157,7 @@ pub fn focus_next(hwnd: winapi::shared::windef::HWND) {
 }
 
 /// Move focus to the previous control in tab order.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn focus_prev(hwnd: winapi::shared::windef::HWND) {
     unsafe {
         winapi::um::winuser::PostMessageW(

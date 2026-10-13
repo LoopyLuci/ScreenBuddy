@@ -2089,10 +2089,11 @@ mod tests {
             .unwrap();
         rt.block_on(async {
             let addr = "127.0.0.1:0";
-            let mut cfg = IpcConfig::default();
-            cfg.addr = addr.to_string();
-            // A cap of two makes the third connection the interesting one.
-            cfg.max_connections = 2;
+            let cfg = IpcConfig {
+                addr: addr.to_string(),
+                max_connections: 2,
+                ..Default::default()
+            };
             let server = IpcServer::new(cfg);
             let listener = TcpListener::bind(addr).await.unwrap();
             let bound = listener.local_addr().unwrap().to_string();
