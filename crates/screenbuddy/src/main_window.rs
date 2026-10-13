@@ -40,6 +40,20 @@ const C_SIDEBAR: u32 = 0x001A1818;
 const C_ROW_ACTIVE: u32 = 0x00304A50;
 const C_BORDER: u32 = 0x003A3A4A;
 
+/// Legacy colour constants used only by tests that assert on rendered output.
+/// These mirror theme.rs Theme::dark() so the assertions stay meaningful.
+#[cfg(test)]
+mod test_colors {
+    pub const C_BG: u32 = 0x00141212;
+    pub const C_HEADER: u32 = 0x00231F1F;
+    pub const C_INPUT_BG: u32 = 0x00222233;
+    pub const C_TEXT: u32 = 0x00F0E6D8;
+    pub const C_MUTED: u32 = 0x00A8C0C8;
+    pub const C_ACCENT: u32 = 0x00C0865A;
+}
+#[cfg(test)]
+use test_colors::{C_ACCENT, C_BG, C_HEADER, C_INPUT_BG, C_MUTED, C_TEXT};
+
 /// What the user clicked, delivered to the main loop.
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
