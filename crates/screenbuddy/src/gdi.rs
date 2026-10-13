@@ -11,7 +11,6 @@
 //! surface or the text vanishes.
 
 #![cfg(windows)]
-use winapi::ctypes;
 
 use winapi::shared::windef::{HDC, HFONT, RECT, SIZE};
 use winapi::um::wingdi::*;
@@ -271,7 +270,7 @@ impl DrawTarget {
 
             let mut raw: *mut winapi::ctypes::c_void = std::ptr::null_mut();
             let bitmap =
-                CreateDIBSection(dc, &info, DIB_RGB_COLORS, &raw as *const _ as *mut _, std::ptr::null_mut(), 0);
+                CreateDIBSection(dc, &info, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, std::ptr::null_mut(), 0);
             let old_bitmap = SelectObject(dc, bitmap as *mut _);
 
             Self {

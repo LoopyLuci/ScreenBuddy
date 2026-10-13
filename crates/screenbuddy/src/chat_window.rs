@@ -3,7 +3,6 @@
 //! A transparent layered window with message history display and input field.
 //! Uses GDI (TextOutW, DrawTextW) for text rendering and UpdateLayeredWindow
 //! for transparent compositing.
-use winapi::ctypes;
 
 use std::mem;
 use std::ptr;
@@ -77,6 +76,7 @@ impl ChatWindow {
         &self.messages
     }
 
+    #[allow(dead_code)]
     pub fn set_typing(&mut self, typing: bool) {
         self.typing = typing;
         self.typing_frame = 0;
@@ -371,7 +371,7 @@ pub mod platform {
             hdc_screen,
             &bmi,
             DIB_RGB_COLORS,
-            &pixel_data as *const _ as *mut _,
+            &mut pixel_data as *mut _ as *mut _,
             ptr::null_mut(),
             0,
         );
@@ -557,7 +557,7 @@ pub mod platform {
         FrameRect(hdc_mem, &btn_rect, btn_border);
         DeleteObject(btn_border as _);
         SetTextColor(hdc_mem, if has_input { RGB(255, 255, 255) } else { RGB(150, 150, 150) });
-        let label = if has_input { "Send" } else { "Send" };
+        let label = "Send";
         let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
         let mut btn_text_rect = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
         DrawTextW(hdc_mem, wide.as_ptr(), -1, &mut btn_text_rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

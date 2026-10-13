@@ -4,9 +4,9 @@
 //! dark and light modes, and so changing a color touches one file instead of
 //! every window proc.
 
-use winapi::ctypes;
 /// A complete visual theme: colors, fonts, and spacing.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct Theme {
     pub name: &'static str,
     pub bg: u32,
@@ -124,16 +124,19 @@ impl Theme {
     }
 
     /// Background color as a GDI COLORREF (0x00BBGGRR).
+    #[allow(dead_code)]
     pub fn bg_colorref(&self) -> u32 {
         self.bg
     }
 
     /// Text color as a GDI COLORREF.
+    #[allow(dead_code)]
     pub fn text_colorref(&self) -> u32 {
         self.text
     }
 
     /// Create a GDI font at the given size in points.
+    #[allow(dead_code)]
     pub fn create_font(&self, size: i32) -> Option<*mut winapi::ctypes::c_void> {
         unsafe {
             let family: Vec<u16> = self.font_family
@@ -142,13 +145,13 @@ impl Theme {
                 .collect();
             let hfont = winapi::um::wingdi::CreateFontW(
                 size, 0, 0, 0,
-                winapi::um::wingdi::FW_NORMAL as i32,
+                winapi::um::wingdi::FW_NORMAL,
                 0, 0, 0,
-                winapi::um::wingdi::DEFAULT_CHARSET as u32,
-                winapi::um::wingdi::OUT_DEFAULT_PRECIS as u32,
-                winapi::um::wingdi::CLIP_DEFAULT_PRECIS as u32,
-                winapi::um::wingdi::CLEARTYPE_QUALITY as u32,
-                (winapi::um::wingdi::DEFAULT_PITCH | winapi::um::wingdi::FF_SWISS) as u32,
+                winapi::um::wingdi::DEFAULT_CHARSET,
+                winapi::um::wingdi::OUT_DEFAULT_PRECIS,
+                winapi::um::wingdi::CLIP_DEFAULT_PRECIS,
+                winapi::um::wingdi::CLEARTYPE_QUALITY,
+                winapi::um::wingdi::DEFAULT_PITCH | winapi::um::wingdi::FF_SWISS,
                 family.as_ptr(),
             );
             if hfont.is_null() {
@@ -160,6 +163,7 @@ impl Theme {
     }
 
     /// Create a solid brush from a theme color.
+    #[allow(dead_code)]
     pub fn create_brush(&self, color: u32) -> *mut winapi::ctypes::c_void {
         unsafe {
             winapi::um::wingdi::CreateSolidBrush(color) as *mut winapi::ctypes::c_void

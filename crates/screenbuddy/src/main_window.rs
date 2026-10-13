@@ -9,7 +9,6 @@
 //! Rendering is plain GDI into a DIBSection, matching the rest of the project;
 //! no new dependency is introduced.
 
-use winapi::ctypes;
 use std::mem;
 use std::ptr;
 
@@ -37,15 +36,9 @@ const PADDING: i32 = 12;
 
 /// Colours as 0x00BBGGRR, matching the DIB layout used below.
 // Unified dark theme constants (mirror theme.rs Theme::dark())
-const C_BG: u32 = 0x00141212;
-const C_HEADER: u32 = 0x00231F1F;
 const C_SIDEBAR: u32 = 0x001A1818;
 const C_ROW_ACTIVE: u32 = 0x00304A50;
-const C_INPUT_BG: u32 = 0x00222233;
 const C_BORDER: u32 = 0x003A3A4A;
-const C_TEXT: u32 = 0x00F0E6D8;
-const C_MUTED: u32 = 0x00A8C0C8;
-const C_ACCENT: u32 = 0x00C0865A;
 
 /// What the user clicked, delivered to the main loop.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +64,7 @@ pub enum UiEvent {
     /// Export the current conversation to a file.
     ExportConversation,
     /// Toggle the search bar visibility.
+    #[allow(dead_code)]
     ToggleSearch,
     /// Re-run the last user message to get a fresh reply.
     Regenerate,
@@ -1086,7 +1080,7 @@ unsafe fn paint(hwnd: HWND, win: &mut MainWindow) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
-    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &raw as *const _ as *mut _, ptr::null_mut(), 0);
+    let bitmap = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, ptr::null_mut(), 0);
     ReleaseDC(ptr::null_mut(), screen);
     if bitmap.is_null() || raw.is_null() {
         DeleteDC(mem_dc);
@@ -1751,9 +1745,7 @@ fn draw_messages(win: &mut MainWindow, buf: &mut [u32]) {
                 .copied()
                 == Some(i);
             let is_selected = win.selected_message == Some(i);
-            let outline = if is_selected || is_current_match {
-                win.theme.accent
-            } else if is_user {
+            let outline = if is_selected || is_current_match || is_user {
                 win.theme.accent
             } else {
                 win.theme.border
@@ -2143,6 +2135,7 @@ unsafe fn draw_md_line(
 }
 
 /// Draw a line's runs left to right; returns the y after the line.
+#[allow(clippy::too_many_arguments)]
 unsafe fn draw_runs(
     dc: HDC,
     win: &MainWindow,
@@ -2305,7 +2298,7 @@ impl DrawTarget {
             bmi.bmiHeader.biCompression = BI_RGB;
             let mut raw: *mut winapi::ctypes::c_void = ptr::null_mut();
             let bitmap =
-                CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &raw as *const _ as *mut _, ptr::null_mut(), 0);
+                CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &mut raw as *mut _ as *mut _, ptr::null_mut(), 0);
             ReleaseDC(ptr::null_mut(), screen);
             if bitmap.is_null() || raw.is_null() {
                 DeleteDC(dc);

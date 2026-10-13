@@ -88,7 +88,7 @@ pub fn parse(text: &str) -> Vec<MdLine> {
         } else if lead.starts_with("## ") {
             out.push(MdLine {
                 kind: BlockKind::Heading,
-                runs: parse_runs(&lead[3..]),
+                runs: parse_runs(lead.strip_prefix("## ").unwrap()),
             });
         } else if let Some(rest) = lead
             .strip_prefix("- ")

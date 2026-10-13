@@ -818,6 +818,7 @@ impl AiEngine {
     /// A missing model is recoverable - another installed one can be used - while
     /// a connection or auth failure is not, and retrying the latter would hide
     /// the real problem.
+    #[allow(dead_code)]
     fn is_missing_model(error: &crate::error::Error) -> bool {
         let text = error.to_string().to_ascii_lowercase();
         (text.contains("404") || text.contains("not found"))

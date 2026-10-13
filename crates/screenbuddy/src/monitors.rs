@@ -114,6 +114,7 @@ pub fn centre_on(monitor: &MonitorInfo, w: i32, h: i32) -> (i32, i32) {
 /// Used to decide whether a saved position is still valid after a monitor is
 /// unplugged: a window restored onto a display that no longer exists is
 /// invisible and looks like a crash.
+#[allow(dead_code)]
 pub fn is_on_some_monitor(monitors: &[MonitorInfo], rect: &RECT) -> bool {
     monitors.iter().any(|m| {
         rect.left >= m.left && rect.top >= m.top && rect.right <= m.right && rect.bottom <= m.bottom

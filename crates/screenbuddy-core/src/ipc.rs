@@ -619,6 +619,7 @@ fn request_id_of(payload: &[u8]) -> Option<u64> {
         .as_u64()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client(
     mut stream: TcpStream,
     tx: broadcast::Sender<GodotCommand>,

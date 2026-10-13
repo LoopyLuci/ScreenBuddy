@@ -438,7 +438,6 @@ fn compute_score_for(device_type: GpuDeviceType) -> u32 {
         GpuDeviceType::Integrated => 60,
         GpuDeviceType::Virtual => 40,
         GpuDeviceType::CpuSoftware => 10,
-        _ => 30,
     }
 }
 

@@ -1,7 +1,6 @@
 //! Multi-Creature Composite Renderer for ScreenBuddy
 //!
 //! Renders multiple creatures into a single pixel buffer, then composites to screen.
-use winapi::ctypes;
 
 use image::RgbaImage;
 use std::mem;
@@ -168,7 +167,7 @@ impl CompositeRenderer {
                     self.h_dc,
                     &bmi,
                     winapi::um::wingdi::DIB_RGB_COLORS,
-                    &bits as *const _ as *mut _,
+                    &mut bits as *mut _ as *mut _,
                     ptr::null_mut(),
                     0,
                 );

@@ -2,7 +2,6 @@
 //!
 //! Each creature gets its own OS-level transparent window.
 //! This is the true desktop pet behavior.
-use winapi::ctypes;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -465,7 +464,7 @@ pub mod windows {
                 hdc_screen,
                 &bmi,
                 DIB_RGB_COLORS,
-                &pixel_data as *const _ as *mut _,
+                &mut pixel_data as *mut _ as *mut _,
                 ptr::null_mut(),
                 0,
             );

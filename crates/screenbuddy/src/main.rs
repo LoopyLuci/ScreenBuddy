@@ -404,8 +404,8 @@ fn main() {
     let bridge_for_input = _ai_bridge.clone();
 
     // Mouse interaction
-    let mut cursor_pos: Option<glam::Vec2> = None;
-    let mut dragged_creature: Option<usize> = None;
+    let cursor_pos: Option<glam::Vec2> = None;
+    let dragged_creature: Option<usize> = None;
 
     // Animation speed multiplier, read from settings each frame
     let mut anim_speed: f32 = 1.0;
@@ -844,7 +844,7 @@ fn main() {
             &bridge_for_input,
             &mut rag,
             &mut audio,
-            &mut *settings.lock().unwrap(),
+            &mut settings.lock().unwrap(),
             settings_win.as_mut(),
             &mut tts,
             &mut auto_cycle,
@@ -1870,6 +1870,7 @@ fn setting_to_json(value: &screenbuddy_core::SettingValue) -> serde_json::Value 
 }
 
 /// Refresh the shared status snapshot.
+#[allow(clippy::too_many_arguments)]
 fn publish_status(
     status: &std::sync::Arc<std::sync::Mutex<screenbuddy_core::RuntimeStatus>>,
     creatures: &HashMap<String, CreatureInstance>,

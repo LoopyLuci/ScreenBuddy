@@ -14,7 +14,6 @@
 //! with no consumer, and the UI greys them out rather than implying they work.
 
 #![cfg(windows)]
-use winapi::ctypes;
 
 use crate::gdi::{
     del_obj, draw_rect, draw_text, fill_rect, font_height, measure_text, select_font, select_obj,
@@ -321,6 +320,7 @@ impl SettingsView {
     }
 
     /// Rows rebuilt from all definitions, filtered globally, for the search mode.
+    #[allow(dead_code)]
     fn global_filtered_rows(&self) -> Vec<Row> {
         let definitions = unsafe { (*self.store).all_definitions() };
         let q = self.search_query.to_lowercase();
@@ -333,12 +333,6 @@ impl SettingsView {
                 continue;
             }
             let name = def.name.clone();
-            let value = self
-                .reader
-                .get(&name)
-                .unwrap_or_else(|| def.default.clone());
-            let min = def.min.as_ref().map(numeric);
-            let max = def.max.as_ref().map(numeric);
             let state = availability(&name);
             out.push(Row {
                 live: state == Availability::Live,
@@ -998,7 +992,8 @@ impl SettingsView {
             ofn.lpstrFilter = filter.as_ptr();
             ofn.lpstrFile = buf.as_mut_ptr();
             ofn.nMaxFile = buf.len() as u32;
-            ofn.lpstrDefExt = "json\0".encode_utf16().collect::<Vec<u16>>().as_ptr();
+            let def_ext: Vec<u16> = "json\0".encode_utf16().collect();
+            ofn.lpstrDefExt = def_ext.as_ptr();
             ofn.Flags = winapi::um::commdlg::OFN_OVERWRITEPROMPT
                 | winapi::um::commdlg::OFN_PATHMUSTEXIST
                 | winapi::um::commdlg::OFN_NOCHANGEDIR;
@@ -1049,7 +1044,7 @@ impl SettingsView {
                 screen_dc,
                 &info,
                 DIB_RGB_COLORS,
-                &raw as *const _ as *mut _,
+                &mut raw as *mut _ as *mut _,
                 ptr::null_mut(),
                 0,
             );
@@ -1281,11 +1276,7 @@ unsafe extern "system" fn settings_proc(
                         let count = (*view_ptr).rows.len();
                         if count > 0 {
                             let current = (*view_ptr).focused_row.unwrap_or(0);
-                            let next = if wparam == VK_DOWN as usize {
-                                (current + 1) % count
-                            } else if wparam == VK_UP as usize {
-                                if current == 0 { count - 1 } else { current - 1 }
-                            } else if shift {
+                            let next = if wparam == VK_UP as usize || shift {
                                 if current == 0 { count - 1 } else { current - 1 }
                             } else {
                                 (current + 1) % count
