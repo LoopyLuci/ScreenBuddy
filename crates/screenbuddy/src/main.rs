@@ -537,28 +537,48 @@ fn main() {
     // ---- Auto-update check ---------------------------------------------------
     // Check for updates in the background. Non-blocking: the app starts
     // immediately and the result is logged when it arrives.
+    //
+    // This runs on its own OS thread with its own Tokio runtime, mirroring the
+    // IPC server and AI bridge. `tokio::spawn` from `main` panics -- `main` is
+    // not inside a runtime, and that panic crashed the app at startup before
+    // the IPC control port ever opened.
     {
         let current_version = screenbuddy_core::update::Version::parse(env!("CARGO_PKG_VERSION"))
             .unwrap_or_else(|| screenbuddy_core::update::Version::parse("0.0.0").unwrap());
-        let manifest_url = screenbuddy_core::update::default_manifest_url();
-        tokio::spawn(async move {
-            match screenbuddy_core::update::check_for_update(manifest_url, &current_version).await {
-                screenbuddy_core::update::UpdateCheck::UpToDate => {
-                    println!("[Update] Up to date (v{})", current_version);
+        let manifest_url = screenbuddy_core::update::default_manifest_url().to_string();
+        thread::spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("[Update] Could not create runtime: {e}");
+                    return;
                 }
-                screenbuddy_core::update::UpdateCheck::Available(manifest) => {
-                    println!(
-                        "[Update] New version available: v{} (current: v{})",
-                        manifest.version, current_version
-                    );
-                    if !manifest.notes.is_empty() {
-                        println!("[Update] Release notes: {}", manifest.notes);
+            };
+            runtime.block_on(async move {
+                match screenbuddy_core::update::check_for_update(&manifest_url, &current_version)
+                    .await
+                {
+                    screenbuddy_core::update::UpdateCheck::UpToDate => {
+                        println!("[Update] Up to date (v{})", current_version);
+                    }
+                    screenbuddy_core::update::UpdateCheck::Available(manifest) => {
+                        println!(
+                            "[Update] New version available: v{} (current: v{})",
+                            manifest.version, current_version
+                        );
+                        if !manifest.notes.is_empty() {
+                            println!("[Update] Release notes: {}", manifest.notes);
+                        }
+                    }
+                    screenbuddy_core::update::UpdateCheck::Failed(reason) => {
+                        println!("[Update] Check failed: {}", reason);
                     }
                 }
-                screenbuddy_core::update::UpdateCheck::Failed(reason) => {
-                    println!("[Update] Check failed: {}", reason);
-                }
-            }
+            });
         });
     }
 
