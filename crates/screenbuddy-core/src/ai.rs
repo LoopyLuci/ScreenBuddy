@@ -306,11 +306,12 @@ impl AiEngine {
     /// Whether [name] is one the local provider actually serves.
     ///
     /// Used to fall back to a model that exists rather than 404ing on one that
-    /// does not.
+    /// does not. The catalogue is a fixed list of common names and is NOT
+    /// evidence a model is installed -- llama3.2:1b is in the catalogue whether
+    /// or not the user ever pulled it. So this asks the provider what it serves
+    /// and only keeps [name] if it is genuinely there; otherwise it falls back
+    /// to an installed model.
     pub async fn resolve_local_model(&self, name: &str) -> Result<String> {
-        if self.find_model_by_name(name).is_ok() {
-            return Ok(name.to_string());
-        }
         let available = self.discover_ollama_models().await?;
         if available.iter().any(|m| m == name) {
             return Ok(name.to_string());
@@ -364,7 +365,21 @@ impl AiEngine {
                 let tier = req
                     .force_tier
                     .unwrap_or_else(|| self.auto_select_tier(&req));
-                self.select_model(tier)?
+                let selected = self.select_model(tier)?;
+                // A tier-selected Ollama model may be a catalogue name the user
+                // never pulled (e.g. llama3.2:1b), which 404s. Ask the provider
+                // what it actually serves and fall back to an installed model,
+                // the same recovery the named-model path already does.
+                if selected.backend == Backend::Ollama {
+                    let resolved = self.resolve_local_model(&selected.name).await?;
+                    if resolved != selected.name {
+                        self.resolved_local(resolved)
+                    } else {
+                        selected
+                    }
+                } else {
+                    selected
+                }
             }
         };
         let model = &model;
@@ -426,7 +441,21 @@ impl AiEngine {
                 let tier = req
                     .force_tier
                     .unwrap_or_else(|| self.auto_select_tier(&req));
-                self.select_model(tier)?
+                let selected = self.select_model(tier)?;
+                // A tier-selected Ollama model may be a catalogue name the user
+                // never pulled (e.g. llama3.2:1b), which 404s. Ask the provider
+                // what it actually serves and fall back to an installed model,
+                // the same recovery the named-model path already does.
+                if selected.backend == Backend::Ollama {
+                    let resolved = self.resolve_local_model(&selected.name).await?;
+                    if resolved != selected.name {
+                        self.resolved_local(resolved)
+                    } else {
+                        selected
+                    }
+                } else {
+                    selected
+                }
             }
         };
 
@@ -1794,5 +1823,86 @@ mod tests {
         let out = AiEngine::anthropic_message(&msg(MessageRole::Assistant, "hello")).unwrap();
         assert_eq!(out["role"], "assistant");
         assert_eq!(out["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn a_tier_selected_model_not_installed_falls_back_to_one_that_is() {
+        // Reproduces the live-check failure: the tier-selected default
+        // (llama3.2:1b) is a catalogue name the user never pulled, so asking for
+        // it 404s. resolve_local_model must fall back to a model the provider
+        // actually serves. A tiny TCP server stands in for Ollama's /api/tags.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            // Answer exactly one /api/tags request, then stop.
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"models":[{"name":"qwen2.5:0.5b"}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let config = AiConfig {
+            ollama_endpoint: Some(format!("http://{addr}")),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        // The catalogue name is not installed; the provider serves qwen2.5:0.5b.
+        let resolved = engine.resolve_local_model("llama3.2:1b").await;
+        assert_eq!(
+            resolved.ok().as_deref(),
+            Some("qwen2.5:0.5b"),
+            "an uninstalled catalogue model must fall back to an installed one"
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn an_installed_model_name_is_kept_as_is() {
+        // The fallback must not rewrite a name the provider actually serves.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"models":[{"name":"qwen2.5:0.5b"}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let config = AiConfig {
+            ollama_endpoint: Some(format!("http://{addr}")),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let resolved = engine.resolve_local_model("qwen2.5:0.5b").await;
+        assert_eq!(
+            resolved.ok().as_deref(),
+            Some("qwen2.5:0.5b"),
+            "an installed model name must be returned unchanged"
+        );
+
+        server.abort();
     }
 }
