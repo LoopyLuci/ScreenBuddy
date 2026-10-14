@@ -199,7 +199,8 @@ pub fn verify_checksum(path: &str, expected: &str) -> Result<bool, String> {
 /// Launches an installer and exits the current process.
 ///
 /// On Windows, uses `ShellExecuteW` to run the installer with UI privileges.
-/// The caller should exit after calling this.
+/// The caller should exit after calling this. Off Windows returns an error.
+#[cfg(windows)]
 pub fn launch_installer(installer_path: &str) -> Result<(), String> {
     unsafe {
         let path = widestring::Hstring::from(installer_path);
@@ -222,6 +223,13 @@ pub fn launch_installer(installer_path: &str) -> Result<(), String> {
             ))
         }
     }
+}
+
+/// Off Windows there is no ShellExecuteW. Return an error rather than
+/// silently doing nothing.
+#[cfg(not(windows))]
+pub fn launch_installer(_installer_path: &str) -> Result<(), String> {
+    Err("launching an installer is only supported on Windows".to_string())
 }
 
 /// Returns the default manifest URL.
@@ -411,6 +419,7 @@ mod hex {
 }
 
 // Minimal UTF-16 string helper.
+#[cfg(windows)]
 mod widestring {
     pub struct Hstring(Vec<u16>);
     impl Hstring {

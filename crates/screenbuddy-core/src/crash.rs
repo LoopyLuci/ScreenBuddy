@@ -10,9 +10,11 @@
 //! `HKCU\Software\ScreenBuddy\DisableCrashDumps` is set to 1.
 
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Whether the crash handler has been installed.
+#[cfg(windows)]
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Returns the directory where crash dumps are written.
@@ -33,6 +35,8 @@ pub fn crash_dir() -> Option<PathBuf> {
 ///
 /// Returns `true` if the handler was installed, `false` if it was
 /// already installed or if crash dumps are disabled via the registry.
+/// Always returns `false` off Windows (there is no minidump handler).
+#[cfg(windows)]
 pub fn install_crash_handler() -> bool {
     if INSTALLED.swap(true, Ordering::Relaxed) {
         return false; // already installed
@@ -49,7 +53,14 @@ pub fn install_crash_handler() -> bool {
     true
 }
 
+/// Off Windows there is no minidump crash handler to install.
+#[cfg(not(windows))]
+pub fn install_crash_handler() -> bool {
+    false
+}
+
 /// Check if crash dumps are disabled via the registry.
+#[cfg(windows)]
 fn crash_dumps_disabled() -> bool {
     unsafe {
         let mut key = std::ptr::null_mut();
@@ -84,6 +95,7 @@ fn crash_dumps_disabled() -> bool {
 
 /// The unhandled exception filter. Writes a minidump and returns
 /// `EXCEPTION_EXECUTE_HANDLER` so the default handler runs after.
+#[cfg(windows)]
 unsafe extern "system" fn unhandled_exception_filter(
     exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
 ) -> i32 {
@@ -102,6 +114,7 @@ unsafe extern "system" fn unhandled_exception_filter(
 ///
 /// `MiniDumpWriteDump` is not in winapi 0.3.9's dbghelp module, so we
 /// declare it manually and load it from dbghelp.dll at runtime.
+#[cfg(windows)]
 fn write_minidump(exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS) -> Option<PathBuf> {
     let dir = crash_dir()?;
 
@@ -185,6 +198,7 @@ fn write_minidump(exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS) ->
 }
 
 /// Exception information passed to MiniDumpWriteDump.
+#[cfg(windows)]
 #[repr(C)]
 #[allow(non_snake_case)]
 struct MiniDumpExceptionInformation {
@@ -234,6 +248,7 @@ pub fn prune_old_crashes(max_age: std::time::Duration) -> usize {
 }
 
 // Minimal UTF-16 string helper to avoid pulling in a widestring crate.
+#[cfg(windows)]
 mod widestring {
     pub struct Hstring(Vec<u16>);
     impl Hstring {
@@ -261,6 +276,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn installing_the_handler_is_idempotent() {
         let first = install_crash_handler();
@@ -271,6 +287,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn crash_dumps_disabled_returns_false_without_registry_key() {
         // On a clean test machine there's no registry key, so this should

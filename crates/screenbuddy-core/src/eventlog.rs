@@ -6,9 +6,10 @@
 //! Uses the legacy Event Log API (`RegisterEventSourceW`/`ReportEventW`/
 //! `DeregisterEventSource`) which is available in winapi 0.3.9.
 //! Events are written to the Application log under the "ScreenBuddy" source.
-
-use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+//!
+//! This is Win32-only. Off Windows `EventLog::register()` returns an error
+//! and every write is a no-op returning `false`, so the portable core crate
+//! still builds and callers degrade gracefully instead of failing to compile.
 
 /// Event severity levels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum EventLevel {
     Error = 3,
 }
 
+#[cfg(windows)]
 impl EventLevel {
     fn as_word(self) -> u16 {
         match self {
@@ -31,26 +33,34 @@ impl EventLevel {
 /// A handle to the Windows Event Log.
 ///
 /// Created once via `EventLog::register()`. Writes structured events
-/// with a message string and optional detail data.
+/// with a message string. Off Windows this is a no-op handle.
 pub struct EventLog {
+    #[cfg(windows)]
     handle: winapi::um::winnt::HANDLE,
-    registered: AtomicBool,
+    #[cfg(windows)]
+    registered: std::sync::atomic::AtomicBool,
 }
 
 // HANDLE is a pointer type, but we ensure thread safety through
 // the AtomicBool flag and the fact that ReportEventW is thread-safe.
+#[cfg(windows)]
 unsafe impl Send for EventLog {}
+#[cfg(windows)]
 unsafe impl Sync for EventLog {}
 
 impl EventLog {
     /// The event source name registered in the registry.
+    #[cfg(windows)]
     const SOURCE_NAME: &'static str = "ScreenBuddy";
 
     /// Register the event source.
     ///
     /// Returns `EventLog` on success, or an error message on failure.
-    /// The source is registered under `Application` log.
+    /// The source is registered under `Application` log. Off Windows this
+    /// always returns an error (there is no Event Log to write to).
+    #[cfg(windows)]
     pub fn register() -> Result<Self, String> {
+        use std::sync::atomic::AtomicBool;
         unsafe {
             let source_name = widestring::Hstring::from(Self::SOURCE_NAME);
             let handle =
@@ -69,7 +79,11 @@ impl EventLog {
     ///
     /// `level` is the severity, `event_id` is a unique identifier for
     /// this type of event, and `message` is the human-readable description.
+    /// Returns `false` off Windows or if the write fails.
+    #[cfg(windows)]
     pub fn write(&self, level: EventLevel, event_id: u32, message: &str) -> bool {
+        use std::ffi::CString;
+        use std::sync::atomic::Ordering;
         if !self.registered.load(Ordering::Relaxed) {
             return false;
         }
@@ -110,8 +124,10 @@ impl EventLog {
     }
 }
 
+#[cfg(windows)]
 impl Drop for EventLog {
     fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
         if self.registered.swap(false, Ordering::Relaxed) {
             unsafe {
                 winapi::um::winbase::DeregisterEventSource(self.handle);
@@ -120,7 +136,23 @@ impl Drop for EventLog {
     }
 }
 
+// --- Non-Windows fallback: an inert handle so the crate still builds. ---
+#[cfg(not(windows))]
+impl EventLog {
+    /// Off Windows there is no Event Log. Return an error so the caller can
+    /// log the absence once and move on.
+    pub fn register() -> Result<Self, String> {
+        Err("Windows Event Log is not available on this platform".to_string())
+    }
+
+    /// No-op: there is nowhere to write. Always returns `false`.
+    pub fn write(&self, _level: EventLevel, _event_id: u32, _message: &str) -> bool {
+        false
+    }
+}
+
 // Minimal UTF-16 string helper.
+#[cfg(windows)]
 mod widestring {
     pub struct Hstring(Vec<u16>);
     impl Hstring {
@@ -149,6 +181,7 @@ pub const EVENT_TRAY_ACTION: u32 = 1010;
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn event_level_as_word_is_nonzero() {
         assert!(EventLevel::Info.as_word() != 0);
@@ -158,10 +191,17 @@ mod tests {
 
     #[test]
     fn event_log_can_be_registered() {
+        // On Windows this succeeds; off Windows register() returns Err, which
+        // is the documented behaviour, not a failure.
         let log = EventLog::register();
-        assert!(log.is_ok(), "EventLog::register should succeed");
+        if cfg!(windows) {
+            assert!(log.is_ok(), "EventLog::register should succeed on Windows");
+        } else {
+            assert!(log.is_err(), "EventLog::register should Err off Windows");
+        }
     }
 
+    #[cfg(windows)]
     #[test]
     fn event_log_write_returns_true_after_register() {
         let log = EventLog::register().unwrap();

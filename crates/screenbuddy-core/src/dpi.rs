@@ -3,9 +3,14 @@
 //! Enumerates displays, calculates DPI scaling factors, and provides
 //! helpers for positioning windows across monitors with different DPI
 //! settings.
-
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
+//!
+//! The coordinate math (`Rect`, `logical_to_physical`,
+//! `physical_to_logical`, `clamp_to_display`) is portable and always
+//! available. The live display enumeration and DPI query are Win32, so
+//! off Windows `enumerate_displays` returns an empty list and
+//! `get_dpi_for_display` returns the 96 DPI / 1.0 default -- callers that
+//! position a window fall back to the unclamped coordinate rather than
+//! failing to build.
 
 /// A display device with its DPI and bounds.
 #[derive(Debug, Clone)]
@@ -46,7 +51,8 @@ impl Rect {
 /// Enumerates all active displays and returns their info.
 ///
 /// Uses `EnumDisplayDevicesW` to find all monitors, then queries each
-/// for its DPI scaling factor.
+/// for its DPI scaling factor. Returns an empty list off Windows.
+#[cfg(windows)]
 pub fn enumerate_displays() -> Vec<DisplayInfo> {
     let mut displays = Vec::new();
     unsafe {
@@ -104,6 +110,13 @@ pub fn enumerate_displays() -> Vec<DisplayInfo> {
     displays
 }
 
+/// Off Windows there is no Win32 display enumeration. Return an empty list so
+/// callers fall back to unclamped positioning instead of failing to build.
+#[cfg(not(windows))]
+pub fn enumerate_displays() -> Vec<DisplayInfo> {
+    Vec::new()
+}
+
 /// Get the primary display.
 pub fn primary_display() -> Option<DisplayInfo> {
     enumerate_displays().into_iter().find(|d| d.is_primary)
@@ -119,6 +132,7 @@ pub fn display_at(x: i32, y: i32) -> Option<DisplayInfo> {
 /// Get the DPI scale factor for a display device name.
 ///
 /// Returns (dpi, scale). Falls back to (96, 1.0) on error.
+#[cfg(windows)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn get_dpi_for_display(device_name: *const u16) -> (u32, f32) {
     unsafe {
@@ -176,6 +190,13 @@ pub fn get_dpi_for_display(device_name: *const u16) -> (u32, f32) {
     }
 }
 
+/// Off Windows there is no per-monitor DPI query. Report the standard
+/// 96 DPI / 1.0 default.
+#[cfg(not(windows))]
+pub fn get_dpi_for_display(_device_name: *const u16) -> (u32, f32) {
+    (96, 1.0)
+}
+
 /// Convert a logical (DPI-scaled) coordinate to physical pixels.
 pub fn logical_to_physical(x: i32, y: i32, scale: f32) -> (i32, i32) {
     ((x as f32 * scale) as i32, (y as f32 * scale) as i32)
@@ -217,7 +238,10 @@ pub fn clamp_to_display(rect: &Rect, display: &Rect) -> Rect {
     }
 }
 
+#[cfg(windows)]
 fn wide_to_string(wide: &[u16]) -> String {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
     let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
     OsString::from_wide(&wide[..len])
         .to_string_lossy()
@@ -225,6 +249,7 @@ fn wide_to_string(wide: &[u16]) -> String {
 }
 
 // Minimal UTF-16 string helper.
+#[cfg(windows)]
 mod widestring {
     pub struct Hstring(Vec<u16>);
     impl Hstring {
@@ -336,6 +361,10 @@ mod tests {
         assert!(clamped.bottom <= display.bottom);
     }
 
+    // The following tests exercise live Win32 display enumeration and only
+    // assert anything on Windows; off Windows enumerate_displays() is empty by
+    // design, so these are gated to avoid failing the Linux/macOS core build.
+    #[cfg(windows)]
     #[test]
     fn displays_are_enumerated() {
         let displays = enumerate_displays();
@@ -346,12 +375,14 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn primary_display_exists() {
         let primary = primary_display();
         assert!(primary.is_some(), "primary display should exist");
     }
 
+    #[cfg(windows)]
     #[test]
     fn display_at_primary_works() {
         let primary = primary_display().unwrap();
@@ -361,6 +392,7 @@ mod tests {
         assert!(display.is_some(), "should find display at primary center");
     }
 
+    #[cfg(windows)]
     #[test]
     fn dpi_scale_is_reasonable() {
         let displays = enumerate_displays();
@@ -369,6 +401,17 @@ mod tests {
             assert!(d.dpi_scale <= 4.0, "scale {} too high", d.dpi_scale);
             assert!(d.dpi >= 48, "dpi {} too low", d.dpi);
             assert!(d.dpi <= 384, "dpi {} too high", d.dpi);
+        }
+    }
+
+    #[test]
+    fn enumerate_is_empty_or_populated_but_never_panics() {
+        // Portable invariant: on any platform the call returns a Vec and does
+        // not panic. Content is platform-dependent and asserted above on
+        // Windows only.
+        let displays = enumerate_displays();
+        for d in &displays {
+            assert!(d.dpi_scale > 0.0);
         }
     }
 }

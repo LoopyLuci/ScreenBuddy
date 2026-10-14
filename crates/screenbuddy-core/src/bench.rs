@@ -145,6 +145,7 @@ pub fn run_soak_test(config: &SoakConfig) -> SoakResult {
     }
 }
 
+#[cfg(windows)]
 fn get_handle_count() -> u32 {
     unsafe {
         let process = winapi::um::processthreadsapi::GetCurrentProcess();
@@ -152,6 +153,13 @@ fn get_handle_count() -> u32 {
         winapi::um::processthreadsapi::GetProcessHandleCount(process, &mut count);
         count
     }
+}
+
+/// Off Windows there is no per-process handle count query. Report 0 so the
+/// soak test's leak detection simply has nothing to compare.
+#[cfg(not(windows))]
+fn get_handle_count() -> u32 {
+    0
 }
 
 /// Configuration for a benchmark run.
@@ -308,6 +316,7 @@ fn simulate_ai_work() {
     }
 }
 
+#[cfg(windows)]
 fn get_memory_usage_mb() -> f64 {
     unsafe {
         let mut mem_info: winapi::um::psapi::PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
@@ -325,6 +334,14 @@ fn get_memory_usage_mb() -> f64 {
     }
 }
 
+/// Off Windows there is no psapi working-set query. Report 0 so the frame
+/// metrics simply carry no memory sample.
+#[cfg(not(windows))]
+fn get_memory_usage_mb() -> f64 {
+    0.0
+}
+
+#[cfg(windows)]
 fn get_cpu_usage() -> f64 {
     unsafe {
         let process = winapi::um::processthreadsapi::GetCurrentProcess();
@@ -362,10 +379,18 @@ fn get_cpu_usage() -> f64 {
     }
 }
 
+/// Off Windows there is no GetProcessTimes CPU query. Report 0.
+#[cfg(not(windows))]
+fn get_cpu_usage() -> f64 {
+    0.0
+}
+
+#[cfg(windows)]
 fn filetime_to_u64(ft: winapi::shared::minwindef::FILETIME) -> u64 {
     ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
 }
 
+#[cfg(windows)]
 fn process_start_tick() -> u64 {
     static START_TICK: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *START_TICK.get_or_init(|| unsafe {
