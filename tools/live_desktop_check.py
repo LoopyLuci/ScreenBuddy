@@ -255,4 +255,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # The reply being checked often contains emoji, and on a Windows runner the
+    # default console encoding (cp1252) cannot encode them -- printing the reply
+    # raised UnicodeEncodeError and crashed the check right after the model had
+    # actually answered. Force UTF-8 so the transcript prints as-is.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     sys.exit(main())
