@@ -125,7 +125,7 @@ Backend instances are cached under `name::model_override::hermes_home` and prope
 
 ### 3.7 Agent-to-agent + dashboard chat routes (ScreenBuddy's exact call targets)
 
-- `POST /api/agent/ask` (`bot/dashboard/routes/agent_control.py`): `{source_instance, target_instance, prompt}` → `{"ok": true, "result": "<text>"}`. Allowlist-gated (`trust_all` vs per-instance), audit-logged, 90s timeout in the MCP wrapper. Source is self-declared (drives allowlist + audit, not a security boundary).
+- `POST /api/agent/ask` (`bot/dashboard/routes/agent_control.py:22`): `{source_instance, target_instance, prompt}` → `{"ok": true, "result": "<text>"}`. Token-required (`Depends(_require_token)`), allowlist-gated (`trust_all` vs per-instance), audit-logged, 90s timeout in the MCP wrapper. Source is self-declared (drives allowlist + audit, not a security boundary). Verified failure modes: bad payload shape → `400 "payload must be {source_instance, target_instance, prompt}"`; unknown source/target → `404` with the offending name — a real 404 is a typo'd instance id, not a routing failure.
 - `POST /api/chat/send-to-bot` (`routes/chat.py`): the full CmdContext/dispatch_command/router.ask pipeline — slash commands work, replies stream to authenticated `/api/ws` sockets.
 - `POST /api/chat/send` via `bot/outbox.py`: pushes a message *out* through a live platform SDK (appears to a real Telegram user as if from the bot). `outbox.send_message` is sandbox-guarded (`_refuse_in_sandbox`).
 
@@ -144,24 +144,39 @@ FastAPI on `127.0.0.1:8080`, `X-Dashboard-Token` (or API key) auth, per-instance
 
 ### 4.1 Pattern A — ABP's agent loop gains ScreenBuddy's 25 tools via MCP (config-only)
 
-**Mechanism.** ABP's `mcp_client.py` already supports stdio subprocess MCP servers, operator-configured. ScreenBuddy's `mcp/server.py` is a stdio MCP server with 25 tools. Register it:
+**Mechanism.** ABP's `mcp_client.py` supports stdio subprocess MCP servers, operator-configured only. Registration is a single authenticated POST (verified in `bot/dashboard/routes/files.py:426`, same route the dashboard's Bots tab and the `/mcp_external` Telegram command write through):
 
-```
-ABP Dashboard → Bots tab → external MCP server
-  name:       screenbuddy
-  transport:  stdio
-  command:    python
-  args:       ["C:/Projects/ScreenBuddy/mcp/server.py"]
-  env:        {"SCREENBUDDY_IPC_ADDR": "127.0.0.1:34567"}
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/mcp-external \
+  -H "X-Dashboard-Token: <dashboard-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "screenbuddy",
+    "transport": "stdio",
+    "command": "python",
+    "args": ["C:/Projects/ScreenBuddy/mcp/server.py"],
+    "env": {"SCREENBUDDY_AUTOSTART": "0"}
+  }'
+# -> {"ok": true, "connected": true, "authorization_url": null}
 ```
 
-(or the `external_mcp_servers` DB row / `/mcp_external` Telegram command — both write the same table.)
+The route immediately calls `mcp_client.connect(name)` and reports `connected: true|false` in the response, so a failed handshake is visible at registration time, not at first use. Persisted in the `external_mcp_servers` table (`name, transport, command, args_json, env_json, url, auth_token, oauth_*, enabled, instance_id`). Set `SCREENBUDDY_IPC_ADDR` in `env` if the app runs on a non-default port. Tool names arrive `screenbuddy_*`-prefixed (full verified list below).
+
+**Trust posture (verified in `config/backends.yaml:206-211`):** external MCP servers are *untrusted* by default — their output marks the session as having read untrusted content, so a person must approve changes (`mcp_trust: {screenbuddy: trusted}` opts out), and `mcp_pinning: true` blocks a tool whose description or schema drifts after approval. Both are the right defaults for this registration; leave them on until you've watched a few turns.
 
 **Result.** Every ABP agent turn on a tool-loop backend (`api`, `custom_model`, `native_agent`) can call `screenbuddy_send_chat`, `screenbuddy_set_animation`, `screenbuddy_move_creature`, `screenbuddy_speak`, `screenbuddy_run_agent`, `screenbuddy_memory_search`, `screenbuddy_set_setting`, `screenbuddy_play_sound`, … exactly like built-in tools. A Telegram bot animates the desktop creature and speaks through it.
 
 **Effort:** zero code. **Risk:** low. **Caveat:** ABP's own permission/taint system does not apply *inside* ScreenBuddy's tools — same documented trade as `opencode`/`openclaw`. If exposed to an untrusted channel, gate ScreenBuddy-side (it has per-profile `tools_enabled`).
 
-**Verification:** after registering, `list_mcp_servers` should show `screenbuddy` connected; a prompt like "make the creature wave and say hello" should produce animation + speech on the desktop.
+**Verification (done, not theoretical).** A raw JSON-RPC 2.0 stdio probe — the same frames `StdioServerParameters`-based clients exchange — was run against `mcp/server.py` on 2026-10-14. Result:
+
+```
+initialize: OK  server='screenbuddy' v protocol=2025-03-26
+ping: OK
+tools/list: 25 tools
+```
+
+The full advertised tool set: `screenbuddy_status`, `screenbuddy_ping`, `screenbuddy_list_creatures`, `screenbuddy_set_animation`, `screenbuddy_move_creature`, `screenbuddy_set_visible`, `screenbuddy_set_auto_cycle`, `screenbuddy_send_chat`, `screenbuddy_chat_history`, `screenbuddy_run_agent`, `screenbuddy_agent_info`, `screenbuddy_play_sound`, `screenbuddy_speak`, `screenbuddy_set_setting`, `screenbuddy_get_setting`, `screenbuddy_nine_router_status`, `screenbuddy_list_agents`, `screenbuddy_save_agent`, `screenbuddy_duplicate_agent`, `screenbuddy_activate_agent`, `screenbuddy_active_agent`, `screenbuddy_delete_agent`, `screenbuddy_memory_ingest`, `screenbuddy_memory_search`, `screenbuddy_list_sounds`. After registering, a prompt like "make the creature wave and say hello" should produce animation + speech on the desktop.
 
 ### 4.2 Pattern B — ScreenBuddy's 9Router as an ABP model provider (config-only)
 
@@ -180,6 +195,8 @@ Set a bot instance's backend to `custom_model`, model `screenbuddy_9router/<mode
 **Result.** ABP inherits ScreenBuddy's automatic provider-fallback; 9Router gains a real consumer. Wire format is already verified compatible: ABP's `OpenAICompatibleTransport` posts standard chat-completions; 9Router serves the OpenAI-compatible `/v1` surface that ScreenBuddy's own `Backend::NineRouter` already consumes (and whose install-verification was just hardened — a 404 from a missing model now resolves to an installed one rather than failing).
 
 **Effort:** zero code. **Risk:** none (localhost; optional bearer).
+
+**Note on file placement:** `config/providers.yaml` is **git-ignored in ABP** (verified `.gitignore` lines 2–3) — which is correct, since provider entries may carry `api_key_env` names. It does not exist in a fresh checkout; the app works without it until you create it.
 
 **Synergy worth noting:** ABP's router brain will *learn* about models reached through 9Router (reliability, cooldowns on 429/404) — the two routers stack: 9Router provides provider-level fallback inside one endpoint; ABP's brain provides model-level selection across endpoints. ScreenBuddy keeps 9Router as its own static fallback; nothing is lost.
 
@@ -346,6 +363,6 @@ Both codebases share one hard invariant, learned the hard way this session: **a 
 | 4 | D — ScreenBuddy as ABP backend (extension) | ~2 weeks | Medium — channel bots powered by the creature | Phase 3 stable |
 | 5 | E — ScreenBuddy Rust MCP client | ~2–3 weeks | Medium-high — creature orchestrates fleet | Phase 4 |
 
-**Do 1+2 today** — configuration, reversible, immediately demonstrable. **Phase 3 is the strategic one**: ScreenBuddy stops being "an app with 6 backends" and becomes "the presence layer of an agentic fleet" without losing its identity.
+**Do 1+2 today** — configuration, reversible, immediately demonstrable, and the ScreenBuddy-side half of Pattern A is already verified end-to-end at the wire level (§4.1). **Phase 3 is the strategic one**: ScreenBuddy stops being "an app with 6 backends" and becomes "the presence layer of an agentic fleet" without losing its identity.
 
 **Definition of done per phase** (ScreenBuddy's established bar): new backend variants ship with failing-then-passing tests against a stub server (the `resolve_local_model` tests are the template); 391 lib + 181 bin tests stay green; `clippy --all-targets -D warnings` and `cargo fmt` clean; live-model CI still completes a real conversation; and every failure path reports honestly per §8.
