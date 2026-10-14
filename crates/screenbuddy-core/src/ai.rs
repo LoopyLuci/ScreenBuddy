@@ -358,7 +358,23 @@ impl AiEngine {
         // it what it has rather than 404ing on a catalogue name.
         let model: ModelInfo = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
             Some(name) => match self.find_model_by_name(name) {
-                Ok(info) => info,
+                Ok(info) => {
+                    // Catalogue membership is not proof the model is installed:
+                    // the default pin is llama3.2:1b whether or not the user
+                    // ever pulled it, which 404s. For a local model, verify the
+                    // provider actually serves it and fall back to one that does
+                    // -- the same recovery the None branch applies.
+                    if info.backend == Backend::Ollama {
+                        let resolved = self.resolve_local_model(&info.name).await?;
+                        if resolved != info.name {
+                            self.resolved_local(resolved)
+                        } else {
+                            info
+                        }
+                    } else {
+                        info
+                    }
+                }
                 Err(_) => self.resolved_local(self.resolve_local_model(name).await?),
             },
             None => {
@@ -436,7 +452,22 @@ impl AiEngine {
         use futures::StreamExt;
 
         let model: ModelInfo = match req.force_model.as_deref().filter(|m| !m.trim().is_empty()) {
-            Some(name) => self.find_model_by_name(name)?,
+            Some(name) => {
+                let info = self.find_model_by_name(name)?;
+                // Catalogue membership is not proof the model is installed: the
+                // default pin is llama3.2:1b whether or not the user ever
+                // pulled it, which 404s. Verify the provider actually serves it.
+                if info.backend == Backend::Ollama {
+                    let resolved = self.resolve_local_model(&info.name).await?;
+                    if resolved != info.name {
+                        self.resolved_local(resolved)
+                    } else {
+                        info
+                    }
+                } else {
+                    info
+                }
+            }
             None => {
                 let tier = req
                     .force_tier
@@ -1902,6 +1933,64 @@ mod tests {
             Some("qwen2.5:0.5b"),
             "an installed model name must be returned unchanged"
         );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn generate_with_uninstalled_pinned_model_falls_back_to_installed() {
+        // send_chat always passes force_model = pinned_model(), whose default is
+        // "llama3.2" -- a catalogue name the user never pulled. The Some branch
+        // must verify installation and fall back to an installed model rather
+        // than 404ing. A stub server answers both /api/tags (discovery) and
+        // /api/chat (the actual request).
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Ok((mut sock, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let (status_line, body) = if req.contains("/api/tags") {
+                        (
+                            "200 OK",
+                            r#"{"models":[{"name":"qwen2.5:0.5b"}]}"#.to_string(),
+                        )
+                    } else {
+                        (
+                            "200 OK",
+                            r#"{"message":{"role":"assistant","content":"Hello from the model."},"eval_count":10,"done":true}"#.to_string(),
+                        )
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status_line,
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                }
+            }
+        });
+
+        let config = AiConfig {
+            ollama_endpoint: Some(format!("http://{addr}")),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("llama3.2".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let resp = engine.generate(req).await.unwrap();
+        assert_eq!(resp.text, "Hello from the model.");
 
         server.abort();
     }
