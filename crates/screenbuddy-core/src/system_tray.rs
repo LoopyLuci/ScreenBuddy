@@ -315,6 +315,7 @@ unsafe fn add_icon(
 }
 
 /// Show a balloon notification to the user.
+#[cfg(windows)]
 pub fn show_balloon(title: &str, message: &str) {
     use std::mem;
     use std::ptr;
@@ -338,6 +339,10 @@ pub fn show_balloon(title: &str, message: &str) {
         Shell_NotifyIconW(NIM_MODIFY, &mut data as *mut _);
     }
 }
+
+/// Off Windows there is no tray icon to attach a balloon to. No-op.
+#[cfg(not(windows))]
+pub fn show_balloon(_title: &str, _message: &str) {}
 
 /// Remove the notification icon, so quitting does not leave a ghost behind.
 #[cfg(windows)]
@@ -366,6 +371,7 @@ fn register_taskbar_message() -> u32 {
     unsafe { winapi::um::winuser::RegisterWindowMessageW(name.as_ptr()) }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn tray_window_proc(
     hwnd: winapi::shared::windef::HWND,
     msg: u32,
