@@ -431,6 +431,8 @@ mod tests {
         assert!(result.p99_ms.is_finite());
         assert!(result.mean_ms.is_finite());
         assert!(result.fps_effective > 0.0);
+        // Memory is only measured via psapi on Windows; off Windows it is 0.
+        #[cfg(windows)]
         assert!(result.memory_end_mb > 0.0);
     }
 
@@ -488,6 +490,8 @@ mod tests {
         let result = run_soak_test(&config);
         assert!(!result.samples.is_empty(), "should have samples");
         assert!(result.duration_secs >= 2);
+        // Memory is only measured via psapi on Windows; off Windows it is 0.
+        #[cfg(windows)]
         assert!(result.memory_end_mb > 0.0);
     }
 
@@ -527,7 +531,11 @@ mod tests {
         };
         let result = run_soak_test(&config);
         for sample in &result.samples {
+            // Memory and handle counts are only measured on Windows; off
+            // Windows they are 0 by design, so only assert them there.
+            #[cfg(windows)]
             assert!(sample.memory_mb > 0.0, "memory should be positive");
+            #[cfg(windows)]
             assert!(sample.handle_count > 0, "handles should be positive");
             assert!(sample.fps > 0.0, "fps should be positive");
             assert!(sample.frame_count > 0, "frames should be positive");

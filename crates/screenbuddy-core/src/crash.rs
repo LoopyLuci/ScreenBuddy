@@ -265,6 +265,9 @@ mod widestring {
 mod tests {
     use super::*;
 
+    // crash_dir() derives from %LOCALAPPDATA%, which is a Windows env var; off
+    // Windows it returns None, so this assertion only holds there.
+    #[cfg(windows)]
     #[test]
     fn the_crash_directory_is_created() {
         let dir = crash_dir().expect("crash dir should exist");
