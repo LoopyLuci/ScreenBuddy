@@ -785,6 +785,24 @@ fn main() {
         audio.set_music_volume(vol as f32);
     }
 
+    // Apply the persisted always-on-top preference at startup. The tray
+    // toggle only flips the process atomic from that point on; without this
+    // the saved choice was never read, so the window always started in the
+    // atomic's default state regardless of what the user had set.
+    if let Some(screenbuddy_core::SettingValue::Bool(on_top)) =
+        settings.lock().unwrap().get("always_on_top")
+    {
+        screenbuddy_core::set_always_on_top(on_top != 0.0);
+    }
+
+    // The window-transparency value is read here and applied once the main
+    // window exists (see the Ok(hwnd) arm below), because setting layered
+    // alpha needs a real HWND.
+    let window_transparency = match settings.lock().unwrap().get("window_transparency") {
+        Some(screenbuddy_core::SettingValue::Float(t)) => Some(t as f32),
+        _ => None,
+    };
+
     // Chat Window
     // Chat sessions persist across restarts; the window renders a view of the
     // current session rather than owning the conversation.
@@ -801,6 +819,10 @@ fn main() {
             // reader user hears nothing when the app starts, even though the
             // window is fully visible.
             screenbuddy_core::accessibility::notify_show(hwnd);
+            // Apply the saved window opacity now that a real HWND exists.
+            if let Some(t) = window_transparency {
+                apply_window_transparency(hwnd, t);
+            }
         }
         Err(e) => eprintln!("[UI] could not create main window: {e}"),
     }
@@ -2093,6 +2115,25 @@ fn show_about_dialog() {
 #[cfg(windows)]
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Apply a saved window-transparency value to the main window.
+///
+/// `transparency` is 0.0 (fully opaque) to 1.0 (fully transparent); it maps to
+/// the layered-window alpha the inverse way round, since alpha is 0 = clear and
+/// 255 = opaque. The window is created `WS_EX_LAYERED`, so this takes effect
+/// immediately. A no-op for an invalid handle.
+fn apply_window_transparency(hwnd: winapi::shared::windef::HWND, transparency: f32) {
+    if hwnd.is_null() {
+        return;
+    }
+    let t = transparency.clamp(0.0, 1.0);
+    // alpha 255 = opaque, 0 = fully transparent.
+    let alpha = ((1.0 - t) * 255.0).round() as u8;
+    unsafe {
+        // LWA_ALPHA = 0x2; only the alpha channel is set, colour key ignored.
+        winapi::um::winuser::SetLayeredWindowAttributes(hwnd, 0, alpha, 0x2);
+    }
 }
 
 /// Where chat sessions are persisted.

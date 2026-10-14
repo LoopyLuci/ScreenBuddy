@@ -47,14 +47,30 @@ def app_writes(name):
 
 
 def consumers(name):
-    """Where, if anywhere, the app reads this setting."""
+    """Where, if anywhere, the app reads this setting.
+
+    Covers every read form on SettingsReader/SettingsUI: `.get(...)`,
+    `.number(...)`, and `.text(...)`. Two false-positive sources are
+    excluded so a name is only counted when a *settings* object reads it:
+    `args.get(...)`/`snapshot.get(...)`/`map.get(...)` are unrelated
+    container reads that happen to share the `.get(` spelling. Missing
+    `.text()` here previously misclassified every string setting (theme,
+    log_level, ai_provider, ai_model) as dead when the app reads them
+    through `.text("...")`.
+    """
     hits = []
     for path in BIN.glob("*.rs"):
         text = path.read_text(encoding="utf-8", errors="replace")
         for i, line in enumerate(text.splitlines(), 1):
-            if name in line and "get(" in line:
-                hits.append(f"{path.name}:{i}")
-            elif f'"{name}"' in line and ("number(" in line or ".get(" in line):
+            # A real settings read: the setting name is the argument to a
+            # reader method on a settings/snapshot handle. Reject lines where
+            # the only `.get(` is on an unrelated receiver.
+            if f'"{name}"' not in line:
+                continue
+            # Exclude unrelated container reads that are not settings reads.
+            if re.search(r"\b(args|snapshot|map|status|self)\.get\(", line):
+                continue
+            if ".number(" in line or ".text(" in line or ".get(" in line:
                 hits.append(f"{path.name}:{i}")
     return hits
 
