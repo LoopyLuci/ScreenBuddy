@@ -34,6 +34,10 @@ pub enum Backend {
     /// router that fronts many providers with automatic fallback.
     NineRouter,
     Custom,
+    /// [AgenticBotPlatform](https://github.com/LoopyLuci/AgenticBotPlatform)
+    /// dashboard: routes the prompt through its learned model router, backup
+    /// chain and agent runtime, answering as one of its bot instances.
+    Abp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -137,6 +141,15 @@ pub struct AiConfig {
     /// Optional bearer token. 9Router accepts requests without one when it runs
     /// without auth, so this is only sent when set.
     pub nine_router_api_key: Option<String>,
+    /// AgenticBotPlatform dashboard base URL, e.g. "http://127.0.0.1:8080".
+    pub abp_endpoint: Option<String>,
+    /// Dashboard token sent as `X-Dashboard-Token` on every ABP request.
+    pub abp_api_key: Option<String>,
+    /// Self-declared source instance name for ABP's agent-to-agent allowlist
+    /// and audit log. Defaults to "screenbuddy" when unset.
+    pub abp_source_instance: Option<String>,
+    /// The ABP bot instance that actually answers (its router picks the model).
+    pub abp_target_instance: Option<String>,
     pub local_model_path: Option<PathBuf>,
     pub local_model_type: LocalModelType,
     pub default_tier: ModelTier,
@@ -162,6 +175,10 @@ impl Default for AiConfig {
             custom_api_key: None,
             nine_router_endpoint: None,
             nine_router_api_key: None,
+            abp_endpoint: std::env::var("ABP_ENDPOINT").ok(),
+            abp_api_key: std::env::var("ABP_DASHBOARD_TOKEN").ok(),
+            abp_source_instance: std::env::var("ABP_SOURCE_INSTANCE").ok(),
+            abp_target_instance: std::env::var("ABP_TARGET_INSTANCE").ok(),
             local_model_path: None,
             local_model_type: LocalModelType::Ollama,
             default_tier: ModelTier::LocalTiny,
@@ -410,6 +427,7 @@ impl AiEngine {
                     Backend::Anthropic => self.gen_anthropic(&req, model).await,
                     Backend::NineRouter => self.gen_nine_router(&req, model).await,
                     Backend::Custom => self.gen_custom(&req, model).await,
+                    Backend::Abp => self.gen_abp(&req, model).await,
                 }
             })
             .await;
@@ -655,6 +673,19 @@ impl AiEngine {
                 backend: Backend::LlamaCpp,
                 name: "local-llama".into(),
                 max_context: 4096,
+                cost: 0.0,
+            });
+        }
+        // AgenticBotPlatform — present whenever its dashboard endpoint is
+        // configured. It is a localhost service, so it counts as local
+        // infrastructure even though the answer may come from a cloud model
+        // the ABP router picked.
+        if config.abp_endpoint.is_some() {
+            m.push(ModelInfo {
+                tier: ModelTier::CloudBudget,
+                backend: Backend::Abp,
+                name: "abp".into(),
+                max_context: 128000,
                 cost: 0.0,
             });
         }
@@ -1226,6 +1257,91 @@ impl AiEngine {
         })
     }
 
+    // ============ AgenticBotPlatform dashboard ============
+    async fn gen_abp(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
+        let ep = self
+            .config
+            .abp_endpoint
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::InvalidConfig("No ABP endpoint".into()))?;
+        let token =
+            self.config.abp_api_key.as_ref().ok_or_else(|| {
+                crate::error::Error::InvalidConfig("No ABP dashboard token".into())
+            })?;
+        let target =
+            self.config.abp_target_instance.as_ref().ok_or_else(|| {
+                crate::error::Error::InvalidConfig("No ABP target instance".into())
+            })?;
+        let source = self
+            .config
+            .abp_source_instance
+            .clone()
+            .unwrap_or_else(|| "screenbuddy".into());
+        let body = serde_json::json!({
+            "source_instance": source,
+            "target_instance": target,
+            "prompt": self.compose_flat_prompt(req),
+        });
+        let resp = self
+            .client
+            .post(format!("{}/api/agent/ask", ep.trim_end_matches('/')))
+            .header("X-Dashboard-Token", token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(crate::error::Error::Network(format!(
+                "ABP error {status}: {detail}"
+            )));
+        }
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
+        // A failure must be reported, never papered over with a plausible reply:
+        // an ok:false payload is an error, not an empty answer.
+        if json["ok"].as_bool() != Some(true) {
+            let detail = json["error"].as_str().unwrap_or("unknown error");
+            return Err(crate::error::Error::Network(format!("ABP error: {detail}")));
+        }
+        Ok(AiResponse::plain(
+            json["result"].as_str().unwrap_or("").into(),
+            model.tier,
+            model.backend,
+            0,
+            FinishReason::Stop,
+        ))
+    }
+
+    /// Flatten system prompt, history and the current prompt into the single
+    /// string ABP's /api/agent/ask expects. ABP bots keep their own session
+    /// context, so this is a best-effort carry-over, not the whole transcript.
+    fn compose_flat_prompt(&self, req: &AiRequest) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(sys) = &req.system_prompt {
+            if !sys.is_empty() {
+                parts.push(format!("System: {sys}"));
+            }
+        }
+        if let Some(hist) = &req.history {
+            for msg in Self::recent_messages(hist, MAX_HISTORY_MESSAGES) {
+                let role = match msg.role {
+                    MessageRole::System => "system",
+                    MessageRole::User => "user",
+                    MessageRole::Assistant => "assistant",
+                };
+                parts.push(format!("{role}: {}", msg.content));
+            }
+        }
+        if !req.prompt.is_empty() {
+            parts.push(req.prompt.clone());
+        }
+        parts.join("\n\n")
+    }
+
     pub fn config(&self) -> &AiConfig {
         &self.config
     }
@@ -1239,6 +1355,7 @@ impl AiEngine {
             "anthropic" | "claude" => Ok(Backend::Anthropic),
             "9router" | "nine_router" | "ninerouter" | "router" => Ok(Backend::NineRouter),
             "custom" => Ok(Backend::Custom),
+            "abp" | "agenticbot" | "agenticbotplatform" | "agentic_bot" => Ok(Backend::Abp),
             other => Err(crate::error::Error::InvalidConfig(format!(
                 "unknown provider '{other}'"
             ))),
@@ -1488,6 +1605,160 @@ fn an_unknown_model_name_reports_what_is_available() {
         "the error should list what is configured, got: {error}"
     );
     assert!(!engine.has_model("no-such-model"));
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod gen_abp_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn gen_abp_returns_result_text_on_success() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"ok": true, "result": "Hello from ABP."}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let resp = engine.generate(req).await.unwrap();
+        assert_eq!(resp.text, "Hello from ABP.");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_returns_network_error_on_502() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = "Service Unavailable";
+                let resp = format!(
+                    "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let err = engine.generate(req).await.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Network(_)),
+            "502 must be Network, got: {err}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_returns_invalid_config_without_token() {
+        let config = AiConfig {
+            abp_endpoint: Some("http://127.0.0.1:8080".into()),
+            abp_api_key: None,
+            abp_target_instance: Some("bot".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let err = engine.generate(req).await.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::InvalidConfig(_)),
+            "missing token must be InvalidConfig, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gen_abp_returns_invalid_config_without_target_instance() {
+        let config = AiConfig {
+            abp_endpoint: Some("http://127.0.0.1:8080".into()),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: None,
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let err = engine.generate(req).await.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::InvalidConfig(_)),
+            "missing target instance must be InvalidConfig, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_backend_accepts_abp() {
+        assert_eq!(AiEngine::parse_backend("abp").unwrap(), Backend::Abp);
+        assert_eq!(AiEngine::parse_backend("agenticbot").unwrap(), Backend::Abp);
+        assert_eq!(
+            AiEngine::parse_backend("AgenticBotPlatform").unwrap(),
+            Backend::Abp
+        );
+    }
+
+    #[test]
+    fn abp_config_fields_default_to_none() {
+        let config = AiConfig::default();
+        assert!(config.abp_endpoint.is_none());
+        assert!(config.abp_api_key.is_none());
+        assert!(config.abp_target_instance.is_none());
+        assert!(config.abp_source_instance.is_none());
+    }
 }
 
 #[cfg(test)]

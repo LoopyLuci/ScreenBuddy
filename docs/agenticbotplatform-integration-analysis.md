@@ -200,7 +200,9 @@ Set a bot instance's backend to `custom_model`, model `screenbuddy_9router/<mode
 
 **Synergy worth noting:** ABP's router brain will *learn* about models reached through 9Router (reliability, cooldowns on 429/404) — the two routers stack: 9Router provides provider-level fallback inside one endpoint; ABP's brain provides model-level selection across endpoints. ScreenBuddy keeps 9Router as its own static fallback; nothing is lost.
 
-### 4.3 Pattern C — ScreenBuddy routes through ABP (`Backend::Abp`, ~1 week)
+### 4.3 Pattern C — ScreenBuddy routes through ABP (`Backend::Abp`) — IMPLEMENTED
+
+**Status: shipped in ScreenBuddy** (see commit history; `crates/screenbuddy-core/src/ai.rs`). The `Backend::Abp` variant, its config fields, the `gen_abp()` implementation and 6 tests are in the tree. What follows is the as-built record.
 
 **Mechanism.** ABP exposes no OpenAI-compatible chat *server* (it is a client of such servers) — so ScreenBuddy→ABP goes through the dashboard REST API. The verified call target is `POST /api/agent/ask`:
 
@@ -259,6 +261,10 @@ Wire the new arm into `generate()`'s dispatch (line ~391) and `generate_stream()
 **Result.** ScreenBuddy's `send_chat` answers *as an ABP bot instance*: the router brain picks the model per task class, the backup chain absorbs failures, swarms are available per-turn — while the creature's persona (`AgentProfile.system_prompt`), memory, animations and sounds stay ScreenBuddy-side.
 
 **Tests (TDD, matching the repo's bar):** a stub HTTP server answering `/api/agent/ask` with `{"ok":true,"result":"..."}` — exactly the pattern of the `resolve_local_model` tests added this session (tokio listener + canned response). Assert: (1) the happy path returns the result text; (2) a 502/connection-refused produces `Error::Network`, never a fabricated reply; (3) a missing token is `InvalidConfig`. Full suite + clippy + fmt must stay green; the live-model CI check must still complete a real conversation (it will, since ABP is only reached when configured).
+
+**As-built configuration** (env vars, matching the existing `OPENAI_API_KEY` pattern): `ABP_ENDPOINT` (e.g. `http://127.0.0.1:8080`), `ABP_DASHBOARD_TOKEN`, `ABP_SOURCE_INSTANCE` (defaults to `screenbuddy`), `ABP_TARGET_INSTANCE` (the ABP bot instance that answers — required). The model catalogue gains an `abp` entry whenever `ABP_ENDPOINT` is set, so `ai_provider=abp` / pinning `abp` resolve. Provider names accepted: `abp`, `agenticbot`, `agenticbotplatform`, `agentic_bot`.
+
+**As-built tests** (`ai::gen_abp_tests`, 6 tests, all green): success path returns the `result` text; HTTP 502 → `Error::Network`; missing token → `InvalidConfig`; missing target instance → `InvalidConfig`; provider-name parsing; config defaults. The stub-server pattern is the existing `generate_with_uninstalled_pinned_model_falls_back_to_installed` test.
 
 **Effort:** ~1 week including tests. **Risk:** low-medium (new outbound dependency; the degradation contract above is the whole safety story).
 
@@ -359,7 +365,7 @@ Both codebases share one hard invariant, learned the hard way this session: **a 
 |---|---|---|---|---|
 | 1 | B — 9Router as ABP provider | config only | High — instant routing gain | 9Router running |
 | 2 | A — ABP MCP client ← ScreenBuddy | config only | Highest — 25 tools to every agent turn | ScreenBuddy app + MCP server |
-| 3 | C2 — ScreenBuddy `Backend::Abp` | ~1 week | High — creature becomes fleet front-end | Phase 1; ABP dashboard token |
+| 3 | C — ScreenBuddy `Backend::Abp` | DONE — shipped | High — creature becomes fleet front-end | Phase 1; ABP dashboard token |
 | 4 | D — ScreenBuddy as ABP backend (extension) | ~2 weeks | Medium — channel bots powered by the creature | Phase 3 stable |
 | 5 | E — ScreenBuddy Rust MCP client | ~2–3 weeks | Medium-high — creature orchestrates fleet | Phase 4 |
 

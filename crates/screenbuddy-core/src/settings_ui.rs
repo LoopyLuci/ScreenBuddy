@@ -365,6 +365,7 @@ impl SettingsUI {
                         "9router".to_string(),
                         "llamacpp".to_string(),
                         "custom".to_string(),
+                        "abp".to_string(),
                     ],
                 ),
                 min: None,
@@ -793,6 +794,7 @@ mod tests {
             "9router",
             "llamacpp",
             "custom",
+            "abp",
         ] {
             assert!(
                 crate::ai::AiEngine::parse_backend(name).is_ok(),
