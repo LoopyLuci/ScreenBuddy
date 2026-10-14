@@ -36,6 +36,11 @@ object ControlCommands {
         "save_agent",
         "duplicate_agent",
         "delete_agent",
+        "nine_router_status",
+        "nine_router_start",
+        "nine_router_stop",
+        "nine_router_models",
+        "nine_router_test",
     )
 
     /**
