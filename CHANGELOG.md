@@ -5,6 +5,24 @@ All notable changes to ScreenBuddy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-10-14
+
+Fix a startup panic and a 404 on every AI request
+
+The v0.6.2 binary crashed on launch before opening its control port (the
+auto-update check called tokio::spawn from main with no runtime) and, once
+running, returned a canned fallback instead of a model reply: the default
+pinned model 'llama3.2' was a catalogue name the user never pulled, so every
+chat request 404'd. Both are fixed and verified by the live-model CI job,
+which now completes a real conversation against Ollama.
+
+Also: gate Windows-only code and metric assertions behind cfg(windows) so the
+core crate builds on Linux and macOS; wire the always_on_top and
+window_transparency settings that were declared but never read; advertise the
+five nine_router commands in the Android SUPPORTED list; and make the
+live-model check print emoji-containing replies as UTF-8 instead of crashing
+on a cp1252 console.
+
 ## [0.6.2] - 2026-10-13
 
 Wire the dpi, accessibility, and eventlog modules into the running app and gate the declared-vs-consumed audit. Per-monitor V2 DPI awareness, pet windows clamped to their display, screen-reader notifications on window show, high-contrast theme auto-applied from the OS, and startup/shutdown recorded in the Windows Application log. Fixes 10 pre-existing clippy errors surfaced by --all-targets.
