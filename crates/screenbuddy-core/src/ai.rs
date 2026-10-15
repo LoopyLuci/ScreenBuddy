@@ -150,6 +150,16 @@ pub struct AiConfig {
     pub abp_source_instance: Option<String>,
     /// The ABP bot instance that actually answers (its router picks the model).
     pub abp_target_instance: Option<String>,
+    /// Seconds to wait for one `/api/agent/ask` round trip before failing
+    /// cleanly. 0 means the 300s default — a small local model through the
+    /// fleet takes 40-60s, and a hung ask must never pin the chat loop.
+    #[serde(default)]
+    pub abp_timeout_s: f64,
+    /// Task-class hint sent with each ask, so ABP's learning router records
+    /// per-class quality and the fleet can correlate this turn with its own
+    /// traces. Unset sends nothing.
+    #[serde(default)]
+    pub abp_task_class: Option<String>,
     pub local_model_path: Option<PathBuf>,
     pub local_model_type: LocalModelType,
     pub default_tier: ModelTier,
@@ -179,6 +189,11 @@ impl Default for AiConfig {
             abp_api_key: std::env::var("ABP_DASHBOARD_TOKEN").ok(),
             abp_source_instance: std::env::var("ABP_SOURCE_INSTANCE").ok(),
             abp_target_instance: std::env::var("ABP_TARGET_INSTANCE").ok(),
+            abp_timeout_s: std::env::var("ABP_TIMEOUT_S")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300.0),
+            abp_task_class: std::env::var("ABP_TASK_CLASS").ok(),
             local_model_path: None,
             local_model_type: LocalModelType::Ollama,
             default_tier: ModelTier::LocalTiny,
@@ -1258,6 +1273,11 @@ impl AiEngine {
     }
 
     // ============ AgenticBotPlatform dashboard ============
+    /// Total attempts per ask (first try plus retries with backoff).
+    const ABP_MAX_ATTEMPTS: u32 = 3;
+    /// One ask round trip, with the reliability the fleet deserves:
+    /// a correlation id in every payload and error, a hard timeout, and
+    /// retries with backoff for transient failures only.
     async fn gen_abp(&self, req: &AiRequest, model: &ModelInfo) -> Result<AiResponse> {
         let ep = self
             .config
@@ -1277,16 +1297,90 @@ impl AiEngine {
             .abp_source_instance
             .clone()
             .unwrap_or_else(|| "screenbuddy".into());
-        let body = serde_json::json!({
+        // Unique per turn: the creature, this process, and time — enough to
+        // find this exact ask in ABP's logs and traces on both sides.
+        let correlation_id = format!(
+            "sb-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let mut body = serde_json::json!({
             "source_instance": source,
             "target_instance": target,
             "prompt": self.compose_flat_prompt(req),
+            "correlation_id": correlation_id,
         });
+        // The task class lets ABP's learning router record per-class quality;
+        // unset sends nothing rather than a misleading guess.
+        if let Some(class) = &self.config.abp_task_class {
+            body["task_class"] = serde_json::json!(class);
+        }
+        let timeout_s = if self.config.abp_timeout_s > 0.0 {
+            self.config.abp_timeout_s
+        } else {
+            300.0
+        };
+        let url = format!("{}/api/agent/ask", ep.trim_end_matches('/'));
+
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match self.post_abp_ask(&url, token, &body, timeout_s).await {
+                Ok(json) => {
+                    // A failure must be reported, never papered over with a
+                    // plausible reply: an ok:false payload is an error.
+                    if json["ok"].as_bool() != Some(true) {
+                        let detail = json["error"].as_str().unwrap_or("unknown error");
+                        return Err(crate::error::Error::Network(format!(
+                            "ABP error: {detail} (correlation {correlation_id})"
+                        )));
+                    }
+                    return Ok(AiResponse::plain(
+                        json["result"].as_str().unwrap_or("").into(),
+                        model.tier,
+                        model.backend,
+                        0,
+                        FinishReason::Stop,
+                    ));
+                }
+                Err(e) => {
+                    // Only transient failures retry: a 4xx or an ok:false is
+                    // deterministic, and spending it three times helps nobody.
+                    if attempt < Self::ABP_MAX_ATTEMPTS && Self::abp_error_is_retryable(&e) {
+                        eprintln!(
+                            "[ABP] ask attempt {attempt} failed ({}); retrying (correlation {correlation_id})",
+                            e
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64))
+                            .await;
+                        continue;
+                    }
+                    return Err(crate::error::Error::Network(format!(
+                        "{e} (correlation {correlation_id})"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// POST one ask and return the parsed body. Non-2xx is an error carrying
+    /// the status so the caller can tell transient from deterministic.
+    async fn post_abp_ask(
+        &self,
+        url: &str,
+        token: &str,
+        body: &serde_json::Value,
+        timeout_s: f64,
+    ) -> Result<serde_json::Value> {
         let resp = self
             .client
-            .post(format!("{}/api/agent/ask", ep.trim_end_matches('/')))
+            .post(url)
             .header("X-Dashboard-Token", token)
-            .json(&body)
+            .json(body)
+            .timeout(std::time::Duration::from_secs_f64(timeout_s))
             .send()
             .await
             .map_err(|e| crate::error::Error::Network(e.to_string()))?;
@@ -1297,23 +1391,22 @@ impl AiEngine {
                 "ABP error {status}: {detail}"
             )));
         }
-        let json: serde_json::Value = resp
-            .json()
+        resp.json()
             .await
-            .map_err(|e| crate::error::Error::Network(e.to_string()))?;
-        // A failure must be reported, never papered over with a plausible reply:
-        // an ok:false payload is an error, not an empty answer.
-        if json["ok"].as_bool() != Some(true) {
-            let detail = json["error"].as_str().unwrap_or("unknown error");
-            return Err(crate::error::Error::Network(format!("ABP error: {detail}")));
+            .map_err(|e| crate::error::Error::Network(e.to_string()))
+    }
+
+    /// Transient means retryable: connection/timeout failures and 5xx/429
+    /// upstream answers. A 4xx or an `ok:false` is deterministic.
+    fn abp_error_is_retryable(err: &crate::error::Error) -> bool {
+        match err {
+            crate::error::Error::Network(m) => {
+                m.starts_with("ABP error 5")
+                    || m.starts_with("ABP error 429")
+                    || !m.starts_with("ABP error")
+            }
+            _ => false,
         }
-        Ok(AiResponse::plain(
-            json["result"].as_str().unwrap_or("").into(),
-            model.tier,
-            model.backend,
-            0,
-            FinishReason::Stop,
-        ))
     }
 
     /// Flatten system prompt, history and the current prompt into the single
@@ -1649,6 +1742,200 @@ mod gen_abp_tests {
         };
         let resp = engine.generate(req).await.unwrap();
         assert_eq!(resp.text, "Hello from ABP.");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_retries_a_502_then_succeeds() {
+        // The fleet is allowed a bad day: one 502, then a good answer.
+        // The mock serves 502 first, 200 second; the retry must bridge them.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let mut served = 0;
+            while let Ok((mut sock, _)) = listener.accept().await {
+                served += 1;
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let (status, body) = if served == 1 {
+                    (
+                        "502 Bad Gateway",
+                        r#"{"ok": false, "error": "upstream hiccup"}"#,
+                    )
+                } else {
+                    ("200 OK", r#"{"ok": true, "result": "Recovered."}"#)
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+                if served == 2 {
+                    break;
+                }
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let resp = engine.generate(req).await.unwrap();
+        assert_eq!(resp.text, "Recovered.");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_sends_a_correlation_id_and_task_class() {
+        // Both directions of observability: the fleet can find this turn,
+        // and the learning router gets its per-class signal.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body = r#"{"ok": true, "result": "ok"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+                // Echo the request back out of the test for assertions.
+                assert!(
+                    request.contains("\"correlation_id\""),
+                    "request must carry a correlation id: {request}"
+                );
+                assert!(
+                    request.contains("\"task_class\":\"research\""),
+                    "request must carry the task class: {request}"
+                );
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            abp_task_class: Some("research".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let _ = engine.generate(req).await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_errors_carry_the_correlation_id() {
+        // A failed ask must say which turn failed, so the creature's chat
+        // and ABP's logs can be stitched together afterwards.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = r#"{"ok": false, "error": "instance offline"}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let err = engine.generate(req).await.unwrap_err().to_string();
+        assert!(
+            err.contains("instance offline"),
+            "the ABP reason must surface: {err}"
+        );
+        assert!(
+            err.contains("correlation sb-"),
+            "the error must carry the id: {err}"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gen_abp_fails_cleanly_when_the_dashboard_never_answers() {
+        // A hung ask must fail on the clock, not pin the chat loop forever.
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                // Hold the connection open and never answer.
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        });
+
+        let config = AiConfig {
+            abp_endpoint: Some(format!("http://{addr}")),
+            abp_api_key: Some("test-token".into()),
+            abp_target_instance: Some("bot".into()),
+            abp_timeout_s: 1.0,
+            ..AiConfig::default()
+        };
+        let engine = AiEngine::new(config);
+
+        let req = AiRequest {
+            prompt: "Say hello".into(),
+            force_model: Some("abp".into()),
+            stream: false,
+            ..AiRequest::default()
+        };
+        let err = engine.generate(req).await.unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Network(_)),
+            "a timeout must be a Network error, got: {err}"
+        );
         server.abort();
     }
 
