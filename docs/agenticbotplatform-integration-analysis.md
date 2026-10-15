@@ -18,7 +18,7 @@ The projects are **strongly complementary, not competing**:
 |---|---|---|
 | Language | Rust (2 crates, 391 lib + 181 bin tests) | Python (525 files in `bot/`) + Tauri shell |
 | Shape | Single-user desktop companion | Multi-bot server platform |
-| UI | Hand-rolled Win32/GDI creatures, animations, sounds | FastAPI dashboard (`:8080`) + Tauri + Android |
+| UI | Hand-rolled Win32/GDI creatures, animations, sounds | FastAPI dashboard (`:8787`, the default — `DASHBOARD_PORT` overrides) + Tauri + Android |
 | Channels | Desktop overlay, Android broadcast (27 cmds) | Telegram, Discord, Slack, Matrix, WhatsApp |
 | AI engine | `ai.rs` — 6 backends, tier selection | 10 backends + learning router + swarms |
 | Agent loop | Minimal (echo, time) | ~57 modules: shell, git, sandbox, taint, subagents, vision |
@@ -136,18 +136,20 @@ Backend instances are cached under `name::model_override::hermes_home` and prope
 
 ### 3.9 Dashboard API
 
-FastAPI on `127.0.0.1:8080`, `X-Dashboard-Token` (or API key) auth, per-instance `allowed_user_ids`, confirm-gated destructive actions.
+FastAPI on `127.0.0.1:8787`, `X-Dashboard-Token` (or API key) auth, per-instance `allowed_user_ids`, confirm-gated destructive actions.
 
 ---
 
 ## 4. Integration patterns, ranked — with concrete implementation
 
-### 4.1 Pattern A — ABP's agent loop gains ScreenBuddy's 25 tools via MCP (config-only)
+### 4.1 Pattern A — ABP's agent loop gains ScreenBuddy's 25 tools via MCP (config-only) — LIVE-VERIFIED
+
+**Status: verified end-to-end against a running ABP** (2026-10-15). Registration via `POST /api/mcp-external` returned `{"ok": true, "connected": true}`; the listing shows `screenbuddy: transport=stdio connected=True enabled=True`; and an ABP agent turn (`POST /api/agent/ask`, native_agent → Ollama) actually invoked the `screenbuddy_status` tool through the MCP chain and reported the running app's real state (`creature_count: 7`, `fps: ~3.87` — matching the app's own status). What follows is the as-run record.
 
 **Mechanism.** ABP's `mcp_client.py` supports stdio subprocess MCP servers, operator-configured only. Registration is a single authenticated POST (verified in `bot/dashboard/routes/files.py:426`, same route the dashboard's Bots tab and the `/mcp_external` Telegram command write through):
 
 ```bash
-curl -s -X POST http://127.0.0.1:8080/api/mcp-external \
+curl -s -X POST http://127.0.0.1:8787/api/mcp-external \
   -H "X-Dashboard-Token: <dashboard-token>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -178,7 +180,9 @@ tools/list: 25 tools
 
 The full advertised tool set: `screenbuddy_status`, `screenbuddy_ping`, `screenbuddy_list_creatures`, `screenbuddy_set_animation`, `screenbuddy_move_creature`, `screenbuddy_set_visible`, `screenbuddy_set_auto_cycle`, `screenbuddy_send_chat`, `screenbuddy_chat_history`, `screenbuddy_run_agent`, `screenbuddy_agent_info`, `screenbuddy_play_sound`, `screenbuddy_speak`, `screenbuddy_set_setting`, `screenbuddy_get_setting`, `screenbuddy_nine_router_status`, `screenbuddy_list_agents`, `screenbuddy_save_agent`, `screenbuddy_duplicate_agent`, `screenbuddy_activate_agent`, `screenbuddy_active_agent`, `screenbuddy_delete_agent`, `screenbuddy_memory_ingest`, `screenbuddy_memory_search`, `screenbuddy_list_sounds`. After registering, a prompt like "make the creature wave and say hello" should produce animation + speech on the desktop.
 
-### 4.2 Pattern B — ScreenBuddy's 9Router as an ABP model provider (config-only)
+### 4.2 Pattern B — ScreenBuddy's 9Router as an ABP model provider (config-only) — MECHANISM VERIFIED
+
+**Status: the ABP-side mechanism is verified live; 9Router itself could not be run headless** (2026-10-15). ABP's `custom_model` backend pointed at `config/providers.yaml` → `{base_url: "http://127.0.0.1:11434/v1", protocol: openai}` ran its full tool loop and invoked `screenbuddy_status` through the MCP chain (reported `creature_count: 7`). That is the exact wire path a 9Router entry would take — 9Router serves the same OpenAI-compatible `/v1` surface. The only untested link is 9Router's own boot: it requires its browser onboarding and exits immediately headless, so the 9Router→ABP hop specifically is unverified here for environmental reasons.
 
 **Mechanism.** `config/providers.yaml`:
 
@@ -200,9 +204,9 @@ Set a bot instance's backend to `custom_model`, model `screenbuddy_9router/<mode
 
 **Synergy worth noting:** ABP's router brain will *learn* about models reached through 9Router (reliability, cooldowns on 429/404) — the two routers stack: 9Router provides provider-level fallback inside one endpoint; ABP's brain provides model-level selection across endpoints. ScreenBuddy keeps 9Router as its own static fallback; nothing is lost.
 
-### 4.3 Pattern C — ScreenBuddy routes through ABP (`Backend::Abp`) — IMPLEMENTED
+### 4.3 Pattern C — ScreenBuddy routes through ABP (`Backend::Abp`) — LIVE-VERIFIED
 
-**Status: shipped in ScreenBuddy** (see commit history; `crates/screenbuddy-core/src/ai.rs`). The `Backend::Abp` variant, its config fields, the `gen_abp()` implementation and 6 tests are in the tree. What follows is the as-built record.
+**Status: shipped in ScreenBuddy** (commit `7cf78cc`) **and verified live end-to-end** (2026-10-15): the release binary launched with `ABP_ENDPOINT=http://127.0.0.1:8787`, `ABP_DASHBOARD_TOKEN`, `ABP_SOURCE_INSTANCE=screenbuddy`, `ABP_TARGET_INSTANCE=screenbuddy-test` and `ai_provider=abp` answered an IPC `send_chat` with `"INTEGRATION_OK"` after 38s — the reply travelled IPC → AiChatBridge → gen_abp → POST /api/agent/ask → ABP native_agent → Ollama and back. What follows is the as-built record.
 
 **Mechanism.** ABP exposes no OpenAI-compatible chat *server* (it is a client of such servers) — so ScreenBuddy→ABP goes through the dashboard REST API. The verified call target is `POST /api/agent/ask`:
 
@@ -217,7 +221,7 @@ Sketch (mirrors `gen_openai`'s shape; the `reqwest` client already exists on `Ai
 pub enum Backend { /* ... */ Abp }
 
 // AiConfig additions
-pub abp_endpoint: Option<String>,        // e.g. "http://127.0.0.1:8080"
+pub abp_endpoint: Option<String>,        // e.g. "http://127.0.0.1:8787"
 pub abp_api_key: Option<String>,         // dashboard token
 pub abp_source_instance: Option<String>,
 pub abp_target_instance: Option<String>,
@@ -262,7 +266,7 @@ Wire the new arm into `generate()`'s dispatch (line ~391) and `generate_stream()
 
 **Tests (TDD, matching the repo's bar):** a stub HTTP server answering `/api/agent/ask` with `{"ok":true,"result":"..."}` — exactly the pattern of the `resolve_local_model` tests added this session (tokio listener + canned response). Assert: (1) the happy path returns the result text; (2) a 502/connection-refused produces `Error::Network`, never a fabricated reply; (3) a missing token is `InvalidConfig`. Full suite + clippy + fmt must stay green; the live-model CI check must still complete a real conversation (it will, since ABP is only reached when configured).
 
-**As-built configuration** (env vars, matching the existing `OPENAI_API_KEY` pattern): `ABP_ENDPOINT` (e.g. `http://127.0.0.1:8080`), `ABP_DASHBOARD_TOKEN`, `ABP_SOURCE_INSTANCE` (defaults to `screenbuddy`), `ABP_TARGET_INSTANCE` (the ABP bot instance that answers — required). The model catalogue gains an `abp` entry whenever `ABP_ENDPOINT` is set, so `ai_provider=abp` / pinning `abp` resolve. Provider names accepted: `abp`, `agenticbot`, `agenticbotplatform`, `agentic_bot`.
+**As-built configuration** (env vars, matching the existing `OPENAI_API_KEY` pattern): `ABP_ENDPOINT` (e.g. `http://127.0.0.1:8787`), `ABP_DASHBOARD_TOKEN`, `ABP_SOURCE_INSTANCE` (defaults to `screenbuddy`), `ABP_TARGET_INSTANCE` (the ABP bot instance that answers — required). The model catalogue gains an `abp` entry whenever `ABP_ENDPOINT` is set, so `ai_provider=abp` / pinning `abp` resolve. Provider names accepted: `abp`, `agenticbot`, `agenticbotplatform`, `agentic_bot`.
 
 **As-built tests** (`ai::gen_abp_tests`, 6 tests, all green): success path returns the `result` text; HTTP 502 → `Error::Network`; missing token → `InvalidConfig`; missing target instance → `InvalidConfig`; provider-name parsing; config defaults. The stub-server pattern is the existing `generate_with_uninstalled_pinned_model_falls_back_to_installed` test.
 
@@ -365,9 +369,11 @@ Both codebases share one hard invariant, learned the hard way this session: **a 
 |---|---|---|---|---|
 | 1 | B — 9Router as ABP provider | config only | High — instant routing gain | 9Router running |
 | 2 | A — ABP MCP client ← ScreenBuddy | config only | Highest — 25 tools to every agent turn | ScreenBuddy app + MCP server |
-| 3 | C — ScreenBuddy `Backend::Abp` | DONE — shipped | High — creature becomes fleet front-end | Phase 1; ABP dashboard token |
+| 3 | C — ScreenBuddy `Backend::Abp` | DONE — shipped + live-verified | High — creature becomes fleet front-end | Phase 1; ABP dashboard token |
 | 4 | D — ScreenBuddy as ABP backend (extension) | ~2 weeks | Medium — channel bots powered by the creature | Phase 3 stable |
 | 5 | E — ScreenBuddy Rust MCP client | ~2–3 weeks | Medium-high — creature orchestrates fleet | Phase 4 |
+
+**Live status (2026-10-15, against a running ABP on :8787 with Ollama):** Phases 1–3 all exercised end-to-end — A: MCP server registered (`connected: true`) and an ABP agent turn invoked `screenbuddy_status` live; B: `custom_model` tool loop verified against Ollama's `/v1` (the wire format 9Router serves; 9Router itself can't boot headless — it needs browser onboarding); C: `send_chat` answered `INTEGRATION_OK` through the full gen_abp chain. The setup needed: two `app`-platform bot instances (`screenbuddy` as source, `screenbuddy-test` as target), the dashboard token, and `agent_control: trust_all` (already the default).
 
 **Do 1+2 today** — configuration, reversible, immediately demonstrable, and the ScreenBuddy-side half of Pattern A is already verified end-to-end at the wire level (§4.1). **Phase 3 is the strategic one**: ScreenBuddy stops being "an app with 6 backends" and becomes "the presence layer of an agentic fleet" without losing its identity.
 
