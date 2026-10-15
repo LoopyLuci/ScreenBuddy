@@ -32,6 +32,7 @@ pub type ToolHandler = Arc<
         + Sync,
 >;
 
+#[derive(Clone)]
 pub struct Tool {
     pub name: String,
     pub description: String,
@@ -308,6 +309,16 @@ impl AgentRuntime {
 
     pub fn tool_count(&self) -> usize {
         self.tools.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// One registered tool, by name — for callers that need to inspect or
+    /// invoke a tool directly rather than through the model's dispatch.
+    pub fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
     }
 }
 

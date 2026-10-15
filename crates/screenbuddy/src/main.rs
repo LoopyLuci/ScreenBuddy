@@ -521,6 +521,11 @@ fn main() {
     for tool in screenbuddy_core::default_tools() {
         agent.register_tool(&tool.name.clone(), tool);
     }
+    // AgenticBotPlatform integration (Pattern E): with ABP_DIR and
+    // DASHBOARD_TOKEN set, the creature's agent loop gains ABP's MCP tools
+    // (ask_instance, run_swarm, list_jobs, ...). Opt-in: without the env vars
+    // this is a no-op and the runtime is exactly as before.
+    screenbuddy_core::mcp_client::register_abp_tools(&agent);
     let mut agent_rx = agent.subscribe();
     println!(
         "[Agent] Runtime initialized with {} tools",

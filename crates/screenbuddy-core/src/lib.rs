@@ -69,6 +69,7 @@ pub fn notify(title: &str, message: &str) {
 
 pub mod ipc;
 pub mod logging;
+pub mod mcp_client;
 pub mod metrics;
 pub mod nine_router;
 pub mod paths;

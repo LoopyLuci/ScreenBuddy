@@ -40,6 +40,13 @@ const CONSUMER_ALLOWLIST: &[(&str, &[&str])] = &[
     ("bench", &["crates/screenbuddy/src/main.rs"]),
     ("crash", &["crates/screenbuddy/src/main.rs"]),
     ("update", &["crates/screenbuddy/src/main.rs"]),
+    (
+        "mcp_client",
+        &[
+            "crates/screenbuddy/src/main.rs",
+            "crates/screenbuddy-core/examples/abp_mcp_live.rs",
+        ],
+    ),
 ];
 
 /// Modules that are exempt from the consumer requirement, with the reason.

@@ -272,25 +272,32 @@ Wire the new arm into `generate()`'s dispatch (line ~391) and `generate_stream()
 
 **Effort:** ~1 week including tests. **Risk:** low-medium (new outbound dependency; the degradation contract above is the whole safety story).
 
-### 4.4 Pattern D — ScreenBuddy as a first-class ABP backend kind (~2 weeks, optional)
+### 4.4 Pattern D — ScreenBuddy as a first-class ABP backend kind — LIVE-VERIFIED
 
-**Mechanism.** Follow `bot/backends/external_agent_backend.py` exactly: a new `backends/screenbuddy_backend.py` implementing `async def ask(prompt, *, context=None, timeout_s=30) -> BackendResult`, run in a `process_cell` (sandbox_ns; a Win32 Job Object so one kill takes the tree), capturing a session key for cross-call continuity. ScreenBuddy-side it needs a thin CLI or IPC client: `send_chat` → poll `get_chat_history` for the newest assistant message (the same transcript-reading pattern `tools/live_desktop_check.py` already uses — including its UTF-8 stdout fix, since replies contain emoji).
+**Status: shipped and verified end-to-end** (2026-10-15). A bot routed to `backend: screenbuddy` is answered by the desktop creature through the extension at `integrations/abp/extensions/screenbuddy/` (registered with `add_backend_class`, zero ABP core edits, activated via `ABP_PRIVATE_DIR`). Live: `POST /api/agent/ask` → creature answered `"HTTP_PATH_OK"` in 5.4s, and a personality prompt came back as *"Hey Jessi, you're building a cool system! PATTERN_D_OK"* — the creature's own persona answering, with ABP keeping channels, routing and scheduling around it.
+
+**Mechanism.** Follows `bot/backends/external_agent_backend.py`: each turn spawns one `tools/abp_client.py` process in a `process_cell` (a Win32 Job Object, so a timeout kills the tree), which sends the prompt over ScreenBuddy's IPC surface and polls the chat history for the creature's reply. `ready()` pre-flight checks the IPC port, so an unstarted companion is reported as "not set up" and the backup chain moves on. What follows is the as-built record.
 
 Two registration options:
 - **Built-in-style:** add to `BUILTIN_BACKENDS` in `bot/router.py` (touches core — needs a PR).
-- **Extension (zero core edits):** a local extension calling `add_backend_class("screenbuddy", factory)` — hot-reloadable, matches the documented extension pattern. **Recommended.**
+- **Extension (zero core edits):** a local extension calling `add_backend_class("screenbuddy", factory)` — hot-reloadable, matches the documented extension pattern. **This is what shipped** (`integrations/abp/extensions/screenbuddy/`, activated with `ABP_PRIVATE_DIR`).
 
 **Result.** A Telegram/Discord bot whose *engine* is the ScreenBuddy creature — full personality, memory, animations, sounds — while ABP keeps channels, pairing, schedules, dashboards, and the learning router picks which model drives it.
 
-**Effort:** ~2 weeks. **Risk:** medium (process lifecycle, session-key persistence, kill semantics — all solved patterns in `external_agent_backend.py`, but ScreenBuddy's IPC has no streaming/cancel; the poll loop must handle the ~60s generation window the live check exercises, with `timeout_s` enforced inside the cell).
+**As-built pieces:**
+- `tools/abp_client.py` (ScreenBuddy repo): one-shot chat client over IPC; prints the reply, exit 0; failures exit non-zero with the reason on stderr. Waits for a **new** assistant message by content, not by count — the app's history resets between sessions, which a count-based wait never survives.
+- `integrations/abp/extensions/screenbuddy/` (ScreenBuddy repo): `abp_extension.toml` + `ext_screenbuddy/__init__.py` — the `ScreenBuddyBackend` (spawn-per-turn in a `process_cell`, kill-tree on timeout) and `ready()` IPC pre-flight. Configure under `backends.screenbuddy` (`script`, `addr`, `timeout_s`, `client`).
+- To activate: `ABP_PRIVATE_DIR=C:/Projects/ScreenBuddy/integrations/abp` in ABP's environment, then set a bot instance's backend to `screenbuddy` (dashboard, `/api/bots/{id}/model`, or the bots API).
 
-**Design note:** if this backend drives small local models, ABP's LF2 small-model mode (`small_model.py`) will trim its tool set automatically — a nice pairing with ScreenBuddy's `LocalTiny` default tier.
+**Design note:** if this backend drives small local models, ABP's LF2 small-model mode (`small_model.py`) will trim its tool set automatically — a nice pairing with ScreenBuddy's `LocalTiny` default tier. One operational rule learned the hard way: never route the app *and* an ABP bot through each other at once (app→ABP via `Backend::Abp` while an ABP bot→app via this backend) — the two sides wait on each other. Pick one direction per app instance.
 
-### 4.5 Pattern E — ScreenBuddy consumes ABP's MCP server (~2–3 weeks, optional)
+### 4.5 Pattern E — ScreenBuddy consumes ABP's MCP server — LIVE-VERIFIED
 
-**Mechanism.** ScreenBuddy's `register_tool` is the extension point, but there is no Rust MCP client in the workspace today — this is net-new code (a minimal stdio JSON-RPC client: `initialize` → `tools/list` → `tools/call`, mirroring what `mcp/server.py` does in reverse). Tools worth surfacing first: `ask_instance` (agent-to-agent), `run_swarm`, `list_jobs`, `create_snapshot`.
+**Status: shipped and verified** (2026-10-15). `crates/screenbuddy-core/src/mcp_client.rs` is a Rust MCP stdio client (newline-delimited JSON-RPC 2.0: `initialize` → `notifications/initialized` → `tools/list` → `tools/call`, id-matched reads so notifications never desynchronise the stream). Verified live against ABP's real `bot/mcp_server.py`: handshake reported `server=agentic-bot-platform`, `tools/list` returned **72 tools**, and `tools/call get_status` returned ABP's live status (jobs, version, commit). The live probe is `cargo run -p screenbuddy-core --example abp_mcp_live` (needs `ABP_DIR`, `ABP_PYTHON` — ABP's own venv — and `DASHBOARD_TOKEN`; `PYTHONPATH=ABP_DIR` is required because `mcp_server.py` does `from bot import ...`).
 
-**Result.** The creature orchestrates the fleet: "ask the research bot to…", "run a fanout swarm on…". Most powerful, most expensive — **defer until A–C are stable.**
+**Wiring.** `register_abp_tools(&agent)` in `main.rs` connects at startup when `ABP_DIR` + `DASHBOARD_TOKEN` are set and registers every ABP tool into the creature's `AgentRuntime` — opt-in, a no-op without the env vars. Live: the app logged `[MCP] 72 AgenticBotPlatform tool(s) available to the agent` / `[Agent] Runtime initialized with 74 tools`. The 7 unit tests cover the handshake, listing, calls, tool-error-as-error, JSON-RPC errors, spawn failures, and a runtime-wiring test that calls a stub tool end-to-end through a real `AgentRuntime` (`AgentRuntime::get_tool` was added for exactly that).
+
+**Result.** The creature orchestrates the fleet: "ask the research bot to…", "run a fanout swarm on…" — the agent loop now has `ask_instance`, `run_swarm`, `list_jobs` and 69 more at its disposal. One honest limitation: with a 0.5B local model, a 74-tool schema is a very large prompt, so which tools the small model actually chooses to call is model-limited — the plumbing is proven, the model's judgement is the next variable.
 
 ### 4.6 Pattern F — Unified Android control (small, optional)
 
@@ -370,10 +377,11 @@ Both codebases share one hard invariant, learned the hard way this session: **a 
 | 1 | B — 9Router as ABP provider | config only | High — instant routing gain | 9Router running |
 | 2 | A — ABP MCP client ← ScreenBuddy | config only | Highest — 25 tools to every agent turn | ScreenBuddy app + MCP server |
 | 3 | C — ScreenBuddy `Backend::Abp` | DONE — shipped + live-verified | High — creature becomes fleet front-end | Phase 1; ABP dashboard token |
-| 4 | D — ScreenBuddy as ABP backend (extension) | ~2 weeks | Medium — channel bots powered by the creature | Phase 3 stable |
-| 5 | E — ScreenBuddy Rust MCP client | ~2–3 weeks | Medium-high — creature orchestrates fleet | Phase 4 |
+| 4 | D — ScreenBuddy as ABP backend (extension) | DONE — shipped + live-verified | Medium — channel bots powered by the creature | Phase 3 stable |
+| 5 | E — ScreenBuddy Rust MCP client | DONE — shipped + live-verified | Medium-high — creature orchestrates fleet | Phase 4 |
+| 6 | F — Unified Android control | ~1 week | Low-medium — one control surface for both apps | — |
 
-**Live status (2026-10-15, against a running ABP on :8787 with Ollama):** Phases 1–3 all exercised end-to-end — A: MCP server registered (`connected: true`) and an ABP agent turn invoked `screenbuddy_status` live; B: `custom_model` tool loop verified against Ollama's `/v1` (the wire format 9Router serves; 9Router itself can't boot headless — it needs browser onboarding); C: `send_chat` answered `INTEGRATION_OK` through the full gen_abp chain. The setup needed: two `app`-platform bot instances (`screenbuddy` as source, `screenbuddy-test` as target), the dashboard token, and `agent_control: trust_all` (already the default).
+**All five integration patterns are now shipped and live-verified** (2026-10-15, against a running ABP on :8787 with Ollama): A — MCP server registered (`connected: true`) and an ABP agent turn invoked `screenbuddy_status` live; B — `custom_model` tool loop verified against Ollama's `/v1` (the wire format 9Router serves; 9Router itself can't boot headless — it needs browser onboarding); C — `send_chat` answered `INTEGRATION_OK` through the full gen_abp chain; D — a bot on `backend: screenbuddy` was answered by the creature in 5.4s; E — the Rust client listed ABP's 72 tools and called `get_status`, and the app registers all 72 into its agent runtime at startup (`ABP_DIR` + `DASHBOARD_TOKEN` set). The setup needed: two `app`-platform bot instances (`screenbuddy` as source, `screenbuddy-test` as target, plus `creature` on the screenbuddy backend), the dashboard token, `agent_control: trust_all` (already the default), and `ABP_PRIVATE_DIR` pointing at ScreenBuddy's `integrations/abp/`.
 
 **Do 1+2 today** — configuration, reversible, immediately demonstrable, and the ScreenBuddy-side half of Pattern A is already verified end-to-end at the wire level (§4.1). **Phase 3 is the strategic one**: ScreenBuddy stops being "an app with 6 backends" and becomes "the presence layer of an agentic fleet" without losing its identity.
 

@@ -1,0 +1,6 @@
+[extension]
+name = "screenbuddy"
+version = "1.0.0"
+description = "Routes a bot to the ScreenBuddy desktop companion: its creature, memory, animations and sounds answer, while ABP keeps channels, routing and scheduling."
+entry = "ext_screenbuddy"
+minimum_abp = "0.8.0"
