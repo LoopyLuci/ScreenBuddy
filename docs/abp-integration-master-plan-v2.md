@@ -272,22 +272,59 @@ extension.
 
 ## Part V — Master roadmap
 
-| Phase | Pattern | Effort | Value | Prereq |
-|---|---|---|---|---|
-| 6 | H4 reconnect + H3 pruning | ~2–3 days | Makes shipped E actually reliable | — |
-| 7 | H1 scoped trust + H5 auth | ~1 week | Ship-ready security for public distribution | — |
-| 8 | G — memory federation | ~3–4 days | One memory across the fleet | — |
-| 9 | I — event federation | ~3–5 days | Fleet visibility in the creature | — |
-| 10 | H — unified routing brain | ~1–2 weeks | Cost/speed/quality learned across both apps | I (telemetry) |
-| 11 | K — persona continuity | ~4–5 days | Identity survives /new and restarts | G |
-| 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — |
-| 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J |
-| 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J |
-| — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — |
+| Phase | Pattern | Effort | Value | Prereq | Status |
+|---|---|---|---|---|---|
+| 6 | H4 reconnect + H3 pruning | ~2–3 days | Makes shipped E actually reliable | — | **SHIPPED** (`2e435e2`) |
+| 7 | H1 scoped trust + H5 auth | ~1 week | Ship-ready security for public distribution | — | **H1 SHIPPED** — scoped integration key + preset; H5 documented (token setup in README) |
+| 8 | G — memory federation | ~3–4 days | One memory across the fleet | — | **SHIPPED** — `screenbuddy` memory-fabric source registered |
+| 9 | I — event federation | ~3–5 days | Fleet visibility in the creature | — | **SHIPPED** — watcher live: fleet-board + creature-status docs, Celebrate reactions |
+| 10 | H — unified routing brain | ~1–2 weeks | Cost/speed/quality learned across both apps | I (telemetry) | **SHIPPED** — outcome + recommend routes live; task_class on every ask |
+| 11 | K — persona continuity | ~4–5 days | Identity survives /new and restarts | G | **SHIPPED** — live: active agent switched to `builtin-assistant` on a turn |
+| 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **J SHIPPED** — Creature dashboard panel + status route; F (Android) designed, not built |
+| 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | Designed — needs N app instances on distinct ports; config pattern documented |
+| 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Half SHIPPED** — creature exchanges ingest into the user model (live); fine-tune half has no seam in the current unsloth API |
+| — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | Designed — Pattern D already runs backend turns in process cells |
 
 Sequencing logic: harden what's shipped (6–7) before adding surface area; memory (8) before
 anything that reads context; telemetry (9) before the learning loop (10); the demo patterns
 (12–13) last because they consume everything above them.
+
+---
+
+## Part V-B — Live verification record (2026-10-15)
+
+Every shipped item below was exercised against a running ABP on :8787 and the desktop app
+on :34567, not just unit-tested:
+
+- **H4/H3** (`2e435e2`): 9 new MCP tests incl. a die-stub reconnect and heartbeat recovery;
+  the tiny set is guarded by a read-only policy test.
+- **H2** (`2e435e2`): 4 new gen_abp tests — a real 502→200 retry, payload inspection
+  (correlation id + task class), error correlation, and a clean timeout.
+- **H1**: `integration_scopes['screenbuddy']` and `integration_presets['screenbuddy']`
+  registered on the loaded extension (verified via the extension api object).
+- **H6/H**: `POST /api/screenbuddy/outcome` records into the learning router (a bad ref is
+  rejected, a good one returns `failure_kind: null`); `POST /api/screenbuddy/recommend`
+  returns the router's real ranked pick with task_class and reasons.
+- **G**: `memory_sources['screenbuddy']` registered (`required=[addr]`, `complete=True`).
+- **I**: the watcher writes `fleet-board` (real terminal jobs, ✓/✗ marks) and
+  `creature-status` (fps, uptime_secs, creature_count, model_count, tool_count,
+  memory_chunks) into shared_context every tick.
+- **K**: a turn to the `creature` instance switched the app's active agent from
+  `probe-canary` to `builtin-assistant` before answering — the persona map fired.
+- **J**: `GET /api/screenbuddy/status` returns the full snapshot; the Creature panel
+  (`add_panel`) renders it.
+- **N (half)**: the creature's newest exchange appears as a pending `preference` item in
+  `GET /api/user-model/profile?instance_id=3&user_id=creature`.
+- **D/A**: the backend turn still answers through the creature; the MCP server
+  re-registered (`connected: true`, 25 tools).
+
+Not built, by design: **F** (Android unified control — the Android app is a separate repo),
+**M** (swarm — needs N app instances on distinct ports; the config pattern is: register
+additional backend kinds via the same factory, each with its own `addr` and persona),
+**L** (sandbox — Pattern D already runs backend turns in `process_cell` Job Objects;
+generalizing to the creature's own tools needs an app-side IPC cmd, designed not built),
+**N's fine-tune half** (the current unsloth API is download/load only; fine-tuning needs a
+new route calling unsloth's training directly).
 
 ---
 

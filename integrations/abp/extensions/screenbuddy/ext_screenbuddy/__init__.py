@@ -18,6 +18,19 @@ Registered with zero ABP core edits via api.add_backend_class. Activate by
 pointing ABP_PRIVATE_DIR at the folder holding extensions/ (see the README in
 ScreenBuddy's integrations/abp/), then set a bot instance's backend to
 `screenbuddy`.
+
+Beyond the backend, this extension wires the deeper integrations (master plan
+v2, all zero-core-edit hooks):
+
+- routes:   POST /api/screenbuddy/outcome and /recommend — the learning loop
+            between the creature's model calls and the fleet's router
+- memory:   a "screenbuddy" memory-fabric source — the creature's RAG as fleet
+            knowledge
+- events:   a background watcher — terminal jobs become a shared-context board
+            and a Celebrate on the creature
+- personas: instance↔agent map — identity across /new and app restarts
+- scope:    an integration-key scope + preset, so ScreenBuddy can hold a key
+            limited to exactly its own routes instead of the god-mode token
 """
 from __future__ import annotations
 
@@ -29,6 +42,9 @@ from typing import Any, Callable, Optional
 
 from bot.backends.base import Backend, BackendError, BackendResult, process_cell
 from bot.sandbox_ns.spawn import async_spawn
+
+from . import fleet_events as fe
+from . import personas
 
 DEFAULT_CLIENT = "python"
 DEFAULT_SCRIPT = r"C:\Projects\ScreenBuddy\tools\abp_client.py"
@@ -49,6 +65,7 @@ class ScreenBuddyBackend(Backend):
         self.addr = str(s.get("addr") or DEFAULT_ADDR)
         self.timeout_s = float(s.get("timeout_s") or DEFAULT_TIMEOUT_S)
         self.model = model
+        self.settings = s
 
     async def ask(self, prompt: str, *, context: Optional[dict] = None,
                   timeout_s: float = 300) -> BackendResult:
@@ -67,6 +84,21 @@ class ScreenBuddyBackend(Backend):
                 f"ScreenBuddy client script not found at {self.script!r} "
                 f"(set backends.screenbuddy.script in the config overlay)"
             )
+
+        # Pattern K: activate the instance's mapped persona before the turn,
+        # so "the research bot remembers me" survives a /new or a restart.
+        # The router hands us the target as instance_id (int) or, from the
+        # API path, as target_instance (name) — accept either.
+        target = (context or {}).get("target_instance") if context else None
+        if target is None and context and context.get("instance_id") is not None:
+            from bot import bot_instances
+
+            inst = bot_instances.get_instance(context["instance_id"])
+            if inst is not None:
+                target = inst.get("name")
+        persona = personas.persona_for(target, self.settings) if target else None
+        if persona:
+            personas.activate(persona, self.addr)
 
         args = [exe, self.script, "--addr", self.addr, "--timeout",
                 f"{timeout_s:g}", prompt]
@@ -105,6 +137,10 @@ class ScreenBuddyBackend(Backend):
                 )
             if not text_out:
                 raise BackendError("ScreenBuddy returned no text")
+            # Seed the creature's RAG with the exchange, so the next session
+            # recalls it. Best-effort: an unreachable creature loses one seed.
+            if persona and self.settings.get("seed", True):
+                personas.seed(personas.turn_summary(prompt, text_out), self.addr)
             return BackendResult(
                 text=text_out,
                 raw={"backend": self.name, "exit": proc.returncode},
@@ -148,3 +184,66 @@ def register(api) -> None:
         label="ScreenBuddy (desktop companion)",
         ready=ready,
     )
+
+    # --- the learning loop: outcomes in, recommendations out ---------------
+    from . import routes
+
+    api.add_routes(routes.register)
+
+    # --- the dashboard panel: the creature's live status ---------------------
+    api.add_panel(
+        "creature",
+        "Creature",
+        description="Live status of the ScreenBuddy desktop companion",
+        script="panel.js",
+        icon="🐾",
+    )
+
+    # --- the creature's RAG as fleet knowledge ------------------------------
+    from . import memory_source
+
+    api.add_memory_source(
+        "screenbuddy",
+        required=memory_source.REQUIRED,
+        read=memory_source.read,
+        item_kind="note",
+        complete=True,
+        label="ScreenBuddy",
+    )
+
+    # --- fleet events: board + creature reactions ---------------------------
+    api.add_task(lambda: fe.watch(_watcher_settings(api)))
+
+    # --- the extension's own tests, run by ABP's pipeline --------------------
+    api.add_test_dir("tests")
+
+    # --- H1: a scoped integration key, not the god-mode token ---------------
+    # Exactly the routes ScreenBuddy needs: ask the fleet, and the two
+    # learning-loop routes. Nothing else — a leaked creature key cannot
+    # reconfigure the fleet.
+    api.add_integration_scope("screenbuddy", [
+        ("POST", r"/api/agent/ask"),
+        ("POST", r"/api/screenbuddy/(outcome|recommend)"),
+        ("GET", r"/api/agent/status"),
+    ])
+    api.add_integration_preset(
+        "screenbuddy",
+        label="ScreenBuddy (desktop companion)",
+        scopes=["screenbuddy"],
+        note="Ask the fleet and close the learning loop — nothing else",
+    )
+
+
+def _watcher_settings(api) -> dict:
+    """The watcher's config: the extension's settings, defaulting to the
+    same env vars the backend honors (SCREENBUDDY_IPC_ADDR)."""
+    try:
+        settings = dict(api.settings())
+    except Exception:  # noqa: BLE001 - an api without settings() gets defaults
+        settings = {}
+    addr = settings.get("addr") or os.environ.get("SCREENBUDDY_IPC_ADDR") or DEFAULT_ADDR
+    return {
+        "addr": addr,
+        "interval_s": settings.get("interval_s", fe.DEFAULT_INTERVAL_S),
+        "reactions": settings.get("reactions", True),
+    }

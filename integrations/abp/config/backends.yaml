@@ -1,0 +1,13 @@
+# ScreenBuddy extension overlay: deep-merged over ABP's config/backends.yaml
+# (bot/config.py's overlay chain — zero ABP core edits).
+#
+# Persona continuity (master plan v2, Pattern K): the 'creature' instance is
+# answered by the creature's "assistant" agent, so it remembers across /new
+# and app restarts. The map is instance name -> creature agent id.
+backends:
+  screenbuddy:
+    personas:
+      creature: builtin-assistant
+    seed: true
+    interval_s: 10
+    reactions: true
