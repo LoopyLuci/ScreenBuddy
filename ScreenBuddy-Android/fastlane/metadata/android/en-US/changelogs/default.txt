@@ -1,8 +1,12 @@
-ScreenBuddy v0.3.0
+ScreenBuddy v0.7.0
 
-* Live control API over IPC, with an MCP server so an AI agent can drive the
-  running desktop client.
-* Fixed memory search: documents were embedded from empty text, so recall could
-  not distinguish them. Search now also matches synonyms and inflected words.
-* Fixed a crash on the Providers screen.
-* AI keys encrypted at rest with the Android Keystore.
+* The AgenticBotPlatform integration, hardened and shipped: the desktop
+  creature is a fleet backend, drives the fleet from inside the agent,
+  and keeps persona, memory, events and the learning loop in sync with
+  it.
+* The MCP bridge reconnects and heartbeats, and the agent's tool surface
+  is configurable so small local models see 11 clean schemas instead of
+  72 mutation verbs.
+* New Creature dashboard panel and a Creature Android control surface.
+* Fixes the Android upgrade path from 0.6.2: the previous build shipped a
+  stale version identity, so in-place upgrades were blocked.

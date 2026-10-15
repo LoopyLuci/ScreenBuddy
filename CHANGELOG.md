@@ -5,6 +5,31 @@ All notable changes to ScreenBuddy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-10-15
+
+The AgenticBotPlatform integration, hardened and shipped
+
+Desktop and fleet now ship the AgenticBotPlatform integration as a
+first-class citizen, every layer of it verified against a live fleet:
+
+- The MCP bridge survives the fleet restarting: it reconnects with
+  backoff, self-heals a poisoned mutex, and a stale connection is
+  replaced instead of answered through a dead socket.
+- The agent's tool surface is configurable: ABP_TOOLS takes an allowlist
+  and ABP_TINY_TOOLS selects a curated read-only set, so a 0.5B local
+  model gets 11 clean schemas instead of 72 mutation verbs.
+- Asks to the fleet are reliable: correlation IDs on every payload and
+  error, one retry with backoff for transient failures only (never a 4xx
+  or ok:false), a hard timeout, and the task class sent as a hint.
+- On the fleet side, the screenbuddy extension (zero core edits, add_*
+  hooks only) adds: a scoped integration key limited to its own routes;
+  outcome and recommend routes that close the learning loop into the
+  router brain; the creature's memory as a fleet memory source; an event
+  watcher that posts fleet and creature status to the shared board and
+  celebrates terminal jobs only; persona continuity, so an instance and
+  a creature agent stay bound across restarts; a Creature panel on the
+  dashboard; and the creature's exchanges folded into the user model.
+
 ## [0.6.3] - 2026-10-14
 
 Fix a startup panic and a 404 on every AI request
@@ -22,10 +47,6 @@ window_transparency settings that were declared but never read; advertise the
 five nine_router commands in the Android SUPPORTED list; and make the
 live-model check print emoji-containing replies as UTF-8 instead of crashing
 on a cp1252 console.
-
-## [0.6.2] - 2026-10-13
-
-Wire the dpi, accessibility, and eventlog modules into the running app and gate the declared-vs-consumed audit. Per-monitor V2 DPI awareness, pet windows clamped to their display, screen-reader notifications on window show, high-contrast theme auto-applied from the OS, and startup/shutdown recorded in the Windows Application log. Fixes 10 pre-existing clippy errors surfaced by --all-targets.
 
 ## [0.6.2] - 2026-10-13
 

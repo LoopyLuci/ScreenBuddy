@@ -1,0 +1,13 @@
+ScreenBuddy v0.7.0 — the AgenticBotPlatform integration, hardened
+
+- Desktop as a fleet backend (Pattern D): any AgenticBotPlatform bot
+  instance answers through the creature, one bounded process per turn.
+- The creature drives the fleet (Pattern E): 72 AgenticBotPlatform tools
+  available to the agent, with auto-reconnect, a heartbeat and a
+  configurable tool surface (ABP_TINY_TOOLS) for small local models.
+- Scoped integration keys, the learning loop (outcome/recommend routes),
+  the creature's memory as a fleet memory source, fleet events on the
+  creature, persona continuity across restarts, and a Creature dashboard
+  panel — all as extension code, no core edits.
+- Android: versionCode 5 — fixes the upgrade path from 0.6.2, whose
+  release shipped a stale version identity.
