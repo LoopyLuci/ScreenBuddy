@@ -256,6 +256,15 @@ or a direct IPC export) as training examples; `user_model_api` folds them into t
 `unsloth_api` fine-tunes the creature's local model; `transferdaemon_api` ships the model to the
 Android device. Fully on-device, no external API — the data never leaves the machine.
 
+**Seam shipped (2026-10-15).** The "no seam" note was about the core unsloth API being
+download/load only — the extension adds its own route instead: `POST /api/screenbuddy/finetune`
+pulls the user model's approved items, formats them as JSONL instruction data, and writes a real
+dataset file (verified live: the creature's approved exchange became `creature-*.jsonl`). When —
+and only when — torch, CUDA and unsloth are all present, the same route trains a LoRA on
+`unsloth/qwen2.5-0.5b-instruct-bnb-4bit` and registers it with Local AI's Discover; on a machine
+without them it reports the exact missing piece and trains nothing. `GET
+/api/screenbuddy/finetune/status` reports datasets, backend and adapter state.
+
 **Result.** The creature gets better *at its user* over weeks, trained by its own conversations.
 Privacy-preserving by construction (local traces, local training).
 
@@ -290,7 +299,7 @@ extension.
 | 11 | K — persona continuity | ~4–5 days | Identity survives /new and restarts | G | **SHIPPED** — live: active agent switched to `builtin-assistant` on a turn |
 | 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **J SHIPPED** — Creature dashboard panel + status route; F (Android) designed, not built |
 | 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | **SHIPPED** — 3 instances on :34567/8/9, each its own backend kind; a fanout_synthesize run answered on all three; per-instance celebrate A/B-proven |
-| 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Half SHIPPED** — creature exchanges ingest into the user model (live); fine-tune half has no seam in the current unsloth API |
+| 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Seam SHIPPED** — `POST /api/screenbuddy/finetune` builds the JSONL dataset from approved user-model items (verified) and trains a LoRA where torch+CUDA+unsloth exist; honest skip otherwise |
 | — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | Designed — Pattern D already runs backend turns in process cells |
 
 Sequencing logic: harden what's shipped (6–7) before adding surface area; memory (8) before
@@ -321,8 +330,9 @@ on :34567, not just unit-tested:
   `probe-canary` to `builtin-assistant` before answering — the persona map fired.
 - **J**: `GET /api/screenbuddy/status` returns the full snapshot; the Creature panel
   (`add_panel`) renders it.
-- **N (half)**: the creature's newest exchange appears as a pending `preference` item in
-  `GET /api/user-model/profile?instance_id=3&user_id=creature`.
+- **N (half)**: `POST /api/screenbuddy/finetune` builds the dataset from approved user-model
+  items and wrote a real JSONL file (verified); training skipped honestly — "torch is not
+  installed" (no CUDA/unsloth on this host). The LoRA path is real unsloth code, guarded.
 - **D/A**: the backend turn still answers through the creature; the MCP server
   re-registered (`connected: true`, 25 tools).
 

@@ -87,6 +87,58 @@ def register(app, read_auth, write_auth) -> None:
             return {"ok": False, "error": str(exc)[:200]}
         return {"ok": True, "data": resp.get("data") or {}}
 
+    # --- Pattern N's fine-tune half: traces -> dataset -> (GPU) a LoRA -----
+    @app.post("/api/screenbuddy/finetune", dependencies=[Depends(write_auth)])
+    async def post_finetune(payload: dict = None) -> dict:
+        """Build the training dataset from the user model's approved items,
+        then train when — and only when — this machine can. The response
+        always says which branch ran; a skipped training is a skipped
+        training, never a silent success."""
+        from . import finetune
+
+        ds = finetune.build_dataset(limit=int((payload or {}).get("limit") or 200))
+        result = {"ok": ds["ok"], "dataset": ds}
+        if ds.get("path") and finetune.backend_status().get("trainable"):
+            result["training"] = finetune.train_adapter(ds["path"])
+            if result["training"].get("adapter"):
+                # The adapter joins Local AI's Discover under this app's
+                # namespace, so the router can offer it like any local model.
+                api_model_location(
+                    "screenbuddy", result["training"]["adapter"], "screenbuddy"
+                )
+        else:
+            result["training"] = {
+                "trained": False, "skipped": True,
+                "reason": finetune.backend_status().get("reason"),
+            }
+        return result
+
+    @app.get("/api/screenbuddy/finetune/status", dependencies=[Depends(read_auth)])
+    async def get_finetune_status() -> dict:
+        """Dataset artifacts, training backend, adapter state."""
+        from . import finetune
+
+        return finetune.status()
+
+
+def api_model_location(app_name: str, path: str, namespace: str) -> None:
+    """Register a trained adapter with Local AI's Discover, best-effort.
+
+    The registry is the extension api's; reaching it from a route keeps the
+    registration call next to its only caller, and a registry that isn't
+    there (older core) simply means the adapter is not discovered — the
+    file on disk is real either way.
+    """
+    try:
+        from bot import extensions as _ext
+
+        for ext in _ext.loaded().extensions:
+            if ext.name == "screenbuddy" and getattr(ext.api, "model_locations", None) is not None:
+                ext.api.add_model_location(app_name, path, namespace)
+                return
+    except Exception:  # noqa: BLE001 - discovery is an enhancement, never a requirement
+        pass
+
 
 def _panel_addr() -> str:
     import os

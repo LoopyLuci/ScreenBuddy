@@ -30,6 +30,7 @@ deep-merged over ABP's `config/backends.yaml` by `bot/config.py`'s overlay chain
 | Panel | `add_panel` | the **Creature** dashboard panel — live fps/uptime/creatures/models/tools/memory |
 | Scoped key | `add_integration_scope` + `add_integration_preset` | mint a ScreenBuddy key limited to exactly its own routes (see below) |
 | User model | watcher task | the creature's newest exchange becomes a pending `preference` item for the `creature` instance |
+| Fine-tune | `POST /api/screenbuddy/finetune` | approved user-model items → a real JSONL dataset; a LoRA trains where torch+CUDA+unsloth exist (honest skip otherwise) |
 | Swarm | overlay `swarm:` list | N instances on distinct ports, each its own backend kind; a swarm answer celebrates on its own creature |
 
 ## Security: use a scoped key, not the god-mode token

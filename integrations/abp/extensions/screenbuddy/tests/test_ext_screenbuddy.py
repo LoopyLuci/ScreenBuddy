@@ -5,6 +5,7 @@ Run by ABP's pipeline (add_test_dir) or directly:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -201,6 +202,13 @@ def _write_overlay(tmp_path, body: str):
     return overlay
 
 
+def _tmpdir():
+    """A temp dir the standalone runner can use (it injects no tmp_path)."""
+    import tempfile
+
+    return tempfile.mkdtemp(prefix="sb_test_")
+
+
 def _tmp_overlay(body: str, monkeypatch):
     """A temp ABP_PRIVATE_DIR holding an overlay, cleaned up by the caller."""
     import shutil
@@ -325,6 +333,83 @@ def test_watcher_settings_pass_the_swarm_through(monkeypatch):
     s = _watcher_settings(Api())
     assert s["swarm"] == [{"name": "screenbuddy-2"}]
     assert s["addr"] == "127.0.0.1:34567"
+
+
+# ---- Pattern N's fine-tune half --------------------------------------------
+
+def test_build_dataset_without_a_creature_instance(monkeypatch):
+    import bot.bot_instances as bi
+    from ext_screenbuddy import finetune
+
+    monkeypatch.setattr(bi, "list_instances", lambda: [])
+    r = finetune.build_dataset()
+    assert r["ok"] is False
+    assert "creature" in r["error"]
+
+
+def test_build_dataset_with_approved_items_writes_jsonl(monkeypatch):
+    import bot.bot_instances as bi
+    from bot.agent_runtime import user_model
+    from ext_screenbuddy import finetune
+
+    monkeypatch.setattr(bi, "list_instances", lambda: [{"id": 3, "name": "creature"}])
+    monkeypatch.setattr(user_model, "list_items", lambda i, u, status=None: [
+        {"id": 1, "kind": "preference", "text": "the user likes short answers"},
+        {"id": 2, "kind": "goal", "text": "the user is learning Rust"},
+    ])
+    root = _tmpdir()
+    monkeypatch.setattr(finetune, "dataset_dir", lambda: root)
+    r = finetune.build_dataset()
+    assert r["ok"] and r["path"] and r["examples"] == 2
+    lines = open(r["path"], encoding="utf-8").read().strip().split("\n")
+    ex = json.loads(lines[0])
+    assert ex["messages"][0]["role"] == "user"
+    assert "short answers" in ex["messages"][0]["content"]
+    assert ex["messages"][1]["content"] == "the user likes short answers"
+
+
+def test_build_dataset_reports_an_empty_model_honestly(monkeypatch):
+    import bot.bot_instances as bi
+    from bot.agent_runtime import user_model
+    from ext_screenbuddy import finetune
+
+    monkeypatch.setattr(bi, "list_instances", lambda: [{"id": 3, "name": "creature"}])
+    monkeypatch.setattr(user_model, "list_items", lambda i, u, status=None: [])
+    root = _tmpdir()
+    monkeypatch.setattr(finetune, "dataset_dir", lambda: root)
+    r = finetune.build_dataset()
+    assert r["ok"] and r["path"] is None and "no approved items" in r["note"]
+
+
+def test_backend_status_never_claims_training_without_hardware():
+    from ext_screenbuddy import finetune
+
+    s = finetune.backend_status()
+    assert "trainable" in s and "reason" in s
+    # Whatever the machine, the reason is stated either way.
+    assert isinstance(s["reason"], str) and s["reason"]
+
+
+def test_train_adapter_skips_honestly_when_not_trainable(monkeypatch):
+    from ext_screenbuddy import finetune
+
+    monkeypatch.setattr(finetune, "backend_status",
+                        lambda: {"trainable": False, "reason": "no CUDA device"})
+    import os
+    ds = os.path.join(_tmpdir(), "ds.jsonl")
+    with open(ds, "w", encoding="utf-8") as f:
+        f.write('{"messages": []}\n')
+    r = finetune.train_adapter(str(ds))
+    assert r["trained"] is False and r["skipped"] is True
+    assert "no CUDA device" in r["reason"]
+
+
+def test_status_reports_the_layout():
+    from ext_screenbuddy import finetune
+
+    s = finetune.status()
+    assert s["dir"] and isinstance(s["datasets"], list)
+    assert "backend" in s and "base_model" in s
 
 
 # ---- standalone runner ------------------------------------------------------
