@@ -176,6 +176,77 @@ def factory(settings: dict, model: Optional[str] = None) -> ScreenBuddyBackend:
     return ScreenBuddyBackend(settings, model)
 
 
+def _overlay_settings(api) -> dict:
+    """The extension's own overlay: <ABP_PRIVATE_DIR>/config/backends.yaml.
+
+    The ExtensionAPI exposes registration calls only — no settings() — so
+    the extension reads its overlay directly (the same file ABP's config
+    chain deep-merges). Falls back to the extension directory's relative
+    layout, then to {} — a missing overlay is the public default, not an
+    error.
+    """
+    try:
+        from bot import extensions as _ext
+
+        root = _ext.private_dir(os.environ)
+    except Exception:  # noqa: BLE001 - any failure below is the empty answer
+        root = None
+    path = None
+    if root:
+        candidate = root / "config" / "backends.yaml"
+        if candidate.is_file():
+            path = candidate
+    if path is None and getattr(api, "directory", None):
+        candidate = api.directory.parent.parent / "config" / "backends.yaml"
+        if candidate.is_file():
+            path = candidate
+    if path is None:
+        return {}
+    try:
+        import yaml
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return dict((data.get("backends") or {}).get("screenbuddy") or {})
+    except Exception:  # noqa: BLE001 - an unreadable overlay gets defaults
+        return {}
+
+
+def _register_swarm(api, factory, ready) -> None:
+    """Pattern M: N creature instances on distinct ports, each a backend.
+
+    The overlay's `swarm:` list names each extra instance and its IPC addr.
+    Each becomes its own backend kind (screenbuddy-2, ...) via add_backend
+    (its settings land in the effective config) and add_backend_class (the
+    factory is found under that kind), so a swarm can fan a prompt out to
+    every creature at once — each answers in its own window and voice.
+    """
+    settings = _overlay_settings(api)
+    if not settings:
+        return
+    members = [m for m in (settings.get("swarm") or [])
+               if str(m.get("addr") or "").strip()]
+    for i, member in enumerate(members, start=2):
+        name = str(member.get("name") or f"screenbuddy-{i}")
+        addr = str(member.get("addr") or "").strip()
+        if not addr:
+            continue
+        api.add_backend_class(
+            name,
+            factory,
+            family="external",
+            label=f"ScreenBuddy swarm member ({addr})",
+            ready=ready,
+        )
+        api.add_backend(
+            name,
+            addr=addr,
+            timeout_s=member.get("timeout_s", 300),
+            personas=member.get("personas", {}),
+            seed=bool(member.get("seed", True)),
+        )
+
+
 def register(api) -> None:
     api.add_backend_class(
         "screenbuddy",
@@ -184,6 +255,7 @@ def register(api) -> None:
         label="ScreenBuddy (desktop companion)",
         ready=ready,
     )
+    _register_swarm(api, factory, ready)
 
     # --- the learning loop: outcomes in, recommendations out ---------------
     from . import routes
@@ -235,15 +307,16 @@ def register(api) -> None:
 
 
 def _watcher_settings(api) -> dict:
-    """The watcher's config: the extension's settings, defaulting to the
+    """The watcher's config: the extension's overlay, defaulting to the
     same env vars the backend honors (SCREENBUDDY_IPC_ADDR)."""
-    try:
-        settings = dict(api.settings())
-    except Exception:  # noqa: BLE001 - an api without settings() gets defaults
-        settings = {}
+    settings = _overlay_settings(api)
     addr = settings.get("addr") or os.environ.get("SCREENBUDDY_IPC_ADDR") or DEFAULT_ADDR
     return {
         "addr": addr,
         "interval_s": settings.get("interval_s", fe.DEFAULT_INTERVAL_S),
         "reactions": settings.get("reactions", True),
+        # The swarm members (Pattern M): the watcher maps each job's
+        # instance to its creature's addr so a swarm answer celebrates on
+        # the creature that produced it.
+        "swarm": list(settings.get("swarm") or []),
     }

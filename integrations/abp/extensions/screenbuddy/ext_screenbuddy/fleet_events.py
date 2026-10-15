@@ -36,16 +36,18 @@ MAX_BOARD_ENTRIES = 20
 def terminal_jobs(conn, watermark: Optional[str], limit: int = 100) -> list[dict]:
     """Jobs that reached a terminal state after the watermark, oldest first.
     Terminal = success or failed; queued/running/retrying are not news yet."""
+    cols = ("id, action_type, backend, status, error, finished_at, "
+            "instance_id, swarm_run_id")
     if watermark:
         rows = conn.execute(
-            "SELECT id, action_type, backend, status, error, finished_at FROM jobs "
+            f"SELECT {cols} FROM jobs "
             "WHERE status IN ('success', 'failed') AND finished_at > ? "
             "ORDER BY finished_at ASC LIMIT ?",
             (watermark, limit),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT id, action_type, backend, status, error, finished_at FROM jobs "
+            f"SELECT {cols} FROM jobs "
             "WHERE status IN ('success', 'failed') AND finished_at IS NOT NULL "
             "ORDER BY finished_at ASC LIMIT ?",
             (limit,),
@@ -54,13 +56,46 @@ def terminal_jobs(conn, watermark: Optional[str], limit: int = 100) -> list[dict
 
 
 def _job_dict(row) -> dict:
+    base = {
+        "id": row[0], "action": row[1], "backend": row[2], "status": row[3],
+        "error": row[4], "finished_at": row[5],
+    }
+    # instance_id and swarm_run_id exist in the current schema; older rows
+    # (and test fixtures) may not carry them.
     try:
-        return {
-            "id": row[0], "action": row[1], "backend": row[2], "status": row[3],
-            "error": row[4], "finished_at": row[5],
-        }
+        base["instance_id"] = row[6]
+        base["swarm_run_id"] = row[7]
     except (IndexError, TypeError):
-        return {}
+        pass
+    return base
+
+
+def instance_addrs(swarm: list, default_addr: str) -> dict:
+    """job.instance_id -> the IPC addr of that instance's creature (Pattern M).
+
+    A swarm member instance's backend field is the member's registered kind
+    name (screenbuddy-2, ...), so the mapping is exact: backend -> addr.
+    The primary kind resolves to the default addr. Anything unknown resolves
+    to None and reacts on the primary, which is always safe.
+    """
+    from bot import bot_instances
+
+    addrs: dict = {}
+    try:
+        for inst in bot_instances.list_instances():
+            backend = str(inst.get("backend") or "").strip()
+            if not backend:
+                continue
+            if backend == "screenbuddy":
+                addrs[int(inst["id"])] = default_addr
+                continue
+            for member in swarm or []:
+                if str(member.get("name") or "") == backend:
+                    addrs[int(inst["id"])] = str(member.get("addr") or "")
+                    break
+    except Exception:  # noqa: BLE001 - addr resolution must never kill the tick
+        return addrs
+    return addrs
 
 
 def board_content(jobs: list[dict]) -> str:
@@ -125,29 +160,37 @@ async def watch(settings: Optional[dict] = None) -> None:
     interval = float(s.get("interval_s") or DEFAULT_INTERVAL_S)
     addr = ipc.addr_from_settings(s)
     react = bool(s.get("reactions", True))
+    swarm = list(s.get("swarm") or [])
+    addrs = instance_addrs(swarm, addr)
     state = load_state()
     announced = set(state.get("announced", []))
     while True:
         try:
-            _poll_once(addr, react, state, announced)
+            _poll_once(addr, react, state, announced, addrs)
         except Exception:  # noqa: BLE001 - a watcher that dies stops announcing
             import logging
             logging.getLogger("bot.screenbuddy").exception("fleet watcher tick failed")
         await asyncio.sleep(interval)
 
 
-def _poll_once(addr: str, react: bool, state: dict, announced: set) -> None:
+def _poll_once(addr: str, react: bool, state: dict, announced: set,
+               addrs: Optional[dict] = None) -> None:
     from bot import db
     from bot import shared_context
 
+    addrs = addrs or {}
     conn = db.get_conn()
     jobs = terminal_jobs(conn, state.get("watermark"))
     fresh = [j for j in jobs if j.get("id") not in announced]
     if fresh:
         shared_context.write_doc(BOARD_DOC, board_content(fresh), actor="screenbuddy-extension")
-        if react and ipc.reachable(addr, timeout=2.0):
+        if react:
             for j in fresh:
-                _react(addr, j)
+                # A swarm member's completion celebrates on ITS creature (Pattern M);
+                # everything else reacts on the primary, which is always safe.
+                target = addrs.get(j.get("instance_id")) or addr
+                if ipc.reachable(target, timeout=2.0):
+                    _react(target, j)
         announced.update(j.get("id") for j in fresh)
         # Keep the announced set from growing without bound.
         if len(announced) > 500:

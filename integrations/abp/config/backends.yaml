@@ -11,3 +11,20 @@ backends:
     seed: true
     interval_s: 10
     reactions: true
+    # The swarm (Pattern M): N ScreenBuddy instances on distinct IPC ports,
+    # each registered as its own backend kind (screenbuddy-2, ...) so a swarm
+    # can fan a prompt out to every creature at once. Launch each instance
+    # with SCREENBUDDY_IPC_ADDR matching its entry here.
+    swarm:
+      - name: screenbuddy-2
+        addr: 127.0.0.1:34568
+        timeout_s: 300
+        personas:
+          creature-2: builtin-assistant
+        seed: true
+      - name: screenbuddy-3
+        addr: 127.0.0.1:34569
+        timeout_s: 300
+        personas:
+          creature-3: builtin-assistant
+        seed: true

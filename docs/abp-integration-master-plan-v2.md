@@ -233,6 +233,14 @@ swarm telemetry.
 demo that makes both projects legible to a newcomer. This is the "accidental creation" philosophy
 applied to the fleet: the user watches a swarm assemble itself.
 
+**Shipped (2026-10-15).** The app's `SCREENBUDDY_IPC_ADDR` already made each instance
+addressable; the extension registers each overlay `swarm:` member as its own backend kind
+(`add_backend_class` + `add_backend`, so the settings land in the effective config) and the
+watcher maps each job's `instance_id` back to its creature's addr — a swarm answer celebrates on
+the creature that produced it. Verified live: three instances on :34567/8/9, a
+`fanout_synthesize` run answered on all three, and an A/B test (auto-cycle off on one instance)
+proved the celebrate fires on the right window.
+
 ---
 
 ### Pattern N — Traces → user model → fine-tuning (the long-term ML loop)
@@ -281,7 +289,7 @@ extension.
 | 10 | H — unified routing brain | ~1–2 weeks | Cost/speed/quality learned across both apps | I (telemetry) | **SHIPPED** — outcome + recommend routes live; task_class on every ask |
 | 11 | K — persona continuity | ~4–5 days | Identity survives /new and restarts | G | **SHIPPED** — live: active agent switched to `builtin-assistant` on a turn |
 | 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **J SHIPPED** — Creature dashboard panel + status route; F (Android) designed, not built |
-| 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | Designed — needs N app instances on distinct ports; config pattern documented |
+| 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | **SHIPPED** — 3 instances on :34567/8/9, each its own backend kind; a fanout_synthesize run answered on all three; per-instance celebrate A/B-proven |
 | 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Half SHIPPED** — creature exchanges ingest into the user model (live); fine-tune half has no seam in the current unsloth API |
 | — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | Designed — Pattern D already runs backend turns in process cells |
 

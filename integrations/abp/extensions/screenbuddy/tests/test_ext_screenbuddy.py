@@ -174,12 +174,165 @@ def test_recommend_validation_requires_a_task():
     assert routes.validate_recommend({}) is not None
 
 
+# ---- the swarm (Pattern M) -------------------------------------------------
+
+_OVERLAY_DIR = Path(__file__).resolve().parents[1]
+
+
+def _overlay_api():
+    """A mock api whose directory resolves to the real overlay layout."""
+    class Api:
+        directory = _OVERLAY_DIR
+        backends = {}
+
+        def add_backend_class(self, kind, factory, **kw):
+            pass
+
+        def add_backend(self, name, **settings):
+            self.backends[name] = settings
+
+    return Api()
+
+
+def _write_overlay(tmp_path, body: str):
+    overlay = Path(tmp_path) / "config" / "backends.yaml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(body, encoding="utf-8")
+    return overlay
+
+
+def _tmp_overlay(body: str, monkeypatch):
+    """A temp ABP_PRIVATE_DIR holding an overlay, cleaned up by the caller."""
+    import shutil
+    import tempfile
+
+    root = tempfile.mkdtemp(prefix="sb_overlay_")
+    _write_overlay(root, body)
+    monkeypatch.setenv("ABP_PRIVATE_DIR", root)
+    return root
+
+
+def test_overlay_settings_reads_the_swarm(monkeypatch):
+    from ext_screenbuddy import _overlay_settings
+
+    _tmp_overlay(
+        "backends:\n  screenbuddy:\n    addr: 127.0.0.1:34567\n"
+        "    swarm:\n      - {name: screenbuddy-2, addr: 127.0.0.1:34568}\n",
+        monkeypatch,
+    )
+    s = _overlay_settings(object())
+    assert s["swarm"] == [{"name": "screenbuddy-2", "addr": "127.0.0.1:34568"}]
+    assert s["addr"] == "127.0.0.1:34567"
+
+
+def test_overlay_settings_without_a_private_dir_falls_back_to_the_layout():
+    from ext_screenbuddy import _overlay_settings
+
+    # The real overlay sits at <ext dir>/../../config/backends.yaml.
+    s = _overlay_settings(_overlay_api())
+    assert isinstance(s, dict)
+
+
+def test_instance_addrs_maps_backend_to_creature_addr(monkeypatch):
+    import bot.bot_instances as bi
+
+    monkeypatch.setattr(bi, "list_instances", lambda: [
+        {"id": 1, "backend": "screenbuddy"},
+        {"id": 2, "backend": "screenbuddy-2"},
+        {"id": 3, "backend": "ollama"},
+    ])
+    swarm = [{"name": "screenbuddy-2", "addr": "127.0.0.1:34568"}]
+    addrs = fleet_events.instance_addrs(swarm, "127.0.0.1:34567")
+    assert addrs == {1: "127.0.0.1:34567", 2: "127.0.0.1:34568"}
+
+
+def test_instance_addrs_survives_an_inventory_failure(monkeypatch):
+    import bot.bot_instances as bi
+
+    def boom():
+        raise RuntimeError("db gone")
+    monkeypatch.setattr(bi, "list_instances", boom)
+    assert fleet_events.instance_addrs([], "127.0.0.1:34567") == {}
+
+
+def test_register_swarm_registers_one_backend_per_member(monkeypatch):
+    from ext_screenbuddy import _register_swarm
+
+    _tmp_overlay(
+        "backends:\n  screenbuddy:\n    swarm:\n"
+        "      - {name: screenbuddy-2, addr: 127.0.0.1:34568}\n"
+        "      - {name: screenbuddy-3, addr: 127.0.0.1:34569, seed: true}\n",
+        monkeypatch,
+    )
+
+    class Api:
+        def __init__(self):
+            self.classes = {}
+            self.backends = {}
+
+        def add_backend_class(self, kind, factory, **kw):
+            self.classes[kind] = (factory, kw)
+
+        def add_backend(self, name, **settings):
+            self.backends[name] = settings
+
+    api = Api()
+    _register_swarm(api, lambda s, m=None: object(), lambda: (True, ""))
+    assert set(api.classes) == {"screenbuddy-2", "screenbuddy-3"}
+    assert api.backends["screenbuddy-2"]["addr"] == "127.0.0.1:34568"
+    assert api.backends["screenbuddy-2"]["timeout_s"] == 300
+    assert api.backends["screenbuddy-3"]["seed"] is True
+
+
+def test_register_swarm_skips_members_without_an_addr(monkeypatch):
+    from ext_screenbuddy import _register_swarm
+
+    _tmp_overlay(
+        "backends:\n  screenbuddy:\n    swarm:\n"
+        "      - {name: screenbuddy-2}\n"
+        "      - {addr: 127.0.0.1:34569}\n",
+        monkeypatch,
+    )
+
+    class Api:
+        def __init__(self):
+            self.classes = {}
+            self.backends = {}
+
+        def add_backend_class(self, kind, factory, **kw):
+            self.classes[kind] = factory
+
+        def add_backend(self, name, **settings):
+            self.backends[name] = settings
+
+    api = Api()
+    _register_swarm(api, lambda s, m=None: object(), lambda: (True, ""))
+    assert set(api.backends) == {"screenbuddy-2"}
+
+
+def test_watcher_settings_pass_the_swarm_through(monkeypatch):
+    from ext_screenbuddy import _watcher_settings
+
+    _tmp_overlay(
+        "backends:\n  screenbuddy:\n    addr: 127.0.0.1:34567\n"
+        "    swarm:\n      - {name: screenbuddy-2}\n",
+        monkeypatch,
+    )
+
+    class Api:
+        pass
+
+    s = _watcher_settings(Api())
+    assert s["swarm"] == [{"name": "screenbuddy-2"}]
+    assert s["addr"] == "127.0.0.1:34567"
+
+
 # ---- standalone runner ------------------------------------------------------
 # ABP's pipeline runs these via its own runner; this main() makes the file
 # self-contained too — pytest-style functions, a tiny monkeypatch shim.
 
 class _MonkeyPatch:
-    """The two methods the tests use: setattr and undo."""
+    """The methods the tests use: setattr, setenv and undo."""
 
     def __init__(self):
         self._undo = []
@@ -188,9 +341,21 @@ class _MonkeyPatch:
         self._undo.append((target, name, getattr(target, name, None)))
         setattr(target, name, value)
 
+    def setenv(self, name, value):
+        import os
+        self._undo.append(("env", name, os.environ.get(name)))
+        os.environ[name] = value
+
     def undo(self):
+        import os
         for target, name, value in reversed(self._undo):
-            setattr(target, name, value)
+            if target == "env":
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            else:
+                setattr(target, name, value)
         self._undo = []
 
 
