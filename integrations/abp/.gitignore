@@ -1,3 +1,2 @@
-ext_screenbuddy/fleet_events_state.json
-ext_screenbuddy/__pycache__/
-ext_screenbuddy/tests/__pycache__/
+**/fleet_events_state.json
+**/__pycache__/
