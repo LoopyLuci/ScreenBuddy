@@ -120,6 +120,28 @@ def register(app, read_auth, write_auth) -> None:
 
         return finetune.status()
 
+    # --- Pattern L: dangerous tools in a bounded cell ----------------------
+    @app.post("/api/screenbuddy/sandbox_exec", dependencies=[Depends(write_auth)])
+    async def post_sandbox_exec(payload: dict) -> dict:
+        """Run one tool inside a process_cell and return its bounded output.
+
+        The creature's agent routes anything that shells out, writes files
+        or changes state through here (see mcp_client.rs's dangerous list):
+        the tool executes in a Windows Job Object with CPU, memory and
+        wall-clock limits, so a runaway cannot take the dashboard's process
+        with it. A timeout kills the whole tree and says so.
+        """
+        from . import sandbox_exec
+
+        tool = str(payload.get("tool") or "")
+        if not tool:
+            return {"ok": False, "error": "tool is required"}
+        return sandbox_exec.execute(
+            tool,
+            payload.get("args") or {},
+            timeout_s=payload.get("timeout_s") or 60,
+        )
+
 
 def api_model_location(app_name: str, path: str, namespace: str) -> None:
     """Register a trained adapter with Local AI's Discover, best-effort.

@@ -213,6 +213,18 @@ when they're pure.
 **Result.** A hang or runaway in one tool can't take the creature's UI thread — the failure mode
 a 74-tool runtime makes most likely.
 
+**Shipped (2026-10-15).** Two halves. The route: `POST /api/screenbuddy/sandbox_exec`
+spawns `sandbox_worker.py` in a `process_cell` (Job Object) through the same dispatch the agent
+runtime uses, with CPU/memory/wall-clock bounds; the output is truncated to 8k chars and a
+timeout kills the whole tree and says so (verified live: `echo` returned bounded output,
+`write_file` wrote inside the cell, `sleep 30` against a 5s timeout returned
+`timed_out: true`). The client: the app's tool handler routes anything on the dangerous list
+(mutation verbs, shell, web, fetch — the same verbs the tiny-set policy excludes) through the
+route instead of the direct MCP path; read-only tools keep their path. Verified live: the
+dangerous-tool policy is a Rust unit test; the branch is three lines in the handler closure.
+The full loop (a model choosing a dangerous tool) is not forced in CI — a 0.5B local model
+does not call tools reliably.
+
 ---
 
 ### Pattern M — Swarm of creatures (fanout across instances)
@@ -300,7 +312,7 @@ extension.
 | 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **J SHIPPED** — Creature dashboard panel + status route; F (Android) designed, not built |
 | 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | **SHIPPED** — 3 instances on :34567/8/9, each its own backend kind; a fanout_synthesize run answered on all three; per-instance celebrate A/B-proven |
 | 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Seam SHIPPED** — `POST /api/screenbuddy/finetune` builds the JSONL dataset from approved user-model items (verified) and trains a LoRA where torch+CUDA+unsloth exist; honest skip otherwise |
-| — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | Designed — Pattern D already runs backend turns in process cells |
+| — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | **SHIPPED** — `POST /api/screenbuddy/sandbox_exec` runs a dangerous tool in a bounded process_cell (verified: echo, write_file, and a 5s timeout that killed the tree); the app routes mutation/outer-face verbs through it |
 
 Sequencing logic: harden what's shipped (6–7) before adding surface area; memory (8) before
 anything that reads context; telemetry (9) before the learning loop (10); the demo patterns
@@ -330,19 +342,19 @@ on :34567, not just unit-tested:
   `probe-canary` to `builtin-assistant` before answering — the persona map fired.
 - **J**: `GET /api/screenbuddy/status` returns the full snapshot; the Creature panel
   (`add_panel`) renders it.
-- **N (half)**: `POST /api/screenbuddy/finetune` builds the dataset from approved user-model
-  items and wrote a real JSONL file (verified); training skipped honestly — "torch is not
-  installed" (no CUDA/unsloth on this host). The LoRA path is real unsloth code, guarded.
-- **D/A**: the backend turn still answers through the creature; the MCP server
-  re-registered (`connected: true`, 25 tools).
+- **L**: `POST /api/screenbuddy/sandbox_exec` ran `run_shell`/`write_file` in a bounded
+  process_cell (real output, bounded); a 5s timeout on `sleep 30` killed the tree and reported
+  `timed_out: true`. The app's dangerous-tool list is a Rust policy test; the full loop is not
+  forced (a 0.5B model does not call tools reliably).
+- **M**: three instances on :34567/8/9 registered as `screenbuddy`, `screenbuddy-2`,
+  `screenbuddy-3`; a `fanout_synthesize` run answered on all three; an A/B test (auto-cycle off)
+  proved the per-instance celebrate.
+- **N's seam**: `POST /api/screenbuddy/finetune` built a real JSONL dataset from the approved
+  user-model item; training skipped honestly ("torch is not installed") — the LoRA path is real
+  unsloth code guarded by hardware detection.
 
-Not built, by design: **F** (Android unified control — the Android app is a separate repo),
-**M** (swarm — needs N app instances on distinct ports; the config pattern is: register
-additional backend kinds via the same factory, each with its own `addr` and persona),
-**L** (sandbox — Pattern D already runs backend turns in `process_cell` Job Objects;
-generalizing to the creature's own tools needs an app-side IPC cmd, designed not built),
-**N's fine-tune half** (the current unsloth API is download/load only; fine-tuning needs a
-new route calling unsloth's training directly).
+Not built, by design: **F** (Android unified control — the Android app is a separate repo; the
+extension routes are app-agnostic and await an Android client).
 
 ---
 

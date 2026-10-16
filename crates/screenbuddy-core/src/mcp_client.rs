@@ -345,6 +345,86 @@ pub fn register_server_tools_filtered(
     Ok(count)
 }
 
+/// The creature's dangerous tools: anything that shells out, writes files,
+/// fetches URLs or changes fleet state. These do NOT take the direct MCP
+/// path — the handler routes them through ABP's sandbox cell (Pattern L),
+/// so a runaway execution is bounded by a Job Object instead of running
+/// loose in the dashboard's process. The list mirrors the tiny-set policy's
+/// excluded verbs: if a prefix is too broad for a 0.5B prompt, it is too
+/// broad to run unsandboxed.
+pub const DANGEROUS_TOOL_PREFIXES: &[&str] = &[
+    "set_",
+    "delete_",
+    "remove_",
+    "restore_",
+    "create_",
+    "update_",
+    "enable_",
+    "disable_",
+    "start_",
+    "stop_",
+    "restart_",
+    "trigger_",
+    "dispatch_",
+    "run_",
+    "write_",
+    "shell",
+    "web_",
+    "fetch",
+    "ask_instance",
+];
+
+/// Whether a tool name is on the dangerous list. Case-insensitive: ABP
+/// tool names are lowercase with underscores, but a model-invoked alias
+/// or a future rename must not slip through on a capital letter.
+pub fn is_dangerous_tool(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    DANGEROUS_TOOL_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+/// The sandbox path for a dangerous tool: POST to the extension's route,
+/// which executes the tool in a bounded process_cell and returns its
+/// output. The dashboard URL and token come from the launch env — the app
+/// already receives both when it is started against a live ABP.
+async fn sandbox_call(name: &str, args: &serde_json::Value) -> crate::Result<String> {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    });
+    let base = std::env::var("ABP_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    let token = std::env::var("DASHBOARD_TOKEN").unwrap_or_default();
+    let resp = client
+        .post(format!("{base}/api/screenbuddy/sandbox_exec"))
+        .header("X-Dashboard-Token", token)
+        .json(&serde_json::json!({ "tool": name, "args": args }))
+        .send()
+        .await
+        .map_err(|e| Error::Network(format!("sandbox call failed: {e}")))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| Error::Network(format!("sandbox response unreadable: {e}")))?;
+    if body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        Ok(body
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
+    } else {
+        Err(Error::Network(format!(
+            "sandbox rejected {name}: {}",
+            body.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown error")
+        )))
+    }
+}
+
 /// The shared registration loop behind both entry points.
 fn register_tools_into(
     client: McpClient,
@@ -360,6 +440,13 @@ fn register_tools_into(
             let conn = conn.clone();
             let name = name.clone();
             Box::pin(async move {
+                // Dangerous tools run in ABP's sandbox cell, not the direct
+                // path — a bounded Job Object instead of the dashboard's own
+                // process (Pattern L). The pure read-only tools keep the
+                // direct MCP path they have always had.
+                if is_dangerous_tool(&name) {
+                    return sandbox_call(&name, &args).await;
+                }
                 // The client speaks synchronous stdio; keep it off the async
                 // worker. A poisoned lock means a panic happened while the
                 // connection was held — recover the client (a dead connection
@@ -754,6 +841,38 @@ for line in sys.stdin:
     fn select_abp_tools_with_neither_registers_everything() {
         assert!(select_abp_tools(None, false).is_none());
         assert!(select_abp_tools(Some(""), false).is_none());
+    }
+
+    #[test]
+    fn dangerous_tools_are_the_mutation_and_outer_face_verbs() {
+        // The sandbox routing decision, kept as a policy test: anything that
+        // changes state, shells out or reaches the network is dangerous;
+        // the read-only fleet tools are not. A future rename must not slip
+        // through on a capital letter either.
+        for name in [
+            "set_animation",
+            "delete_agent",
+            "create_instance",
+            "update_config",
+            "write_file",
+            "shell_command",
+            "web_fetch",
+            "run_tests",
+            "ask_instance",
+            "Set_Animation",
+        ] {
+            assert!(super::is_dangerous_tool(name), "{name} must be dangerous");
+        }
+        for name in [
+            "get_status",
+            "list_jobs",
+            "memory_search",
+            "get_model_info",
+            "read_project_context",
+            "list_snapshots",
+        ] {
+            assert!(!super::is_dangerous_tool(name), "{name} must stay on the direct path");
+        }
     }
 
     #[test]
