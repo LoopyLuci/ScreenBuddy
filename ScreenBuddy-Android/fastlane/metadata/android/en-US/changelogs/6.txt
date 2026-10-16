@@ -1,0 +1,13 @@
+ScreenBuddy v0.8.0 — the fleet, sandboxed and remote-controlled
+
+- The swarm: run several ScreenBuddy instances on distinct ports; an
+  AgenticBotPlatform swarm fans a prompt out to every creature at once and
+  each answer celebrates on the creature that produced it.
+- The sandbox: the creature's dangerous tools (shell, file writes, web,
+  mutation verbs) run inside a bounded process cell instead of loose in
+  the dashboard — a runaway can no longer take the fleet down with it.
+- The fine-tune seam: approved user-model items become a real training
+  dataset; a LoRA trains where a GPU and unsloth exist.
+- The phone as a remote: a new Fleet tab drives the fleet from Android —
+  creature status, the router's recommendation, the fine-tune pipeline —
+  under the same scoped integration key as the desktop.

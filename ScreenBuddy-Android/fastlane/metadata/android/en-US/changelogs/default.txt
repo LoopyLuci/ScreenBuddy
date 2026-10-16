@@ -1,12 +1,13 @@
-ScreenBuddy v0.7.0
+ScreenBuddy v0.8.0
 
-* The AgenticBotPlatform integration, hardened and shipped: the desktop
-  creature is a fleet backend, drives the fleet from inside the agent,
-  and keeps persona, memory, events and the learning loop in sync with
-  it.
-* The MCP bridge reconnects and heartbeats, and the agent's tool surface
-  is configurable so small local models see 11 clean schemas instead of
-  72 mutation verbs.
-* New Creature dashboard panel and a Creature Android control surface.
-* Fixes the Android upgrade path from 0.6.2: the previous build shipped a
-  stale version identity, so in-place upgrades were blocked.
+* The phone as a remote: a new Fleet tab drives the desktop fleet from
+  Android — creature status, the router's recommendation, the fine-tune
+  pipeline — under the same scoped integration key as the desktop.
+* The swarm: run several ScreenBuddy instances on distinct ports; an
+  AgenticBotPlatform swarm fans a prompt out to every creature at once and
+  each answer celebrates on the creature that produced it.
+* The sandbox: the creature's dangerous tools (shell, file writes, web,
+  mutation verbs) run inside a bounded process cell instead of loose in
+  the dashboard — a runaway can no longer take the fleet down with it.
+* The fine-tune seam: approved user-model items become a real training
+  dataset; a LoRA trains where a GPU and unsloth exist.

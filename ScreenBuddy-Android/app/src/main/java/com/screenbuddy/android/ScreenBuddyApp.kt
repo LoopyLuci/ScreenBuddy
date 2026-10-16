@@ -74,6 +74,11 @@ class ScreenBuddyApp : Application() {
         com.screenbuddy.android.data.agent.AgentProfileStore.inAppFiles(this)
     }
 
+    /** The phone's window on the desktop fleet (Pattern F). */
+    val abpRepository: com.screenbuddy.android.data.abp.AbpRepository by lazy {
+        com.screenbuddy.android.data.abp.AbpRepository(settingsRepository)
+    }
+
     /**
      * The agent in force.
      *

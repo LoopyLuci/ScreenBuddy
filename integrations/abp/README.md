@@ -33,6 +33,7 @@ deep-merged over ABP's `config/backends.yaml` by `bot/config.py`'s overlay chain
 | Fine-tune | `POST /api/screenbuddy/finetune` | approved user-model items → a real JSONL dataset; a LoRA trains where torch+CUDA+unsloth exist (honest skip otherwise) |
 | Swarm | overlay `swarm:` list | N instances on distinct ports, each its own backend kind; a swarm answer celebrates on its own creature |
 | Sandbox | `POST /api/screenbuddy/sandbox_exec` | a dangerous tool runs in a bounded process_cell (Job Object) with CPU/memory/time limits; the app routes dangerous verbs through it |
+| Fleet (Android) | `data/abp/AbpClient` + Fleet tab | the phone drives the same app-agnostic routes under the scoped key; URL/token in settings |
 
 ## Security: use a scoped key, not the god-mode token
 

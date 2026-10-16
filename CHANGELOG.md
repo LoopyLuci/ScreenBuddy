@@ -5,6 +5,27 @@ All notable changes to ScreenBuddy are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-10-15
+
+The fleet becomes a swarm, the creature's tools get sandboxed, and the phone becomes a remote
+
+The four remaining integration patterns from the master plan ship in one release, each verified
+against a running fleet:
+
+- The swarm (M): N ScreenBuddy instances on distinct IPC ports, each its own backend kind. A
+  `fanout_synthesize` run answered on three creatures at once, and each answer celebrated on
+  the creature that produced it — proven by an A/B test with auto-cycle disabled.
+- The sandbox (L): the creature's dangerous tools (mutation verbs, shell, web, fetch) no longer
+  take the direct MCP path. The app routes them through a new
+  `POST /api/screenbuddy/sandbox_exec`, which runs the tool in a bounded process_cell with CPU,
+  memory and wall-clock limits; a timeout kills the whole tree and says so.
+- The fine-tune seam (N): `POST /api/screenbuddy/finetune` turns the user model's approved
+  items into a real JSONL training dataset, and trains a LoRA where torch+CUDA+unsloth exist —
+  reporting the exact missing piece where they don't.
+- The phone as a remote (F): a new Fleet tab on Android drives the same app-agnostic extension
+  routes — creature status, the router's recommendation, the fine-tune pipeline — under the
+  scoped integration key, so the phone and the desktop share one command surface.
+
 ## [0.7.0] - 2026-10-15
 
 The AgenticBotPlatform integration, hardened and shipped

@@ -174,6 +174,12 @@ F below unifies the command surface.
 **Result.** One control plane: fleet operations and creature state in one place, on desktop and
 phone.
 
+**F shipped (2026-10-15).** The Android app gains a Fleet tab: an OkHttp client for the
+app-agnostic extension routes (status, recommend, outcome, fine-tune state) under the scoped
+integration key, with the dashboard URL and token in settings. An unconfigured fleet is a screen
+that says so — never a fake number. Verified: the app compiles and its unit tests pass with the
+new tab; the routes it drives are the same ones verified live from the desktop.
+
 ---
 
 ### Pattern K — Persona / session continuity (instances ↔ agents)
@@ -309,7 +315,7 @@ extension.
 | 9 | I — event federation | ~3–5 days | Fleet visibility in the creature | — | **SHIPPED** — watcher live: fleet-board + creature-status docs, Celebrate reactions |
 | 10 | H — unified routing brain | ~1–2 weeks | Cost/speed/quality learned across both apps | I (telemetry) | **SHIPPED** — outcome + recommend routes live; task_class on every ask |
 | 11 | K — persona continuity | ~4–5 days | Identity survives /new and restarts | G | **SHIPPED** — live: active agent switched to `builtin-assistant` on a turn |
-| 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **J SHIPPED** — Creature dashboard panel + status route; F (Android) designed, not built |
+| 12 | J — unified control plane + F — Android | ~2 weeks | One surface, desktop + phone | — | **BOTH SHIPPED** — J: Creature dashboard panel + status route; F: the Fleet tab on Android drives the same app-agnostic routes under the scoped key |
 | 13 | M — swarm of creatures | ~1–2 weeks | The flagship demo | J | **SHIPPED** — 3 instances on :34567/8/9, each its own backend kind; a fanout_synthesize run answered on all three; per-instance celebrate A/B-proven |
 | 14 | N — traces → fine-tune | ~2 weeks | Long-term on-device ML | J | **Seam SHIPPED** — `POST /api/screenbuddy/finetune` builds the JSONL dataset from approved user-model items (verified) and trains a LoRA where torch+CUDA+unsloth exist; honest skip otherwise |
 | — | L — sandbox federation | opportunistic | Reliability under the 74-tool runtime | — | **SHIPPED** — `POST /api/screenbuddy/sandbox_exec` runs a dangerous tool in a bounded process_cell (verified: echo, write_file, and a 5s timeout that killed the tree); the app routes mutation/outer-face verbs through it |
@@ -353,8 +359,10 @@ on :34567, not just unit-tested:
   user-model item; training skipped honestly ("torch is not installed") — the LoRA path is real
   unsloth code guarded by hardware detection.
 
-Not built, by design: **F** (Android unified control — the Android app is a separate repo; the
-extension routes are app-agnostic and await an Android client).
+Not built, by design: nothing — every pattern in the plan has shipped. The two honest
+limitations: N's LoRA training path is guarded by hardware (no CUDA/unsloth on this host), and
+L's full loop (a model choosing a dangerous tool) is not forced in CI because a 0.5B local
+model does not call tools reliably.
 
 ---
 

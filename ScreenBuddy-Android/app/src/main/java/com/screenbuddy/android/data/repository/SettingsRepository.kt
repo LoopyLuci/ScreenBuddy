@@ -36,6 +36,10 @@ data class AppSettings(
     val ninerouterEnabled: Boolean = false,
     val ninerouterBaseUrl: String = "http://localhost:20128/v1",
     val ninerouterApiKey: String = "",
+    /** Where the fleet (the desktop's ABP dashboard) answers. Empty = unconfigured. */
+    val fleetBaseUrl: String = "",
+    /** The dashboard token or a minted `screenbuddy` integration key. */
+    val fleetToken: String = "",
 ) {
     /** Effective generation temperature, validated before it reaches an API. */
     val safeTemperature: Float get() = temperature.coerceIn(0.0f, 2.0f)
@@ -73,7 +77,9 @@ class SettingsRepository(context: Context) {
             ollamaBaseUrl = prefs[KEY_OLLAMA_URL] ?: "http://10.0.2.2:11434",
             ninerouterEnabled = prefs[KEY_NINEROUTER_ENABLED] ?: false,
             ninerouterBaseUrl = prefs[KEY_NINEROUTER_URL] ?: "http://localhost:20128/v1",
-            ninerouterApiKey = prefs[KEY_NINEROUTER_KEY] ?: ""
+            ninerouterApiKey = prefs[KEY_NINEROUTER_KEY] ?: "",
+            fleetBaseUrl = prefs[KEY_FLEET_URL] ?: "",
+            fleetToken = prefs[KEY_FLEET_TOKEN] ?: ""
         )
     }
 
@@ -99,6 +105,8 @@ class SettingsRepository(context: Context) {
     suspend fun setNinerouterEnabled(value: Boolean) = put(KEY_NINEROUTER_ENABLED, value)
     suspend fun setNinerouterBaseUrl(url: String) = put(KEY_NINEROUTER_URL, url)
     suspend fun setNinerouterApiKey(key: String) = put(KEY_NINEROUTER_KEY, key)
+    suspend fun setFleetBaseUrl(url: String) = put(KEY_FLEET_URL, url)
+    suspend fun setFleetToken(token: String) = put(KEY_FLEET_TOKEN, token)
 
     /**
      * Set one setting by its wire name, as the control surface uses.
@@ -244,6 +252,8 @@ class SettingsRepository(context: Context) {
             prefs[KEY_NINEROUTER_ENABLED] = next.ninerouterEnabled
             prefs[KEY_NINEROUTER_URL] = next.ninerouterBaseUrl
             prefs[KEY_NINEROUTER_KEY] = next.ninerouterApiKey
+            prefs[KEY_FLEET_URL] = next.fleetBaseUrl
+            prefs[KEY_FLEET_TOKEN] = next.fleetToken
         }
     }
 
@@ -280,5 +290,7 @@ class SettingsRepository(context: Context) {
         val KEY_NINEROUTER_ENABLED = booleanPreferencesKey("ninerouter_enabled")
         val KEY_NINEROUTER_URL = stringPreferencesKey("ninerouter_base_url")
         val KEY_NINEROUTER_KEY = stringPreferencesKey("ninerouter_api_key")
+        val KEY_FLEET_URL = stringPreferencesKey("fleet_base_url")
+        val KEY_FLEET_TOKEN = stringPreferencesKey("fleet_token")
     }
 }

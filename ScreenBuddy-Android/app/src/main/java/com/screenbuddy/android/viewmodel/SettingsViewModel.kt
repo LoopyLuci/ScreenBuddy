@@ -33,6 +33,8 @@ data class SettingsUiState(
     val ninerouterEnabled: Boolean = false,
     val ninerouterBaseUrl: String = "http://localhost:20128/v1",
     val ninerouterApiKey: String = "",
+    val fleetBaseUrl: String = "",
+    val fleetToken: String = "",
     val enabledModels: List<AiModel> = emptyList(),
     val selectedModelId: String = "",
     val providersWithKeys: Set<String> = emptySet(),
@@ -95,6 +97,8 @@ class SettingsViewModel(
                     ninerouterEnabled = s.ninerouterEnabled,
                     ninerouterBaseUrl = s.ninerouterBaseUrl,
                     ninerouterApiKey = s.ninerouterApiKey,
+                    fleetBaseUrl = s.fleetBaseUrl,
+                    fleetToken = s.fleetToken,
                     selectedModelId = s.selectedModelId.ifEmpty { _uiState.value.selectedModel?.id ?: "" }
                 )
             }

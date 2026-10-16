@@ -23,6 +23,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
     object Providers : Screen("providers", "Providers", Icons.Filled.Cloud)
     object Creatures : Screen("creatures", "Creatures", Icons.Filled.Pets)
     object Agents : Screen("agents", "Agents", Icons.Filled.Psychology)
+    object Fleet : Screen("fleet", "Fleet", Icons.Filled.Hub)
     object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
 
@@ -38,7 +39,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector)
 fun MainScreen(versionName: String) {
     val navController = rememberNavController()
     val items =
-        listOf(Screen.Chat, Screen.Providers, Screen.Creatures, Screen.Agents, Screen.Settings)
+        listOf(Screen.Chat, Screen.Providers, Screen.Creatures, Screen.Agents, Screen.Fleet, Screen.Settings)
 
     val context = LocalContext.current
     val app = remember { context.applicationContext as ScreenBuddyApp }
@@ -106,6 +107,16 @@ fun MainScreen(versionName: String) {
                 composable(Screen.Providers.route) { ProvidersScreen() }
                 composable(Screen.Creatures.route) { CreaturesScreen() }
                 composable(Screen.Agents.route) { AgentsScreen() }
+                composable(Screen.Fleet.route) {
+                    val context = LocalContext.current
+                    val app = context.applicationContext as ScreenBuddyApp
+                    val viewModel = remember {
+                        com.screenbuddy.android.viewmodel.FleetViewModel(
+                            abpRepository = app.abpRepository
+                        )
+                    }
+                    FleetScreen(viewModel = viewModel)
+                }
                 composable(Screen.Settings.route) { SettingsScreen(versionName) }
             }
         }
